@@ -1,19 +1,3 @@
-<p align="center">
-  <img src="https://shields.io" alt="GitHub Stars">
-  <img src="https://yhype.me" alt="Profile Visitors">
-  <img src="https://shields.io" alt="Last Commit">
-  <a href="mailto:0xa0b1@gmail.com"><img src="https://shields.io" alt="Gmail"></a>
-</p>
-
-<p align="center">
-  <img src="https://badgen.net" alt="Stars">
-  <img src="https://badgen.net" alt="Last Commit">
-  <img src="https://yhype.me" alt="Visitors">
-  <a href="mailto:0xa0b1@gmail.com">
-    <img src="https://badgen.net" alt="Gmail">
-  </a>
-</p>
-
 # AISessionServer
 
 **Inter-session communication for AI agents — across machines and across products — without sharing repository access.**
