@@ -1,0 +1,65 @@
+# CI — build the server and run the protocol regression tests against it.
+#
+# There is no dependency graph, no lockfile and no package manager: the whole
+# build is one swiftc invocation, so this workflow is short on purpose. It is the
+# gate that makes the rest of the plan safe to work on — every later change to
+# chatbox.swift lands against tests/protocol.sh.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build + protocol tests
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Toolchain
+        run: xcrun swiftc --version
+
+      # The documented build, unchanged: if this breaks, the README is wrong.
+      - name: Build
+        run: xcrun swiftc -O chatbox.swift -o chatbox
+
+      - name: Start a disposable server
+        run: |
+          set -eu
+          mkdir -p tests/.scratch
+          openssl rand -hex 24 > tests/.scratch/token
+          chmod 600 tests/.scratch/token
+          nohup ./chatbox --port 8787 --db tests/.scratch/ci.sqlite \
+            --token-file tests/.scratch/token > tests/.scratch/server.log 2>&1 < /dev/null &
+          for _ in $(seq 1 50); do
+            if curl -fsS "http://127.0.0.1:8787/health?token=$(cat tests/.scratch/token)" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.2
+          done
+          curl -fsS "http://127.0.0.1:8787/health?token=$(cat tests/.scratch/token)"
+
+      - name: Protocol regression tests
+        env:
+          CHATBOX_URL: http://127.0.0.1:8787
+        run: |
+          set -eu
+          CHATBOX_TOKEN="$(cat tests/.scratch/token)" sh tests/protocol.sh
+
+      - name: Server log
+        if: always()
+        run: cat tests/.scratch/server.log || true

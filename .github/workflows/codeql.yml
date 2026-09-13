@@ -1,0 +1,58 @@
+# CodeQL code scanning — advanced setup.
+#
+# Why this file exists instead of GitHub's default setup: CodeQL for Swift
+# supports only `autobuild` and `manual` (there is no `none` mode, because the
+# extractor needs to see a real compilation). Default setup therefore ran
+# `swift build`, found no Package.swift or Xcode project, and failed with
+# "Autobuild failure" — analysing nothing while showing a red X on every push.
+# See: https://github.com/Pummelchen/AISessionServer/actions/runs/34761830403
+#
+# Advanced setup lets us hand the extractor the project's actual, documented
+# build command. Swift extraction is macOS-only.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '27 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  packages: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: analyze swift
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: swift
+          # No Package.swift here by design, so autobuild has nothing to find.
+          build-mode: manual
+
+      # The build must really happen: this is what the extractor observes. It is
+      # the same command CI and the README use, so the analysed binary is the
+      # shipped binary.
+      - name: Build for extraction
+        run: xcrun swiftc -O chatbox.swift -o chatbox
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:swift"

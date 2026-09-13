@@ -10,5 +10,8 @@ chatbox.log
 *.bak-*
 *.sqlite.bak-*
 
+# Test scratch — throwaway server state written by tests/protocol.sh
+tests/.scratch/
+
 # macOS
 .DS_Store
