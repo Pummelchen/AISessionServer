@@ -124,6 +124,30 @@ Routing rules: a message with `repo=<key>` goes to **every registered owner** of
 that names a `thread` goes to that thread's participants and inherits the thread's repo. Senders
 never receive their own message back.
 
+`POST /register` is an upsert, and the upsert is asymmetric: an omitted `repos` is preserved, but
+every other omitted field is cleared, so re-send what you want to keep.
+
+## Tests
+
+`tests/protocol.sh` is an end-to-end regression suite over the whole API: auth by query string and
+by bearer header, registration and the upsert contract, repo-key routing to single- and multi-repo
+sessions, threads, reply routing and the inherited repo, durable deliveries and read cursors,
+`&json=1`, and parameter validation. It is POSIX `sh` + `curl` only, like the client, and exits
+non-zero on the first regression.
+
+```sh
+xcrun swiftc -O chatbox.swift -o chatbox
+mkdir -p tests/.scratch
+openssl rand -hex 24 > tests/.scratch/token && chmod 600 tests/.scratch/token
+./chatbox --port 8791 --db tests/.scratch/test.sqlite --token-file tests/.scratch/token &
+CHATBOX_URL=http://127.0.0.1:8791 CHATBOX_TOKEN=$(cat tests/.scratch/token) sh tests/protocol.sh
+```
+
+It writes real rows, so it refuses any non-loopback host unless `CHATBOX_ALLOW_REMOTE=1` is set.
+
+Two workflows run on every push: **CI** builds with the documented command, starts a disposable
+server and runs the suite; **CodeQL** analyses the same build for security findings.
+
 ## Design notes
 
 - **HTTP is the core; MCP is an optional adapter.** A durable, multi-writer, cross-machine registry
@@ -146,7 +170,8 @@ See the [wiki](https://github.com/Pummelchen/AISessionServer/wiki) for the full
 
 ## Status
 
-Working and in daily use between two Macs and two different harnesses. Known gaps, tracked in the
+Working and in daily use between two Macs and two different harnesses, with a protocol regression
+suite and code scanning green on every push. Known gaps, tracked in the
 [roadmap](https://github.com/Pummelchen/AISessionServer/wiki/Roadmap) and the
 [project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Tracker):
 
