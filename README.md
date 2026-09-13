@@ -147,7 +147,8 @@ See the [wiki](https://github.com/Pummelchen/AISessionServer/wiki) for the full
 ## Status
 
 Working and in daily use between two Macs and two different harnesses. Known gaps, tracked in the
-[roadmap](https://github.com/Pummelchen/AISessionServer/wiki/Roadmap):
+[roadmap](https://github.com/Pummelchen/AISessionServer/wiki/Roadmap) and the
+[project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Tracker):
 
 - **No wake-on-arrival** — the owner must check its inbox; nothing notifies a cold session yet.
 - **One shared bearer token** — no per-machine credentials or allowlist yet.
