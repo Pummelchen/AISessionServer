@@ -25,9 +25,13 @@ permissions:
   security-events: write
   packages: read
 
+# Let a running scan finish. A Swift analysis takes several minutes on a macOS
+# runner, and with cancel-in-progress a burst of pushes supersedes every scan
+# before it completes — a security check that never finishes reports nothing.
+# Keeping only the newest *pending* run is the useful half of the behaviour.
 concurrency:
   group: codeql-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   analyze:
