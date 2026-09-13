@@ -57,6 +57,10 @@ E="it-$RUN-single"
 W="it-$RUN-waiter"
 W2="it-$RUN-waiter-idle"
 W3="it-$RUN-waiter-read-only"
+C2="it-$RUN-cred2-session"
+C3="it-$RUN-cred3-session"
+C4="it-$RUN-cred4-session"
+C5="it-$RUN-cred2-legacy"
 REPO_APP="example.test/$RUN/app"
 REPO_LIB="example.test/$RUN/lib"
 REPO_NONE="example.test/$RUN/nobody"
@@ -120,9 +124,32 @@ get() { # path [query]
   curl -sS --max-time 20 "${URL}${1}${_q:+?$_q}"
 }
 
+bare_url() { # path-with-query, no credential appended
+  printf '%s%s' "$URL" "$1"
+}
+
 url_for() { # path [query] -> a full URL, for checks that need curl's -w
   _q="$(qs "${2:-}")"
   printf '%s%s%s' "$URL" "$1" "${_q:+?$_q}"
+}
+
+scoped_get() { # path-with-query, credential -> body
+  curl -sS --max-time 20 -H "Authorization: Bearer $2" "${URL}${1}"
+}
+
+scoped_get_status() { # path-with-query, credential -> HTTP status
+  curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Bearer $2" "${URL}${1}"
+}
+
+scoped_post() { # path, credential, then curl data args
+  _p="$1"; _t="$2"; shift 2
+  curl -sS --max-time 20 -G -X POST "$@" -H "Authorization: Bearer $_t" "${URL}${_p}"
+}
+
+scoped_status_post() { # path, credential, then curl data args -> HTTP status
+  _p="$1"; _t="$2"; shift 2
+  curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST "$@" \
+    -H "Authorization: Bearer $_t" "${URL}${_p}"
 }
 
 code_of() { # path [query] -> HTTP status
@@ -223,10 +250,195 @@ if [ "$auth_open" = 0 ]; then
     "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/inbox?id=$A&wait=1")" "401"
   equals "a long poll with a wrong token is rejected" \
     "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/inbox?id=$A&wait=1&token=not-the-token")" "401"
+  # The credential routes are the keys to the board: an anonymous caller must not
+  # be able to issue, list or revoke anything. Nothing else pins this.
+  equals "an unauthenticated credential issue is refused" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST "$URL/token?node=x")" "401"
+  equals "an unauthenticated credential list is refused" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/token")" "401"
+  equals "an unauthenticated revoke is refused" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST "$URL/token/revoke?id=tk-x")" "401"
+  # Sending the same credential both ways is fine; sending two different ones is a
+  # client bug and used to be resolved silently in favour of the query parameter.
+  equals "an agreeing query token and header are accepted" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Bearer $TOKEN" "$URL/health?token=$TOKEN")" "200"
+  equals "a query token that contradicts the header is refused" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Bearer $TOKEN" "$URL/health?token=not-the-token")" "400"
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Usage, /help, and unknown routes
+# 2. Credentials and the claim allowlist
+# The shared token stays a bootstrap credential. A scoped credential belongs to
+# one machine, may only claim repos inside its namespaces, may only act as a
+# session on that machine, and can be revoked without disturbing anything else
+# or restarting the server.
+# ---------------------------------------------------------------------------
+NS2="example.test/$RUN/team/*"
+REPO_TEAM="example.test/$RUN/team/app"
+REPO_FOREIGN="github.com/someone/else"
+
+issued2="$(post /token --data-urlencode "node=node-cred2" \
+  --data-urlencode "namespaces=$NS2" --data-urlencode "note=second machine")"
+issued3="$(post /token --data-urlencode "node=node-cred3" --data-urlencode "namespaces=*")"
+contains "a credential can be issued with the bootstrap token" "$issued2" "ok credential issued"
+TOK2="$(field "$issued2" secret)"
+ID2="$(field "$issued2" id)"
+TOK3="$(field "$issued3" secret)"
+ID3="$(field "$issued3" id)"
+if [ -n "$TOK2" ] && [ -n "$ID2" ] && [ -n "$TOK3" ] && [ -n "$ID3" ]; then
+  ok "issuing returns both an id and a secret"
+else
+  no "issuing returns both an id and a secret" "id2=[$ID2] id3=[$ID3] secrets=${TOK2:+set}/${TOK3:+set}"
+fi
+
+# The secret is shown once. Nothing that lists credentials may repeat it.
+listing="$(get /token)"
+contains "the listing shows the credential id" "$listing" "$ID2"
+contains "the listing shows the machine it belongs to" "$listing" "node-cred2"
+lacks "the listing never repeats a secret" "$listing" "$TOK2"
+lacks "the json listing never repeats a secret" "$(get /token "json=1")" "$TOK3"
+
+# Stored hashed, not in the clear.
+if [ -n "${CHATBOX_DB:-}" ] && [ -f "$CHATBOX_DB" ]; then
+  if grep -q -e "$TOK2" "$CHATBOX_DB" 2>/dev/null || grep -q -e "$TOK2" "$CHATBOX_DB-wal" 2>/dev/null; then
+    no "the secret is not stored in the clear" "found it in $CHATBOX_DB"
+  else
+    ok "the secret is not stored in the clear"
+  fi
+else
+  printf '  skip  plaintext-credential check (set CHATBOX_DB to pin it)\n'
+fi
+
+# On its own machine, inside its namespaces: it works.
+contains "a scoped credential registers on its own node" \
+  "$(scoped_post /register "$TOK2" --data-urlencode "id=$C2" --data-urlencode "node=node-cred2" \
+      --data-urlencode "repos=$REPO_TEAM")" "ok registered"
+contains "a scoped credential can act as its own session" \
+  "$(scoped_get "/inbox?id=$C2" "$TOK2")" "inbox for $C2"
+
+# A repo key is a name, not a pattern. Allowing one would let a namespace pattern
+# such as `acme/*` match *itself* and be claimed as a literal key, which would
+# route other owners' mail to whoever claimed it.
+equals "a wildcard repo key is refused for the bootstrap credential" \
+  "$(status_post /register --data-urlencode "id=$A" --data-urlencode "node=node-a" \
+      --data-urlencode "repos=$NS2")" "400"
+contains "the wildcard refusal explains itself" \
+  "$(post /register --data-urlencode "id=$A" --data-urlencode "node=node-a" \
+      --data-urlencode "repos=$NS2")" "not a valid repo key"
+equals "a wildcard repo key is refused for a scoped credential" \
+  "$(scoped_status_post /register "$TOK2" --data-urlencode "id=$C2" --data-urlencode "node=node-cred2" \
+      --data-urlencode "repos=$NS2")" "400"
+equals "a namespace pattern cannot be claimed as a literal key" \
+  "$(scoped_status_post /register "$TOK2" --data-urlencode "id=$C2" --data-urlencode "node=node-cred2" \
+      --data-urlencode "repos=$REPO_TEAM")" "200"
+
+# A claim made by the bootstrap outside a machine's namespaces must not be kept
+# alive by that machine re-registering the session: validate what it will own, not
+# only what it sent.
+post /register --data-urlencode "id=$C5" --data-urlencode "node=node-cred2" \
+  --data-urlencode "repos=github.com/victim/private" >/dev/null
+contains "the bootstrap can make a claim the scoped credential may not" "$(get /peers)" "github.com/victim/private"
+equals "re-registering must not preserve a claim outside the namespaces" \
+  "$(scoped_status_post /register "$TOK2" --data-urlencode "id=$C5" --data-urlencode "node=node-cred2")" "403"
+
+# Outside them: refused, and the refusal says why.
+foreign="$(scoped_post /register "$TOK2" --data-urlencode "id=$C2" --data-urlencode "node=node-cred2" \
+  --data-urlencode "repos=$REPO_FOREIGN")"
+equals "a repo outside the namespace is refused" \
+  "$(scoped_status_post /register "$TOK2" --data-urlencode "id=$C2" --data-urlencode "node=node-cred2" \
+      --data-urlencode "repos=$REPO_FOREIGN")" "403"
+contains "the refusal names the allowed namespaces" "$foreign" "$NS2"
+equals "another machine's node is refused" \
+  "$(scoped_status_post /register "$TOK2" --data-urlencode "id=$C2" --data-urlencode "node=node-elsewhere")" "403"
+
+# A scoped credential cannot speak for a session that belongs to another machine.
+contains "a third machine registers a session" \
+  "$(scoped_post /register "$TOK3" --data-urlencode "id=$C3" --data-urlencode "node=node-cred3" \
+      --data-urlencode "repos=example.test/$RUN/anywhere")" "ok registered"
+equals "impersonating another machine's session is refused" \
+  "$(scoped_status_post /message "$TOK2" --data-urlencode "from=$C3" --data-urlencode "body=hello")" "403"
+equals "acting as an unregistered session is refused" \
+  "$(scoped_status_post /message "$TOK2" --data-urlencode "from=it-$RUN-ghost" --data-urlencode "body=hello")" "403"
+lacks "a cross-machine refusal does not name the other machine" \
+  "$(scoped_post /message "$TOK2" --data-urlencode "from=$C3" --data-urlencode "body=hello")" "node-cred3"
+equals "a scoped credential cannot read another machine's inbox" \
+  "$(scoped_get_status "/inbox?id=$C3" "$TOK2")" "403"
+equals "a scoped credential cannot long-poll another machine's inbox" \
+  "$(scoped_get_status "/inbox?id=$C3&wait=1" "$TOK2")" "403"
+equals "a scoped credential cannot ack for another machine's session" \
+  "$(scoped_status_post /ack "$TOK2" --data-urlencode "id=$C3" --data-urlencode "message=1")" "403"
+
+# The whole point of the board: sending to a repo you do not own still works.
+contains "a scoped credential may still send to a repo it does not own" \
+  "$(scoped_post /message "$TOK3" --data-urlencode "from=$C3" --data-urlencode "repo=$REPO_TEAM" \
+      --data-urlencode "subject=cross-repo $RUN" --data-urlencode "body=whoever owns team/app?")" \
+  "ok posted"
+
+# Managing credentials stays with the bootstrap credential.
+equals "a scoped credential cannot issue credentials" \
+  "$(scoped_status_post /token "$TOK2" --data-urlencode "node=node-x")" "403"
+equals "a scoped credential cannot list credentials" "$(scoped_get_status /token "$TOK2")" "403"
+equals "a scoped credential cannot revoke credentials" \
+  "$(scoped_status_post /token/revoke "$TOK2" --data-urlencode "id=$ID3")" "403"
+equals "issuing without a node is refused" "$(status_post /token --data-urlencode "namespaces=*")" "400"
+
+# Revocation is immediate and leaves everything else alone.
+contains "a credential can be revoked" "$(post /token/revoke --data-urlencode "id=$ID2")" "ok revoked $ID2"
+contains "the revoked credential is told so" "$(scoped_get /health "$TOK2")" "revoked"
+equals "the revoked credential gets a 401" "$(scoped_get_status /health "$TOK2")" "401"
+equals "another credential is undisturbed" "$(scoped_get_status /health "$TOK3")" "200"
+equals "the bootstrap credential is undisturbed" "$(code_of /health)" "200"
+contains "the listing marks it revoked" "$(get /token)" "REVOKED"
+contains "revocation does not delete what it registered" "$(get /peers)" "$C2"
+equals "revoking an unknown credential is a 404" \
+  "$(status_post /token/revoke --data-urlencode "id=tk-doesnotexist")" "404"
+tmpcred="$(post /token --data-urlencode "node=node-tmp" --data-urlencode "namespaces=*")"
+TMPID="$(field "$tmpcred" id)"
+contains "a throwaway credential can be revoked" "$(post /token/revoke --data-urlencode "id=$TMPID")" "ok revoked $TMPID"
+contains "revoking it again says so rather than pretending" \
+  "$(post /token/revoke --data-urlencode "id=$TMPID")" "already revoked"
+
+# The hash that is stored must look like a digest, not like the secret.
+if [ -n "${CHATBOX_DB:-}" ] && [ -f "$CHATBOX_DB" ] && command -v sqlite3 >/dev/null 2>&1; then
+  stored="$(sqlite3 "$CHATBOX_DB" "SELECT hash FROM tokens WHERE id = '$ID3' LIMIT 1" 2>/dev/null)"
+  if [ "${#stored}" -eq 64 ] && [ "$stored" != "$TOK3" ]; then
+    case "$stored" in
+      *[!0-9a-f]*) no "the stored credential value is a hex digest" "got [$stored]" ;;
+      *) ok "the stored credential value is a hex digest, not the secret" ;;
+    esac
+  else
+    no "the stored credential value is a hex digest" "got [${stored}]"
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    equals "the stored digest is exactly SHA-256 of the secret" "$stored" \
+      "$(printf '%s' "$TOK3" | shasum -a 256 | cut -d' ' -f1)"
+  fi
+else
+  printf '  skip  stored-digest check (needs CHATBOX_DB and sqlite3)\n'
+fi
+
+# Revocation has to reach a wait that is already in flight: a held long poll used
+# to keep running to its deadline and hand over messages posted after revocation.
+issued4="$(post /token --data-urlencode "node=node-cred4" --data-urlencode "namespaces=$NS2")"
+TOK4="$(field "$issued4" secret)"
+ID4="$(field "$issued4" id)"
+scoped_post /register "$TOK4" --data-urlencode "id=$C4" --data-urlencode "node=node-cred4" \
+  --data-urlencode "repos=$REPO_TEAM" >/dev/null
+( curl -sS --max-time 30 -o "$SCRATCH/midwait.out" -w '%{http_code}' \
+    -H "Authorization: Bearer $TOK4" "$(bare_url "/inbox?id=$C4&wait=20")" \
+    > "$SCRATCH/midwait.code" 2>/dev/null ) &
+mw_pid=$!
+sleep 1
+post /token/revoke --data-urlencode "id=$ID4" >/dev/null
+scoped_post /message "$TOK3" --data-urlencode "from=$C3" --data-urlencode "to=$C4" \
+  --data-urlencode "body=after-revoke-$RUN" >/dev/null
+wait "$mw_pid" 2>/dev/null
+equals "revoking a credential ends a wait that is already held" "$(cat "$SCRATCH/midwait.code")" "401"
+lacks "a revoked waiter is not handed a message posted after revocation" \
+  "$(cat "$SCRATCH/midwait.out")" "after-revoke-$RUN"
+
+# ---------------------------------------------------------------------------
+# 3. Usage, /help, and unknown routes
 # The 404 body embeds the usage text, so a status assertion is the only thing
 # that distinguishes the real route from the fallback.
 # ---------------------------------------------------------------------------
@@ -240,7 +452,7 @@ equals "an unknown route is 404" "$(code_of /no-such-route)" "404"
 contains "an unknown route reports not found" "$(get /no-such-route)" "not found"
 
 # ---------------------------------------------------------------------------
-# 3. Registration, aliases, and the ownership registry
+# 4. Registration, aliases, and the ownership registry
 # ---------------------------------------------------------------------------
 reg="$(post /register \
   --data-urlencode "id=$A" --data-urlencode "node=node-a" \
@@ -289,7 +501,7 @@ contains "a session may declare several repos (first)" "$peers3" "$REPO_ONE"
 contains "a session may declare several repos (second)" "$peers3" "$REPO_TWO"
 
 # ---------------------------------------------------------------------------
-# 4. Routing by repo key
+# 5. Routing by repo key
 # ---------------------------------------------------------------------------
 subj="probe $RUN"
 sent="$(post /message --data-urlencode "from=$A" --data-urlencode "repo=$REPO_LIB" \
@@ -330,7 +542,7 @@ alias_msg="$(post /message --data-urlencode "from=$A" --data-urlencode "repo=$RE
 equals "a repo registered with repo= routes" "$(field "$alias_msg" delivered_to)" "$E"
 
 # ---------------------------------------------------------------------------
-# 5. Threads, reply routing, inherited repo
+# 6. Threads, reply routing, inherited repo
 # Pins two fixed bugs: a reply resolved to no recipients, and it lost the repo.
 # ---------------------------------------------------------------------------
 rep="$(post /message --data-urlencode "from=$B" --data-urlencode "thread=$TID" \
@@ -358,7 +570,7 @@ contains "reply_to is accepted" "$rr" "ok posted"
 contains "reply_to is shown in the thread view" "$(get /thread "id=$TID")" "(reply to $MID)"
 
 # ---------------------------------------------------------------------------
-# 6. The sender is never its own recipient
+# 7. The sender is never its own recipient
 # A must own the repo it sends to, or the filter is unreachable and this check
 # proves nothing. C becomes a second owner of REPO_APP, which A also owns.
 # ---------------------------------------------------------------------------
@@ -377,7 +589,7 @@ lacks "the sender has no delivery even including read" "$(get /inbox "id=$A&all=
 contains "the sender still holds deliveries it should have" "$(get /inbox "id=$A&all=1")" "reply for $RUN"
 
 # ---------------------------------------------------------------------------
-# 7. Read cursors and acknowledgements
+# 8. Read cursors and acknowledgements
 # ---------------------------------------------------------------------------
 # Ack scoping: C was never sent MID, so acking it must not touch B's delivery.
 contains "acking a message you were not sent is accepted" \
@@ -401,7 +613,7 @@ lacks "the thread is now read for that participant" "$(get /inbox "id=$A")" "rep
 contains "the thread is still there with all=1" "$(get /inbox "id=$A&all=1")" "reply for $RUN"
 
 # ---------------------------------------------------------------------------
-# 8. Long-poll inbox (wait=)
+# 9. Long-poll inbox (wait=)
 # The DoD: a waiter is woken by an arriving message within about a second, a
 # timeout is an empty body rather than an error, and a held waiter does not block
 # anyone else. Two further rules are load-bearing and easy to get wrong: the wait
@@ -541,7 +753,7 @@ fi
 wait "$lp_extra" 2>/dev/null
 
 # ---------------------------------------------------------------------------
-# 9. Client-facing aliases and request bodies
+# 10. Client-facing aliases and request bodies
 # ---------------------------------------------------------------------------
 direct="$(post /say --data-urlencode "from=$A" --data-urlencode "to=$B" \
   --data-urlencode "subject=direct $RUN" --data-urlencode "body=direct message for $RUN")"
@@ -580,7 +792,7 @@ contains "a JSON body is accepted" "$json_body" "ok posted"
 contains "the JSON body text is stored" "$(get /inbox "id=$B&all=1")" "jsonbody-$RUN"
 
 # ---------------------------------------------------------------------------
-# 10. Structured output
+# 11. Structured output
 # ---------------------------------------------------------------------------
 contains "peers supports json=1" "$(get /peers "json=1")" '"id"'
 contains "peers json carries the run id" "$(get /peers "json=1")" "$A"
@@ -589,7 +801,7 @@ contains "inbox supports json=1" "$(get /inbox "id=$B&all=1&json=1")" '"acked"'
 contains "threads supports json=1" "$(get /threads "repo=$REPO_LIB&json=1")" '"repo"'
 
 # ---------------------------------------------------------------------------
-# 11. Parameter validation
+# 12. Parameter validation
 # ---------------------------------------------------------------------------
 equals "register without id is 400" "$(status_post /register --data-urlencode "node=x")" "400"
 contains "register without id says why" \

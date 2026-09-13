@@ -13,6 +13,7 @@
 // Every response is plain text by default (readable by any model); add ?json=1
 // for structured output.
 
+import CryptoKit
 import Foundation
 import Network
 import SQLite3
@@ -31,6 +32,53 @@ private func nowISO() -> String {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime]
     return f.string(from: Date())
+}
+
+/// Credentials are stored only as a SHA-256 of the secret. The secrets are 192 bits
+/// of randomness, so a fast hash is the right tool — there is nothing to brute
+/// force, and a slow KDF would only make every request expensive.
+private func sha256Hex(_ s: String) -> String {
+    SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+/// A repo key names one repository. Wildcards and whitespace are never valid, and
+/// allowing them would let a namespace pattern be claimed as a literal key.
+private func validRepoKey(_ repo: String) -> Bool {
+    if repo.isEmpty { return false }
+    for bad in ["*", "?", "[", "]", " ", "\t"] where repo.contains(bad) { return false }
+    return true
+}
+
+private func randomHex(_ bytes: Int) -> String {
+    var rng = SystemRandomNumberGenerator()
+    return (0..<bytes).map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &rng)) }.joined()
+}
+
+/// Who is making a request. The shared token stays a bootstrap credential and is
+/// unrestricted; every other credential belongs to one machine and carries the
+/// repo namespaces it may claim.
+struct Principal {
+    var isBootstrap: Bool
+    var tokenId = ""
+    var node = ""
+    var namespaces: [String] = []
+
+    static let bootstrap = Principal(isBootstrap: true)
+
+    /// `*` allows any repo, `host/owner/*` allows a prefix, anything else is exact.
+    static func namespace(_ ns: String, allows repo: String) -> Bool {
+        if ns == "*" { return true }
+        if ns.hasSuffix("/*") { return repo.hasPrefix(String(ns.dropLast())) }
+        return repo == ns
+    }
+
+    func mayClaim(repo: String) -> Bool {
+        isBootstrap || namespaces.contains { Principal.namespace($0, allows: repo) }
+    }
+
+    func mayClaim(node wanted: String) -> Bool {
+        isBootstrap || wanted == node
+    }
 }
 
 // MARK: - SQLite store
@@ -68,6 +116,12 @@ final class Store: @unchecked Sendable {
         // The long-poll path only asks "is there anything unread?", so give that
         // question an index that does not have to scan a long history of read rows.
         exec("CREATE INDEX IF NOT EXISTS idx_del_unread ON deliveries(agent, acked_at);")
+        exec("""
+        CREATE TABLE IF NOT EXISTS tokens (
+          id TEXT PRIMARY KEY, hash TEXT NOT NULL, node TEXT, namespaces TEXT,
+          note TEXT, created_at TEXT, last_used TEXT, revoked_at TEXT);
+        """)
+        exec("CREATE INDEX IF NOT EXISTS idx_tokens_hash ON tokens(hash);")
         exec("CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_id);")
     }
 
@@ -124,6 +178,43 @@ final class Store: @unchecked Sendable {
         rows(sql, binds).first?.values.first ?? ""
     }
 
+    // MARK: credentials
+
+    func tokenByHash(_ hash: String) -> [String: String]? {
+        rows("""
+        SELECT id, node, namespaces, last_used, revoked_at FROM tokens WHERE hash = ? LIMIT 1
+        """, [hash]).first
+    }
+
+    func addToken(id: String, hash: String, node: String, namespaces: String, note: String, at: String) {
+        run("INSERT INTO tokens (id,hash,node,namespaces,note,created_at) VALUES (?,?,?,?,?,?)",
+            [id, hash, node, namespaces, note, at])
+    }
+
+    func tokenExists(_ id: String) -> Bool {
+        !rows("SELECT 1 FROM tokens WHERE id = ? LIMIT 1", [id]).isEmpty
+    }
+
+    func revokeToken(_ id: String, at: String) {
+        run("UPDATE tokens SET revoked_at=? WHERE id=? AND (revoked_at IS NULL OR revoked_at='')", [at, id])
+    }
+
+    func touchToken(_ id: String, at: String) {
+        run("UPDATE tokens SET last_used=? WHERE id=?", [at, id])
+    }
+
+    func tokensListing() -> [[String: String]] {
+        rows("""
+        SELECT id, node, namespaces, note, created_at, last_used, revoked_at
+        FROM tokens ORDER BY created_at, id
+        """)
+    }
+
+    /// nil when the session has never registered.
+    func nodeOf(_ id: String) -> String? {
+        rows("SELECT node FROM agents WHERE id = ? LIMIT 1", [id]).first.map { $0["node"] ?? "" }
+    }
+
     // MARK: domain helpers
 
     func owners(ofRepo repo: String) -> [String] {
@@ -175,6 +266,8 @@ struct Request {
     var path = "/"
     var params: [String: String] = [:]
     var token: String?
+    /// Set when ?token= and Authorization: Bearer disagree.
+    var tokenConflicts = false
 
     func p(_ key: String, _ def: String = "") -> String {
         (params[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? def)
@@ -209,40 +302,89 @@ final class Chatbox: @unchecked Sendable {
 
     // ---------- routing ----------
 
-    /// nil when the request may proceed; otherwise the rejection to send back.
-    func unauthorized(_ req: Request) -> (Int, String)? {
-        if let required = token, required != "open", req.token != required {
-            return (401, "unauthorized: pass ?token= or Authorization: Bearer\n")
+    enum Auth {
+        case ok(Principal)
+        case denied(Int, String)
+    }
+
+    /// Resolve the credential on the request. The shared token remains the
+    /// bootstrap credential; everything else is looked up by hash, so revoking one
+    /// credential takes effect on the very next request with no restart.
+    func authorize(_ req: Request) -> Auth {
+        if req.tokenConflicts {
+            return .denied(400, "error: ?token= and the Authorization header disagree — send one credential\n")
+        }
+        if token == nil || token == "open" { return .ok(.bootstrap) }
+        let presented = req.token ?? ""
+        if !presented.isEmpty, presented == token { return .ok(.bootstrap) }
+        guard !presented.isEmpty else {
+            return .denied(401, "unauthorized: pass ?token= or Authorization: Bearer\n")
+        }
+        guard let row = store.tokenByHash(sha256Hex(presented)) else {
+            return .denied(401, "unauthorized: unknown token\n")
+        }
+        if !(row["revoked_at"] ?? "").isEmpty {
+            return .denied(401, "unauthorized: this credential has been revoked\n")
+        }
+        let id = row["id"] ?? ""
+        let now = nowISO()
+        // Refresh at most once a minute: a write on every request would be wasted.
+        let lastUsed = row["last_used"] ?? ""
+        if lastUsed.isEmpty || String(lastUsed.prefix(16)) != String(now.prefix(16)) {
+            store.touchToken(id, at: now)
+        }
+        let namespaces = (row["namespaces"] ?? "").split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return .ok(Principal(isBootstrap: false, tokenId: id, node: row["node"] ?? "",
+                             namespaces: namespaces))
+    }
+
+    /// A scoped credential may only act as a session registered to its own machine.
+    /// The bootstrap credential is unrestricted, which is what lets credentials be
+    /// handed out one machine at a time without breaking anyone.
+    func mayAct(as id: String, _ who: Principal) -> (Int, String)? {
+        if who.isBootstrap { return nil }
+        guard let node = store.nodeOf(id) else {
+            return (403, "forbidden: that session is not registered — register it first with this machine's credential\n")
+        }
+        guard node == who.node else {
+            return (403, "forbidden: this credential may not act as that session\n")
         }
         return nil
     }
 
     /// Route a parsed request — including the one route that answers later.
     func dispatch(_ req: Request, conn: NWConnection) {
-        if let (status, body) = unauthorized(req) {
+        let who: Principal
+        switch authorize(req) {
+        case .denied(let status, let body):
             finish(req, conn: conn, status: status, body: body)
             return
+        case .ok(let principal):
+            who = principal
         }
         if req.method == "GET", req.path == "/inbox" {
             let wait = waitSeconds(req)
-            if wait > 0 { beginInboxWait(req, seconds: wait, conn: conn); return }
+            if wait > 0 { beginInboxWait(req, who: who, seconds: wait, conn: conn); return }
         }
-        let (status, body) = handle(req)
+        let (status, body) = handle(req, who)
         finish(req, conn: conn, status: status, body: body)
     }
 
-    func handle(_ req: Request) -> (Int, String) {
-        if let rejection = unauthorized(req) { return rejection }
+    func handle(_ req: Request, _ who: Principal) -> (Int, String) {
         switch (req.method, req.path) {
         case ("GET", "/"), ("GET", "/help"): return (200, usage(Self.publicURL))
         case ("GET", "/health"): return (200, health())
-        case ("POST", "/register"): return register(req)
-        case ("POST", "/message"), ("POST", "/say"): return message(req)
-        case ("GET", "/inbox"): return inbox(req)
+        case ("POST", "/register"): return register(req, who)
+        case ("POST", "/message"), ("POST", "/say"): return message(req, who)
+        case ("GET", "/inbox"): return inbox(req, who)
         case ("GET", "/thread"): return showThread(req)
         case ("GET", "/threads"): return listThreads(req)
-        case ("POST", "/ack"): return ack(req)
+        case ("POST", "/ack"): return ack(req, who)
         case ("GET", "/peers"): return peers(req)
+        case ("POST", "/token"): return createToken(req, who)
+        case ("GET", "/token"): return listTokens(req, who)
+        case ("POST", "/token/revoke"): return revokeToken(req, who)
         default: return (404, "not found: \(req.method) \(req.path)\n\n" + usage(Self.publicURL))
         }
     }
@@ -264,6 +406,15 @@ final class Chatbox: @unchecked Sendable {
           peers     GET  /peers                     (who owns what)
           health    GET  /health
 
+        Credentials — issuing is restricted to the bootstrap token:
+          token     POST /token?node=<mac>&namespaces=github.com/acme/*&note=<text>   (secret shown once)
+          tokens    GET  /token                     (list; never shows secrets)
+          revoke    POST /token/revoke?id=<tk-id>   (effective immediately, no restart)
+
+        A scoped credential may only act as a session registered to its own node,
+        and may only claim repos inside its namespaces. It can still send to any
+        repo, which is the point: "whoever owns <repo>, I have a bug to discuss".
+
         Bodies accept JSON or form-encoding, or plain text: curl -d 'text' '\(url)/say?from=x&repo=y'
         Add &json=1 to any GET for structured output. Auth: ?token=<secret> (or Authorization: Bearer).
         """
@@ -276,10 +427,53 @@ final class Chatbox: @unchecked Sendable {
         return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\nnow: \(nowISO())\n"
     }
 
-    func register(_ req: Request) -> (Int, String) {
+    func register(_ req: Request, _ who: Principal) -> (Int, String) {
         let id = req.p("id").isEmpty ? req.p("from") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id required (who you are, e.g. node1-dsh-abc)\n") }
+        let node = req.p("node")
         let repos = req.p("repos").isEmpty ? req.p("repo") : req.p("repos")
+        // What the session will own *after* the upsert. An omitted repos= preserves
+        // the stored value, and that stored value has to be inside this credential's
+        // namespaces too — otherwise a scoped credential could re-register a session
+        // and inherit a claim it was never allowed to make.
+        let kept = store.scalar("SELECT repos FROM agents WHERE id = ?", [id])
+        let effectiveRepos = repos.isEmpty ? kept : repos
+
+        // A repo key is a name, not a pattern. Refusing wildcards here also stops a
+        // namespace pattern such as `acme/*` from matching *itself* and being
+        // claimed as a literal repo key, which would route real mail to it.
+        for claimed in repos.split(separator: ",") {
+            let repo = claimed.trimmingCharacters(in: .whitespaces)
+            if repo.isEmpty { continue }
+            guard validRepoKey(repo) else {
+                return (400, "error: '\(repo)' is not a valid repo key — keys name a repo, they do not contain '*' or '?'\n")
+            }
+        }
+
+        // A scoped credential speaks for one machine: it must name that machine,
+        // must not take over a session that lives elsewhere, and may only claim
+        // repos inside the namespaces it was issued for.
+        if !who.isBootstrap {
+            guard !node.isEmpty else {
+                return (403, "forbidden: node required — a scoped credential must name its own machine\n")
+            }
+            guard who.mayClaim(node: node) else {
+                return (403, "forbidden: this credential may not register for that node\n")
+            }
+            if let existing = store.nodeOf(id), existing != who.node {
+                return (403, "forbidden: this credential may not take over that session\n")
+            }
+            for claimed in effectiveRepos.split(separator: ",") {
+                let repo = claimed.trimmingCharacters(in: .whitespaces)
+                if repo.isEmpty { continue }
+                guard who.mayClaim(repo: repo) else {
+                    return (403, "forbidden: this credential may not claim '\(repo)'"
+                        + (who.namespaces.isEmpty
+                            ? " (it may claim no repos)\n"
+                            : " — allowed: \(who.namespaces.joined(separator: ", "))\n"))
+                }
+            }
+        }
         let ts = nowISO()
         let existing = store.scalar("SELECT id FROM agents WHERE id = ?", [id])
         if existing.isEmpty {
@@ -303,9 +497,10 @@ final class Chatbox: @unchecked Sendable {
         """)
     }
 
-    func message(_ req: Request) -> (Int, String) {
+    func message(_ req: Request, _ who: Principal) -> (Int, String) {
         let from = req.p("from").isEmpty ? req.p("id") : req.p("from")
         guard !from.isEmpty else { return (400, "error: from required\n") }
+        if let rejection = mayAct(as: from, who) { return rejection }
         var body = req.p("body")
         if body.isEmpty { body = req.p("text") }
         if body.isEmpty { body = req.p("message") }
@@ -379,9 +574,10 @@ final class Chatbox: @unchecked Sendable {
         """)
     }
 
-    func inbox(_ req: Request) -> (Int, String) {
+    func inbox(_ req: Request, _ who: Principal) -> (Int, String) {
         let id = req.p("id").isEmpty ? req.p("for") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id required\n") }
+        if let rejection = mayAct(as: id, who) { return rejection }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
         let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
         if rows.isEmpty { return (200, "inbox for \(id): empty\n") }
@@ -417,16 +613,23 @@ final class Chatbox: @unchecked Sendable {
     /// deadline passes. This is what turns the board into a delivery bus: any
     /// agent with a shell can loop on `inbox --wait` and be woken on arrival,
     /// without anything installed in the harness.
-    func beginInboxWait(_ req: Request, seconds: Int, conn: NWConnection) {
+    func beginInboxWait(_ req: Request, who: Principal, seconds: Int, conn: NWConnection) {
         // `dispatch` already checked, but this path answers later and is the only
         // route that does, so it re-checks rather than relying on the caller.
-        if let (status, body) = unauthorized(req) {
+        switch authorize(req) {
+        case .denied(let status, let body):
             finish(req, conn: conn, status: status, body: body)
             return
+        case .ok:
+            break
         }
         let id = req.p("id").isEmpty ? req.p("for") : req.p("id")
         guard !id.isEmpty else {
             finish(req, conn: conn, status: 400, body: "error: id required\n")
+            return
+        }
+        if let rejection = mayAct(as: id, who) {
+            finish(req, conn: conn, status: rejection.0, body: rejection.1)
             return
         }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
@@ -455,6 +658,16 @@ final class Chatbox: @unchecked Sendable {
         // abandonment — see beginInboxWait.
         if case .cancelled = conn.state { return }
         if case .failed = conn.state { return }
+
+        // Re-authorize every tick. A wait can last five minutes, and revoking a
+        // credential has to end it rather than let it keep delivering.
+        switch authorize(req) {
+        case .denied(let status, let body):
+            finish(req, conn: conn, status: status, body: body)
+            return
+        case .ok:
+            break
+        }
 
         // A waiting session is provably alive, so keep last_seen fresh: otherwise a
         // long wait would make a healthy session look stale to the presence rules.
@@ -517,9 +730,10 @@ final class Chatbox: @unchecked Sendable {
         return (200, out)
     }
 
-    func ack(_ req: Request) -> (Int, String) {
+    func ack(_ req: Request, _ who: Principal) -> (Int, String) {
         let id = req.p("id").isEmpty ? req.p("agent") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id required\n") }
+        if let rejection = mayAct(as: id, who) { return rejection }
         var n = 0
         if !req.p("message").isEmpty {
             store.run("UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=?", [nowISO(), id, req.p("message")])
@@ -549,6 +763,77 @@ final class Chatbox: @unchecked Sendable {
             out += "  last seen: \(r["last_seen"] ?? "-")\n"
         }
         return (200, out)
+    }
+
+    // ---------- credentials ----------
+    //
+    // Issuing and revoking lives behind the bootstrap credential. Scoped
+    // credentials are never shown again after creation: only their SHA-256 is kept.
+
+    func createToken(_ req: Request, _ who: Principal) -> (Int, String) {
+        guard who.isBootstrap else {
+            return (403, "forbidden: only the bootstrap credential may issue credentials\n")
+        }
+        let node = req.p("node")
+        guard !node.isEmpty else {
+            return (400, "error: node required (which machine this credential is for)\n")
+        }
+        let namespaces = req.p("namespaces").isEmpty ? req.p("namespace") : req.p("namespaces")
+        let secret = randomHex(24)
+        let id = "tk-" + randomHex(6)
+        store.addToken(id: id, hash: sha256Hex(secret), node: node,
+                       namespaces: namespaces, note: req.p("note"), at: nowISO())
+        return (200, """
+        ok credential issued
+        id: \(id)
+        node: \(node)
+        namespaces: \(namespaces.isEmpty ? "(none — this credential may claim no repos)" : namespaces)
+        secret: \(secret)
+
+        The secret is shown once and never stored — only its SHA-256 is. Put it in
+        that machine's ~/.chatbox as CHATBOX_TOKEN, or pass it as ?token= / Bearer.
+        Revoke it with: POST /token/revoke?id=\(id)
+        """)
+    }
+
+    func listTokens(_ req: Request, _ who: Principal) -> (Int, String) {
+        guard who.isBootstrap else {
+            return (403, "forbidden: only the bootstrap credential may list credentials\n")
+        }
+        let rows = store.tokensListing()
+        if rows.isEmpty { return (200, "no credentials issued\n") }
+        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
+        var out = "credentials — \(rows.count)\n"
+        for r in rows {
+            let revoked = !(r["revoked_at"] ?? "").isEmpty
+            out += "\n\(r["id"] ?? "")  \(revoked ? "REVOKED" : "active")  node: \(r["node"] ?? "-")\n"
+            out += "  namespaces: \((r["namespaces"] ?? "").isEmpty ? "(none)" : r["namespaces"]!)\n"
+            out += "  issued: \(r["created_at"] ?? "-")   last used: \((r["last_used"] ?? "").isEmpty ? "never" : r["last_used"]!)\n"
+            if !(r["note"] ?? "").isEmpty { out += "  note: \(r["note"]!)\n" }
+            if revoked { out += "  revoked: \(r["revoked_at"]!)\n" }
+        }
+        return (200, out)
+    }
+
+    func revokeToken(_ req: Request, _ who: Principal) -> (Int, String) {
+        guard who.isBootstrap else {
+            return (403, "forbidden: only the bootstrap credential may revoke credentials\n")
+        }
+        let id = req.p("id").isEmpty ? req.p("token") : req.p("id")
+        guard !id.isEmpty else {
+            return (400, "error: id required (the credential id, e.g. tk-ab12cd)\n")
+        }
+        guard store.tokenExists(id) else { return (404, "no credential \(id)\n") }
+        let already = store.scalar("SELECT revoked_at FROM tokens WHERE id = ?", [id])
+        if !already.isEmpty {
+            return (200, "ok \(id) was already revoked at \(already)\n")
+        }
+        store.revokeToken(id, at: nowISO())
+        return (200, """
+        ok revoked \(id)
+        Every request presenting it is rejected from now on. Other credentials and
+        the bootstrap credential are untouched, and no restart is needed.
+        """)
     }
 
     private func jsonArray(_ rows: [[String: String]]) -> String {
@@ -605,7 +890,13 @@ final class Chatbox: @unchecked Sendable {
                 req.params["body"] = bodyString.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        if let t = req.params["token"], !t.isEmpty { req.token = t }
+        // A query parameter and a header that disagree is a client bug, and silently
+        // preferring one of them hides it.
+        if let t = req.params["token"], !t.isEmpty, let h = req.token, h != t {
+            req.tokenConflicts = true
+        } else if let t = req.params["token"], !t.isEmpty {
+            req.token = t
+        }
         return req
     }
 
@@ -617,7 +908,7 @@ final class Chatbox: @unchecked Sendable {
     }
 
     func respond(_ conn: NWConnection, status: Int, body: String) {
-        let reason = status == 200 ? "OK" : (status == 400 ? "Bad Request" : (status == 401 ? "Unauthorized" : (status == 404 ? "Not Found" : "Error")))
+        let reason = status == 200 ? "OK" : (status == 400 ? "Bad Request" : (status == 401 ? "Unauthorized" : (status == 403 ? "Forbidden" : (status == 404 ? "Not Found" : "Error"))))
         let payload = Data(body.utf8)
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
         head += "Content-Type: text/plain; charset=utf-8\r\n"
@@ -666,9 +957,18 @@ let tokenFile = argValue("--token-file", "")
 let tokenFromFile: String = {
     guard !tokenFile.isEmpty else { return "" }
     let p = NSString(string: tokenFile).expandingTildeInPath
-    guard let s = try? String(contentsOfFile: p, encoding: .utf8) else { return "" }
+    guard let s = try? String(contentsOfFile: p, encoding: .utf8) else {
+        FileHandle.standardError.write("chatbox: cannot read --token-file \(p)\n".data(using: .utf8)!)
+        exit(1)
+    }
     return s.trimmingCharacters(in: .whitespacesAndNewlines)
 }()
+// A token file that exists but is empty used to mean "no token", which silently
+// started an OPEN board. Refuse instead: open mode must be asked for by name.
+if !tokenFile.isEmpty && tokenFromFile.isEmpty {
+    FileHandle.standardError.write("chatbox: --token-file \(tokenFile) is empty — refusing to start an open board\n".data(using: .utf8)!)
+    exit(1)
+}
 let token = !tokenArg.isEmpty ? tokenArg : (tokenFromFile.isEmpty ? nil : tokenFromFile)
 
 let store = Store(path: dbPath)

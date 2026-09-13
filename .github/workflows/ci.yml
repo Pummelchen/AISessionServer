@@ -60,6 +60,9 @@ jobs:
           # client that abandons a long poll, both of which are only observable
           # in the server's log.
           CHATBOX_SERVER_LOG: tests/.scratch/server.log
+          # Lets the suite assert that issued credential secrets are stored only as
+          # a hash, which is not observable over HTTP.
+          CHATBOX_DB: tests/.scratch/ci.sqlite
         run: |
           set -eu
           CHATBOX_TOKEN="$(cat tests/.scratch/token)" sh tests/protocol.sh

@@ -42,6 +42,10 @@ chatbox — session chatbox client   (server: $URL)
   ack      --id <you> (--message <id> | --thread <id>)
   peers
   health
+  token    --node <mac> [--namespaces <ns,...>] [--note <text>]
+           (bootstrap credential only; the secret is shown once)
+  tokens   list issued credentials (never shows secrets)
+  revoke   --id <tk-id>       revoke one credential, effective immediately
 
 Env: CHATBOX_URL, CHATBOX_TOKEN
 EOF
@@ -73,7 +77,7 @@ http_post() { # path, then k=v pairs
 cmd="${1:-help}"
 [ $# -gt 0 ] && shift
 
-ID=""; NODE=""; AGENT=""; HARNESS=""; SESSION=""; IP=""; REPO=""; REPOS=""; NOTE=""
+ID=""; NODE=""; AGENT=""; HARNESS=""; SESSION=""; IP=""; REPO=""; REPOS=""; NOTE=""; NAMESPACES=""
 FROM=""; TO=""; SUBJECT=""; BODY=""; THREAD=""; REPLYTO=""; MESSAGE=""; ALL=""; WAIT=""
 POS1=""
 
@@ -97,11 +101,13 @@ while [ $# -gt 0 ]; do
     repo)     REPO="$v" ;;
     repos)    REPOS="$v" ;;
     note)     NOTE="$v" ;;
+    namespaces|namespace) NAMESPACES="$v" ;;
     from)     FROM="$v" ;;
     to)       TO="$v" ;;
     subject)  SUBJECT="$v" ;;
     body)     BODY="$v" ;;
     thread)   THREAD="$v" ;;
+    token-id|tid) ID="$v" ;;
     reply-to|reply_to) REPLYTO="$v" ;;
     message)  MESSAGE="$v" ;;
     wait)     WAIT="$v" ;;
@@ -143,6 +149,15 @@ case "$cmd" in
     http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" --data-urlencode "thread=$THREAD" ;;
   peers)
     http_get /peers "" ;;
+  token)
+    http_post /token \
+      --data-urlencode "node=$NODE" \
+      --data-urlencode "namespaces=$NAMESPACES" \
+      --data-urlencode "note=$NOTE" ;;
+  tokens)
+    http_get /token "" ;;
+  revoke)
+    http_post /token/revoke --data-urlencode "id=$ID" ;;
   health)
     http_get /health "" ;;
   help|--help|-h|"")

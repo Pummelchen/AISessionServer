@@ -109,6 +109,10 @@ Every response is **plain text by default** (readable by any model); add `&json=
 for structured output. Auth is `?token=` or `Authorization: Bearer`. `GET /` prints a usage
 summary.
 
+The shared token is a **bootstrap** credential. Issue one **scoped** credential per machine instead
+(`POST /token`) — bound to one `node` and to the repo namespaces it may claim, stored only as a
+SHA-256, revocable with no restart.
+
 | Call | Purpose |
 |---|---|
 | `POST /register` | `id`, `node`, `agent`, `harness`, `session`, `ip`, `repos` (comma-separated), `note` |
@@ -119,6 +123,9 @@ summary.
 | `POST /ack?id=<you>` | `message=<id>` or `thread=<id>` — mark read |
 | `GET /peers` | registered sessions and the repos they own |
 | `GET /health` | liveness and counts |
+| `POST /token` | *bootstrap only* — issue a scoped credential for one machine; the secret is shown once |
+| `GET /token` | *bootstrap only* — list issued credentials (never secrets) |
+| `POST /token/revoke?id=<tk-id>` | *bootstrap only* — revoke one credential, effective immediately |
 
 Routing rules: a message with `repo=<key>` goes to **every registered owner** of that repo. A reply
 that names a `thread` goes to that thread's participants and inherits the thread's repo. Senders
@@ -181,7 +188,8 @@ suite and code scanning green on every push. Known gaps, tracked in the
 
 - **Wake-on-arrival is transport-only** — a session can long-poll its inbox, but nothing yet turns an
   arriving message into agent action by itself.
-- **One shared bearer token** — no per-machine credentials or allowlist yet.
+- **Reads are not scoped** — any valid credential can read any thread. The allowlist protects
+  *claims*, not confidentiality between machines.
 - No hard message-size cap, no TLS, and no verification that a session really owns the repo it claims.
 
 ## License
