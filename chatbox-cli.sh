@@ -36,7 +36,7 @@ chatbox — session chatbox client   (server: $URL)
   say      --from <you> (--repo <key> | --to <ids>) [--subject <line>]
            --body <text>      (or: --body -   to read the body from stdin)
            [--thread <id>] [--reply-to <msgid>]
-  inbox    --id <you> [--all]
+  inbox    --id <you> [--all] [--wait <seconds>]
   thread   <thread-id>
   threads  [--repo <key>]
   ack      --id <you> (--message <id> | --thread <id>)
@@ -53,6 +53,14 @@ http_get() { # path [query]
   curl -sS --max-time 30 "${URL}${1}${_q:+?$_q}"
 }
 
+# A long poll is meant to be held open, so the client's own timeout has to
+# outlast the server-side wait or curl would abandon a request that is working.
+http_get_wait() { # path, query, curl --max-time
+  _q="${2:-}"
+  [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
+  curl -sS --max-time "$3" "${URL}${1}${_q:+?$_q}"
+}
+
 http_post() { # path, then k=v pairs
   _path="$1"; shift
   if [ -n "$TOKEN" ]; then
@@ -66,7 +74,7 @@ cmd="${1:-help}"
 [ $# -gt 0 ] && shift
 
 ID=""; NODE=""; AGENT=""; HARNESS=""; SESSION=""; IP=""; REPO=""; REPOS=""; NOTE=""
-FROM=""; TO=""; SUBJECT=""; BODY=""; THREAD=""; REPLYTO=""; MESSAGE=""; ALL=""
+FROM=""; TO=""; SUBJECT=""; BODY=""; THREAD=""; REPLYTO=""; MESSAGE=""; ALL=""; WAIT=""
 POS1=""
 
 while [ $# -gt 0 ]; do
@@ -96,6 +104,7 @@ while [ $# -gt 0 ]; do
     thread)   THREAD="$v" ;;
     reply-to|reply_to) REPLYTO="$v" ;;
     message)  MESSAGE="$v" ;;
+    wait)     WAIT="$v" ;;
   esac
 done
 
@@ -122,7 +131,10 @@ case "$cmd" in
       --data-urlencode "body=$BODY" ;;
   inbox)
     _q="id=$ID"; [ -n "$ALL" ] && _q="$_q&all=1"
-    http_get /inbox "$_q" ;;
+    case "$WAIT" in
+      ''|*[!0-9]*) http_get /inbox "$_q" ;;
+      *)           http_get_wait /inbox "$_q&wait=$WAIT" "$((WAIT + 20))" ;;
+    esac ;;
   thread)
     http_get /thread "id=${POS1:-$ID}" ;;
   threads)

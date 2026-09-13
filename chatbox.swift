@@ -19,6 +19,14 @@ import SQLite3
 
 private let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+// Long-poll tuning. A held inbox request is served by re-checking on this
+// interval rather than by blocking, so a waiter never occupies the server's
+// serial queue and every other request is answered normally while it waits.
+private let longPollInterval: TimeInterval = 0.25
+private let maxWaitSeconds = 300
+/// How often a held waiter refreshes `last_seen` (see the presence rules).
+private let longPollTouchInterval: TimeInterval = 60
+
 private func nowISO() -> String {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime]
@@ -57,6 +65,9 @@ final class Store: @unchecked Sendable {
           PRIMARY KEY (message_id, agent));
         """)
         exec("CREATE INDEX IF NOT EXISTS idx_del ON deliveries(agent);")
+        // The long-poll path only asks "is there anything unread?", so give that
+        // question an index that does not have to scan a long history of read rows.
+        exec("CREATE INDEX IF NOT EXISTS idx_del_unread ON deliveries(agent, acked_at);")
         exec("CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_id);")
     }
 
@@ -127,6 +138,16 @@ final class Store: @unchecked Sendable {
         rows("SELECT id, node, agent, harness, session, ip, repos, note, registered_at, last_seen FROM agents ORDER BY id")
     }
 
+    /// Cheap "is there anything unread?" for the long-poll path — one indexed
+    /// lookup instead of the full inbox join, which is what makes a waiter cheap
+    /// even when the session has a long history of already-read mail.
+    func hasUnread(forAgent agent: String) -> Bool {
+        !rows("""
+        SELECT 1 FROM deliveries
+        WHERE agent = ? AND (acked_at IS NULL OR acked_at = '') LIMIT 1
+        """, [agent]).isEmpty
+    }
+
     func deliveries(forAgent agent: String, includeAcked: Bool) -> [[String: String]] {
         let sql = """
         SELECT m.id AS id, m.thread_id AS thread, m.created_at AS at, m.sender AS sender,
@@ -188,10 +209,30 @@ final class Chatbox: @unchecked Sendable {
 
     // ---------- routing ----------
 
-    func handle(_ req: Request) -> (Int, String) {
-        if let required = token, required != "open" {
-            if req.token != required { return (401, "unauthorized: pass ?token= or Authorization: Bearer\n") }
+    /// nil when the request may proceed; otherwise the rejection to send back.
+    func unauthorized(_ req: Request) -> (Int, String)? {
+        if let required = token, required != "open", req.token != required {
+            return (401, "unauthorized: pass ?token= or Authorization: Bearer\n")
         }
+        return nil
+    }
+
+    /// Route a parsed request — including the one route that answers later.
+    func dispatch(_ req: Request, conn: NWConnection) {
+        if let (status, body) = unauthorized(req) {
+            finish(req, conn: conn, status: status, body: body)
+            return
+        }
+        if req.method == "GET", req.path == "/inbox" {
+            let wait = waitSeconds(req)
+            if wait > 0 { beginInboxWait(req, seconds: wait, conn: conn); return }
+        }
+        let (status, body) = handle(req)
+        finish(req, conn: conn, status: status, body: body)
+    }
+
+    func handle(_ req: Request) -> (Int, String) {
+        if let rejection = unauthorized(req) { return rejection }
         switch (req.method, req.path) {
         case ("GET", "/"), ("GET", "/help"): return (200, usage(Self.publicURL))
         case ("GET", "/health"): return (200, health())
@@ -217,6 +258,7 @@ final class Chatbox: @unchecked Sendable {
           say       POST /message?from=<you>&repo=<repo-key>&subject=<line>&body=<text>
           reply     POST /message?from=<you>&thread=<id>&body=<text>
           inbox     GET  /inbox?id=<you>            (add &all=1 to include read)
+                    add &wait=<seconds> to hold until a message arrives (max 300; empty body on timeout)
           read      GET  /thread?id=<thread-id>
           ack       POST /ack?id=<you>&message=<message-id>
           peers     GET  /peers                     (who owns what)
@@ -341,10 +383,14 @@ final class Chatbox: @unchecked Sendable {
         let id = req.p("id").isEmpty ? req.p("for") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id required\n") }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
-        let all = !req.p("all").isEmpty
-        let rows = store.deliveries(forAgent: id, includeAcked: all)
+        let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
         if rows.isEmpty { return (200, "inbox for \(id): empty\n") }
-        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
+        return (200, renderInbox(req, id: id, rows: rows))
+    }
+
+    func renderInbox(_ req: Request, id: String, rows: [[String: String]]) -> String {
+        if !req.p("json").isEmpty { return jsonArray(rows) }
+        let all = !req.p("all").isEmpty
         var out = "inbox for \(id) — \(rows.count) message(s)\(all ? " (including read)" : " unread")\n"
         for r in rows {
             let unread = (r["acked"] ?? "").isEmpty
@@ -355,7 +401,86 @@ final class Chatbox: @unchecked Sendable {
             out += "  body: \(b.count > 1200 ? String(b.prefix(1200)) + " …[truncated]" : b)\n"
         }
         out += "\nread a thread: GET /thread?id=<thread>   ·   mark read: POST /ack?id=\(id)&message=<id>\n"
-        return (200, out)
+        return out
+    }
+
+    // ---------- long-poll inbox ----------
+
+    /// `wait=<seconds>` — 0 when absent, zero, negative or unparseable. Capped so
+    /// a client cannot pin a connection open indefinitely.
+    func waitSeconds(_ req: Request) -> Int {
+        guard let raw = Int(req.p("wait")), raw > 0 else { return 0 }
+        return min(raw, maxWaitSeconds)
+    }
+
+    /// Hold the request open until the session has something to read, or until the
+    /// deadline passes. This is what turns the board into a delivery bus: any
+    /// agent with a shell can loop on `inbox --wait` and be woken on arrival,
+    /// without anything installed in the harness.
+    func beginInboxWait(_ req: Request, seconds: Int, conn: NWConnection) {
+        // `dispatch` already checked, but this path answers later and is the only
+        // route that does, so it re-checks rather than relying on the caller.
+        if let (status, body) = unauthorized(req) {
+            finish(req, conn: conn, status: status, body: body)
+            return
+        }
+        let id = req.p("id").isEmpty ? req.p("for") : req.p("id")
+        guard !id.isEmpty else {
+            finish(req, conn: conn, status: 400, body: "error: id required\n")
+            return
+        }
+        store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
+        // The request has already been read, so anything that happens on this
+        // socket now means the peer is going away. An *unclean* close releases the
+        // waiter immediately. A clean EOF deliberately does not: a client is
+        // entitled to half-close its write side and still wait for the answer, and
+        // cancelling on EOF would silently deny it one. Either way the deadline
+        // bounds how long an abandoned waiter lives.
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, error in
+            if error != nil { conn.cancel() }
+        }
+        FileHandle.standardError.write(
+            "chatbox: GET /inbox waiting up to \(seconds)s for \(id)\n".data(using: .utf8)!)
+        let now = Date()
+        pollInbox(req, id: id, deadline: now.addingTimeInterval(TimeInterval(seconds)),
+                  nextTouch: now.addingTimeInterval(longPollTouchInterval), conn: conn)
+    }
+
+    /// Re-check on a timer until there is something to report or the deadline
+    /// passes. Deliberately *not* a blocking wait: the re-check is scheduled, so
+    /// the serial queue stays free and other requests are answered normally.
+    private func pollInbox(_ req: Request, id: String, deadline: Date, nextTouch: Date,
+                           conn: NWConnection) {
+        // The client may have given up. A clean end-of-stream is *not* treated as
+        // abandonment — see beginInboxWait.
+        if case .cancelled = conn.state { return }
+        if case .failed = conn.state { return }
+
+        // A waiting session is provably alive, so keep last_seen fresh: otherwise a
+        // long wait would make a healthy session look stale to the presence rules.
+        var touch = nextTouch
+        if Date() >= nextTouch {
+            store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
+            touch = Date().addingTimeInterval(longPollTouchInterval)
+        }
+
+        // Wait for something *unread*. `all=1` widens the payload once there is
+        // something to report; it must not itself satisfy the wait, or a session
+        // with read history would return instantly for ever and a wake loop would
+        // spin with no backoff.
+        if store.hasUnread(forAgent: id) {
+            let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+            finish(req, conn: conn, status: 200, body: renderInbox(req, id: id, rows: rows))
+            return
+        }
+        if Date() >= deadline {
+            // A timeout is not an error: an empty body means "nothing arrived".
+            finish(req, conn: conn, status: 200, body: "")
+            return
+        }
+        queue.asyncAfter(deadline: .now() + longPollInterval) {
+            self.pollInbox(req, id: id, deadline: deadline, nextTouch: touch, conn: conn)
+        }
     }
 
     func showThread(_ req: Request) -> (Int, String) {
@@ -484,6 +609,13 @@ final class Chatbox: @unchecked Sendable {
         return req
     }
 
+    /// Log the outcome and answer. Every route ends here exactly once, whether it
+    /// was answered inline or after a long-poll wait.
+    func finish(_ req: Request, conn: NWConnection, status: Int, body: String) {
+        FileHandle.standardError.write("chatbox: \(req.method) \(req.path) -> \(status)\n".data(using: .utf8)!)
+        respond(conn, status: status, body: body)
+    }
+
     func respond(_ conn: NWConnection, status: Int, body: String) {
         let reason = status == 200 ? "OK" : (status == 400 ? "Bad Request" : (status == 401 ? "Unauthorized" : (status == 404 ? "Not Found" : "Error")))
         let payload = Data(body.utf8)
@@ -509,9 +641,7 @@ final class Chatbox: @unchecked Sendable {
             var buf = buffer
             if let d = data { buf.append(d) }
             if let req = self.parse(buf) {
-                let (status, body) = self.handle(req)
-                FileHandle.standardError.write("chatbox: \(req.method) \(req.path) -> \(status)\n".data(using: .utf8)!)
-                self.respond(conn, status: status, body: body)
+                self.dispatch(req, conn: conn)
                 return
             }
             if error != nil || isComplete || buf.count > 4_000_000 { conn.cancel(); return }

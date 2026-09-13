@@ -22,6 +22,11 @@
 # empty response, or on a response produced by a different code path is a bug in
 # the test. Each mutation of chatbox.swift that this suite claims to catch must
 # turn it red.
+#
+# Deliberately NOT covered, because curl cannot express them and both were
+# reviewed by hand: whether the server closes the socket after responding, and how
+# it treats a client that half-closes its write side and keeps reading. The second
+# is why the long-poll path does not treat a clean end-of-stream as abandonment.
 
 set -u
 
@@ -49,6 +54,9 @@ B="it-$RUN-lib"
 C="it-$RUN-second-owner"
 D="it-$RUN-multi"
 E="it-$RUN-single"
+W="it-$RUN-waiter"
+W2="it-$RUN-waiter-idle"
+W3="it-$RUN-waiter-read-only"
 REPO_APP="example.test/$RUN/app"
 REPO_LIB="example.test/$RUN/lib"
 REPO_NONE="example.test/$RUN/nobody"
@@ -112,6 +120,11 @@ get() { # path [query]
   curl -sS --max-time 20 "${URL}${1}${_q:+?$_q}"
 }
 
+url_for() { # path [query] -> a full URL, for checks that need curl's -w
+  _q="$(qs "${2:-}")"
+  printf '%s%s%s' "$URL" "$1" "${_q:+?$_q}"
+}
+
 code_of() { # path [query] -> HTTP status
   _q="$(qs "${2:-}")"
   curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "${URL}${1}${_q:+?$_q}"
@@ -147,6 +160,11 @@ bearer_post() { # path, then curl data args -> uses the header, not ?token=
 field() { # response, key -> first matching "key: value"
   printf '%s' "$1" | sed -n "s/^$2: //p" | head -n 1
 }
+
+# Scratch space for the checks that have to run something in the background.
+SCRATCH="${CHATBOX_SCRATCH:-$(dirname "$0")/.scratch}"
+mkdir -p "$SCRATCH" 2>/dev/null || SCRATCH="."
+CLI="$(dirname "$0")/../chatbox-cli.sh"
 
 printf 'chatbox protocol tests\n  server: %s\n  run:    %s\n\n' "$URL" "$RUN"
 
@@ -200,6 +218,11 @@ if [ "$auth_open" = 0 ]; then
     "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/peers?token=not-the-token")" "401"
   equals "an unauthenticated write is rejected" \
     "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST "$URL/message?from=x&body=y")" "401"
+  # The long-poll route answers later than the others, so it gets its own check.
+  equals "an unauthenticated long poll is rejected" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/inbox?id=$A&wait=1")" "401"
+  equals "a long poll with a wrong token is rejected" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/inbox?id=$A&wait=1&token=not-the-token")" "401"
 fi
 
 # ---------------------------------------------------------------------------
@@ -378,7 +401,147 @@ lacks "the thread is now read for that participant" "$(get /inbox "id=$A")" "rep
 contains "the thread is still there with all=1" "$(get /inbox "id=$A&all=1")" "reply for $RUN"
 
 # ---------------------------------------------------------------------------
-# 8. Client-facing aliases and request bodies
+# 8. Long-poll inbox (wait=)
+# The DoD: a waiter is woken by an arriving message within about a second, a
+# timeout is an empty body rather than an error, and a held waiter does not block
+# anyone else. Two further rules are load-bearing and easy to get wrong: the wait
+# must not be made vacuous by `all=1`, and it is an authenticated route like any
+# other.
+# ---------------------------------------------------------------------------
+post /register --data-urlencode "id=$W" --data-urlencode "node=node-w" \
+  --data-urlencode "agent=dsh" --data-urlencode "repos=example.test/$RUN/wait" >/dev/null
+post /register --data-urlencode "id=$W2" --data-urlencode "node=node-w" \
+  --data-urlencode "agent=dsh" >/dev/null
+post /register --data-urlencode "id=$W3" --data-urlencode "node=node-w" \
+  --data-urlencode "agent=dsh" >/dev/null
+
+lp_out="$SCRATCH/longpoll.out"
+
+# A timeout is 200 with zero bytes, and it happens when it was asked to. Status,
+# size and elapsed are measured from the same request, so an empty body cannot be
+# a curl failure in disguise.
+t0=$(date +%s)
+lp_meta="$(curl -sS -o "$lp_out" -w '%{http_code} %{size_download}' --max-time 30 \
+  "$(url_for /inbox "id=$W&wait=2")")"
+lp_elapsed=$(( $(date +%s) - t0 ))
+equals "a timed-out long poll is 200 with an empty body" "$lp_meta" "200 0"
+if [ "$lp_elapsed" -ge 2 ] && [ "$lp_elapsed" -le 5 ]; then
+  ok "a long poll waits about as long as it was asked to"
+else
+  no "a long poll waits about as long as it was asked to" "wait=2 returned after ${lp_elapsed}s"
+fi
+
+# json=1 is not an exception: an empty body, not `[]`.
+lp_json="$(curl -sS -o "$lp_out" -w '%{http_code} %{size_download}' --max-time 30 \
+  "$(url_for /inbox "id=$W&wait=1&json=1")")"
+equals "a timed-out json long poll is 200 with an empty body" "$lp_json" "200 0"
+
+# Hold two waiters and prove the board is still quick: a two-second budget is
+# enormous for a loopback health check, and a stalled queue cannot meet it.
+: > "$lp_out"
+( curl -sS --max-time 30 -o "$lp_out" -w '%{time_total}' \
+    "$(url_for /inbox "id=$W&wait=20")" > "$SCRATCH/lp.time" 2>/dev/null ) &
+lp_pid=$!
+( curl -sS --max-time 30 "$(url_for /inbox "id=$W2&wait=4")" > /dev/null 2>&1 ) &
+lp_extra=$!
+sleep 1
+contains "the board answers while waiters are held" \
+  "$(curl -sS --max-time 2 "$(url_for /health)" 2>/dev/null)" "ok chatbox up"
+post /message --data-urlencode "from=$A" --data-urlencode "to=$W" \
+  --data-urlencode "body=wake-$RUN" >/dev/null
+wait "$lp_pid" 2>/dev/null
+# The waiter was posted to one second into a 20s wait, so its own total time is
+# about one second plus one poll interval. curl reports that with sub-second
+# precision, which a `date +%s` difference cannot: a three-second interval hides
+# behind whole-second rounding.
+lp_total="$(cat "$SCRATCH/lp.time" 2>/dev/null)"
+contains "a held waiter wakes when a message arrives" "$(cat "$lp_out")" "wake-$RUN"
+if [ -n "$lp_total" ] && awk "BEGIN{exit !($lp_total < 2.5)}"; then
+  ok "a waiter wakes within about a second of arriving mail"
+else
+  no "a waiter wakes within about a second of arriving mail" \
+     "waiter held ${lp_total:-?}s of a 20s wait"
+fi
+
+# Mail already waiting means no wait at all.
+t0=$(date +%s)
+lp_now="$(get /inbox "id=$W&wait=5")"
+lp_elapsed=$(( $(date +%s) - t0 ))
+contains "a waiter with mail already waiting returns it" "$lp_now" "wake-$RUN"
+if [ "$lp_elapsed" -le 2 ]; then
+  ok "a waiter with mail already waiting returns at once"
+else
+  no "a waiter with mail already waiting returns at once" "took ${lp_elapsed}s"
+fi
+
+# A long poll reports; it must not acknowledge. A wake loop that consumed what it
+# returned would lose those messages for the session that owns them.
+contains "a long poll does not acknowledge what it returns" "$(get /inbox "id=$W")" "wake-$RUN"
+lacks "a long poll leaves the message unread" "$(get /inbox "id=$W")" " read  "
+
+# `all=1` widens the payload; it must not make the wait vacuous. W3's only mail is
+# read, so a waiter there has to sit out its timeout instead of spinning.
+sent3="$(post /message --data-urlencode "from=$A" --data-urlencode "to=$W3" \
+  --data-urlencode "body=read-only-$RUN")"
+post /ack --data-urlencode "id=$W3" --data-urlencode "message=$(field "$sent3" message)" >/dev/null
+lacks "the read-only session has no unread mail" "$(get /inbox "id=$W3")" "read-only-$RUN"
+contains "all=1 still returns read mail when not waiting" "$(get /inbox "id=$W3&all=1")" "read-only-$RUN"
+
+t0=$(date +%s)
+lp_all="$(curl -sS -o "$lp_out" -w '%{http_code} %{size_download}' --max-time 30 \
+  "$(url_for /inbox "id=$W3&all=1&wait=2")")"
+lp_elapsed=$(( $(date +%s) - t0 ))
+equals "all=1 with only read mail still times out empty" "$lp_all" "200 0"
+if [ "$lp_elapsed" -ge 2 ]; then
+  ok "all=1 does not turn the wait into a spin"
+else
+  no "all=1 does not turn the wait into a spin" "returned after ${lp_elapsed}s with only read mail"
+fi
+contains "all=1 with unread mail returns at once" "$(get /inbox "id=$W&all=1&wait=5")" "wake-$RUN"
+
+# The wait cap is a resource bound, and its only observable is the server's own log
+# line, so this runs when the caller says where that log is (CI sets
+# CHATBOX_SERVER_LOG). It also exercises the abandoned-waiter path: curl gives up
+# after 2s while the server is still holding a 300s wait.
+if [ -n "${CHATBOX_SERVER_LOG:-}" ] && [ -f "$CHATBOX_SERVER_LOG" ]; then
+  cap_before=$(wc -c < "$CHATBOX_SERVER_LOG")
+  ( curl -sS --max-time 2 "$(url_for /inbox "id=$W2&wait=99999")" > /dev/null 2>&1 ) &
+  cap_pid=$!
+  sleep 1
+  cap_tail="$(tail -c +$((cap_before + 1)) "$CHATBOX_SERVER_LOG")"
+  contains "an oversized wait is clamped to the cap" "$cap_tail" "waiting up to 300s"
+  wait "$cap_pid" 2>/dev/null
+else
+  printf '  skip  oversized-wait clamp (set CHATBOX_SERVER_LOG to pin it)\n'
+fi
+
+# The shipped client must forward the parameter, and honour the value it was given.
+if [ -f "$CLI" ]; then
+  contains "the shipped client reports health" \
+    "$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" sh "$CLI" health 2>&1)" \
+    "ok chatbox up"
+  t0=$(date +%s)
+  cli_wait="$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+    sh "$CLI" inbox --id "$W2" --wait 2 2>&1)"
+  cli_elapsed=$(( $(date +%s) - t0 ))
+  equals "the client's inbox --wait times out quietly" "$cli_wait" ""
+  if [ "$cli_elapsed" -ge 2 ]; then
+    ok "the client forwards the wait it was given"
+  else
+    no "the client forwards the wait it was given" "returned after ${cli_elapsed}s"
+  fi
+  contains "the client's inbox --wait returns arriving mail" \
+    "$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+       sh "$CLI" inbox --id "$W" --wait 5 2>&1)" "wake-$RUN"
+else
+  no "the shipped client is present for the client checks" "not found at $CLI"
+fi
+
+# W2's short waiter is bounded by its own 4s deadline; by now it is long finished.
+wait "$lp_extra" 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# 9. Client-facing aliases and request bodies
 # ---------------------------------------------------------------------------
 direct="$(post /say --data-urlencode "from=$A" --data-urlencode "to=$B" \
   --data-urlencode "subject=direct $RUN" --data-urlencode "body=direct message for $RUN")"
@@ -417,7 +580,7 @@ contains "a JSON body is accepted" "$json_body" "ok posted"
 contains "the JSON body text is stored" "$(get /inbox "id=$B&all=1")" "jsonbody-$RUN"
 
 # ---------------------------------------------------------------------------
-# 9. Structured output
+# 10. Structured output
 # ---------------------------------------------------------------------------
 contains "peers supports json=1" "$(get /peers "json=1")" '"id"'
 contains "peers json carries the run id" "$(get /peers "json=1")" "$A"
@@ -426,7 +589,7 @@ contains "inbox supports json=1" "$(get /inbox "id=$B&all=1&json=1")" '"acked"'
 contains "threads supports json=1" "$(get /threads "repo=$REPO_LIB&json=1")" '"repo"'
 
 # ---------------------------------------------------------------------------
-# 10. Parameter validation
+# 11. Parameter validation
 # ---------------------------------------------------------------------------
 equals "register without id is 400" "$(status_post /register --data-urlencode "node=x")" "400"
 contains "register without id says why" \

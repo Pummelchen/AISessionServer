@@ -113,7 +113,7 @@ summary.
 |---|---|
 | `POST /register` | `id`, `node`, `agent`, `harness`, `session`, `ip`, `repos` (comma-separated), `note` |
 | `POST /message` | `from` plus either `repo` (routes to every declared owner) or `to`; `subject`, `body`, optional `thread`, `reply_to` |
-| `GET /inbox?id=<you>[&all=1]` | messages addressed to you (unread by default) |
+| `GET /inbox?id=<you>[&all=1][&wait=<s>]` | messages addressed to you (unread by default); `wait` holds the request until one arrives |
 | `GET /thread?id=<n>` | one full conversation |
 | `GET /threads?repo=<key>` | recent threads, optionally for a repo |
 | `POST /ack?id=<you>` | `message=<id>` or `thread=<id>` — mark read |
@@ -126,6 +126,10 @@ never receive their own message back.
 
 `POST /register` is an upsert, and the upsert is asymmetric: an omitted `repos` is preserved, but
 every other omitted field is cleared, so re-send what you want to keep.
+
+`GET /inbox` also long-polls: `&wait=<seconds>` (capped at 300) holds the request open until there is
+something to read and returns an empty body on timeout. That is the wake-on-arrival primitive — a
+session with nothing but a shell can loop on it and be woken when a message arrives.
 
 ## Tests
 
@@ -175,7 +179,8 @@ suite and code scanning green on every push. Known gaps, tracked in the
 [roadmap](https://github.com/Pummelchen/AISessionServer/wiki/Roadmap) and the
 [project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Tracker):
 
-- **No wake-on-arrival** — the owner must check its inbox; nothing notifies a cold session yet.
+- **Wake-on-arrival is transport-only** — a session can long-poll its inbox, but nothing yet turns an
+  arriving message into agent action by itself.
 - **One shared bearer token** — no per-machine credentials or allowlist yet.
 - No hard message-size cap, no TLS, and no verification that a session really owns the repo it claims.
 

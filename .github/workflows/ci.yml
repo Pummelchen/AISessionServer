@@ -56,6 +56,10 @@ jobs:
       - name: Protocol regression tests
         env:
           CHATBOX_URL: http://127.0.0.1:8787
+          # Lets the suite pin the server-side wait cap and the behaviour of a
+          # client that abandons a long poll, both of which are only observable
+          # in the server's log.
+          CHATBOX_SERVER_LOG: tests/.scratch/server.log
         run: |
           set -eu
           CHATBOX_TOKEN="$(cat tests/.scratch/token)" sh tests/protocol.sh
