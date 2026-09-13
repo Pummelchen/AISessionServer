@@ -43,6 +43,12 @@ private func sha256Hex(_ s: String) -> String {
 
 /// A repo key names one repository. Wildcards and whitespace are never valid, and
 /// allowing them would let a namespace pattern be claimed as a literal key.
+/// Loopback traffic never leaves the machine, so a secret on it is not exposed to
+/// the network. Everything else is only as private as the transport.
+private func isLoopback(_ host: String) -> Bool {
+    host.hasPrefix("127.") || host == "::1" || host.hasPrefix("[::1]") || host == "localhost"
+}
+
 private func validRepoKey(_ repo: String) -> Bool {
     if repo.isEmpty { return false }
     for bad in ["*", "?", "[", "]", " ", "\t"] where repo.contains(bad) { return false }
@@ -268,6 +274,9 @@ struct Request {
     var token: String?
     /// Set when ?token= and Authorization: Bearer disagree.
     var tokenConflicts = false
+    /// The peer address, when the server could determine it. Used to warn when a
+    /// freshly issued secret crosses a network in the clear.
+    var peer = ""
 
     func p(_ key: String, _ def: String = "") -> String {
         (params[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? def)
@@ -363,6 +372,8 @@ final class Chatbox: @unchecked Sendable {
         case .ok(let principal):
             who = principal
         }
+        var req = req
+        if case let .hostPort(host, _) = conn.endpoint { req.peer = "\(host)" }
         if req.method == "GET", req.path == "/inbox" {
             let wait = waitSeconds(req)
             if wait > 0 { beginInboxWait(req, who: who, seconds: wait, conn: conn); return }
@@ -783,13 +794,22 @@ final class Chatbox: @unchecked Sendable {
         let id = "tk-" + randomHex(6)
         store.addToken(id: id, hash: sha256Hex(secret), node: node,
                        namespaces: namespaces, note: req.p("note"), at: nowISO())
+        // CodeQL flags this response as cleartext transmission of sensitive data,
+        // and it is right: the secret travels in the body. Loopback never leaves the
+        // machine, but anything else is only as private as the transport, so say so
+        // rather than let an operator assume otherwise.
+        let exposure = req.peer.isEmpty || isLoopback(req.peer)
+            ? ""
+            : "\nwarning: this was issued over a non-loopback connection (\(req.peer)) with no TLS\n"
+              + "         so the secret above crossed the network in the clear. Prefer issuing\n"
+              + "         from the server itself, or put TLS in front of it (tracked as TRK-07).\n"
         return (200, """
         ok credential issued
         id: \(id)
         node: \(node)
         namespaces: \(namespaces.isEmpty ? "(none — this credential may claim no repos)" : namespaces)
         secret: \(secret)
-
+        \(exposure)
         The secret is shown once and never stored — only its SHA-256 is. Put it in
         that machine's ~/.chatbox as CHATBOX_TOKEN, or pass it as ?token= / Bearer.
         Revoke it with: POST /token/revoke?id=\(id)

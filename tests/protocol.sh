@@ -294,6 +294,23 @@ fi
 # The secret is shown once. Nothing that lists credentials may repeat it.
 listing="$(get /token)"
 contains "the listing shows the credential id" "$listing" "$ID2"
+# A secret issued over loopback never leaves the machine, so there is nothing to
+# warn about there. Off loopback it crosses the network in the clear and the
+# response has to say so rather than let an operator assume otherwise.
+lacks "issuing over loopback does not warn about cleartext" "$issued2" "non-loopback"
+LANIP="$(ifconfig 2>/dev/null | awk '/inet /{print $2}' | grep -v '^127\.' | head -1)"
+LANPORT="$(printf '%s' "$URL" | sed -n 's|.*:\([0-9][0-9]*\)$|\1|p')"
+if [ -n "$LANIP" ] && [ -n "$LANPORT" ]; then
+  lan_issue="$(curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+    "http://$LANIP:$LANPORT/token" --data-urlencode "node=node-lan" 2>/dev/null)"
+  if [ -n "$lan_issue" ]; then
+    contains "issuing a secret off loopback warns about cleartext" "$lan_issue" "non-loopback"
+  else
+    printf '  skip  cleartext warning (server unreachable off loopback)\n'
+  fi
+else
+  printf '  skip  cleartext warning (no non-loopback address found)\n'
+fi
 contains "the listing shows the machine it belongs to" "$listing" "node-cred2"
 lacks "the listing never repeats a secret" "$listing" "$TOK2"
 lacks "the json listing never repeats a secret" "$(get /token "json=1")" "$TOK3"
