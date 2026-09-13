@@ -201,6 +201,13 @@ final class Store: @unchecked Sendable {
         !rows("SELECT 1 FROM tokens WHERE id = ? LIMIT 1", [id]).isEmpty
     }
 
+    func unreadCount(forAgent agent: String) -> Int {
+        Int(scalar("""
+        SELECT COUNT(*) FROM deliveries
+        WHERE agent = ? AND (acked_at IS NULL OR acked_at = '')
+        """, [agent])) ?? 0
+    }
+
     func revokeToken(_ id: String, at: String) {
         run("UPDATE tokens SET revoked_at=? WHERE id=? AND (revoked_at IS NULL OR revoked_at='')", [at, id])
     }
@@ -413,7 +420,7 @@ final class Chatbox: @unchecked Sendable {
           inbox     GET  /inbox?id=<you>            (add &all=1 to include read)
                     add &wait=<seconds> to hold until a message arrives (max 300; empty body on timeout)
           read      GET  /thread?id=<thread-id>
-          ack       POST /ack?id=<you>&message=<message-id>
+          ack       POST /ack?id=<you>&message=<message-id>   (or &thread=<id>, or &all=1 for everything unread)
           peers     GET  /peers                     (who owns what)
           health    GET  /health
 
@@ -749,6 +756,11 @@ final class Chatbox: @unchecked Sendable {
         if !req.p("message").isEmpty {
             store.run("UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=?", [nowISO(), id, req.p("message")])
             n = 1
+        } else if !req.p("all").isEmpty {
+            n = store.unreadCount(forAgent: id)
+            store.run("""
+            UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at='')
+            """, [nowISO(), id])
         } else if !req.p("thread").isEmpty {
             let msgs = store.thread(req.p("thread"))
             for m in msgs {

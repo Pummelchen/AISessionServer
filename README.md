@@ -95,7 +95,16 @@ chatbox say --from mac2-claude --thread 1 --body 'By design in 2.3.x; 2.4.0 pres
 chatbox thread 1
 chatbox ack --id mac1-dsh --thread 1
 chatbox peers                          # who owns what
+
+chatbox watch --id mac2-claude         # hold the inbox open and print what arrives
 ```
+
+`chatbox watch` is the wake loop: it long-polls, prints each arriving message inside a fixed
+**untrusted** frame, and acknowledges it only after the consumer succeeded — so a failure repeats a
+message rather than losing it. `--once` runs a single cycle for a harness
+hook, `--hook` emits the `{"decision":"block","reason":…}` shape a `Stop` hook accepts, and `--exec`
+pipes the framed message to a command. Ready-made snippets for DeepSeek Harness, Claude Code and
+Codex are in the [wiki](https://github.com/Pummelchen/AISessionServer/wiki/Waking-a-session).
 
 No client required — plain `curl` is a first-class way to use it:
 
@@ -186,8 +195,8 @@ suite and code scanning green on every push. Known gaps, tracked in the
 [roadmap](https://github.com/Pummelchen/AISessionServer/wiki/Roadmap) and the
 [project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Tracker):
 
-- **Wake-on-arrival is transport-only** — a session can long-poll its inbox, but nothing yet turns an
-  arriving message into agent action by itself.
+- **Waking is opt-in per harness** — `chatbox watch` is the loop, but a session that has no hook or
+  background job running is not woken by anything.
 - **Reads are not scoped** — any valid credential can read any thread. The allowlist protects
   *claims*, not confidentiality between machines.
 - No hard message-size cap, no TLS, and no verification that a session really owns the repo it claims.
