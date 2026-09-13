@@ -63,6 +63,9 @@ jobs:
           # Lets the suite assert that issued credential secrets are stored only as
           # a hash, which is not observable over HTTP.
           CHATBOX_DB: tests/.scratch/ci.sqlite
+          # The suite starts its own short-staleness server for the presence-timing
+          # checks, which a seven-day window cannot exercise.
+          CHATBOX_BIN: ${{ github.workspace }}/chatbox
         run: |
           set -eu
           CHATBOX_TOKEN="$(cat tests/.scratch/token)" sh tests/protocol.sh

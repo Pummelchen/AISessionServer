@@ -61,6 +61,8 @@ C2="it-$RUN-cred2-session"
 C3="it-$RUN-cred3-session"
 C4="it-$RUN-cred4-session"
 C5="it-$RUN-cred2-legacy"
+SB="it-$RUN-stale"
+SS="it-$RUN-stale-sender"
 WV="it-$RUN-watch"
 WS="it-$RUN-watch-sender"
 REPO_APP="example.test/$RUN/app"
@@ -1016,7 +1018,193 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 13. Parameter validation
+# 13. Session staleness (TRK-04)
+# `last_seen` is only worth recording if something acts on it: a session that has
+# gone away must be reported as stale, both in the registry and to whoever files a
+# report against it. The window is a server setting, so this exercises the two
+# states it can reach here — fresh, and backdated in the database — and then starts
+# its own short-window server for the timing, which cannot be observed with a
+# seven-day default.
+# ---------------------------------------------------------------------------
+post /register --data-urlencode "id=$SB" --data-urlencode "node=node-stale" \
+  --data-urlencode "agent=dsh" --data-urlencode "repos=example.test/$RUN/stale" >/dev/null
+post /register --data-urlencode "id=$SS" --data-urlencode "node=node-s" \
+  --data-urlencode "agent=dsh" >/dev/null
+
+peers_all="$(get /peers)"
+contains "peers json carries the status" "$(get /peers "json=1")" '"status"'
+sb_line="$(printf '%s\n' "$peers_all" | grep "^$SB ")"
+case "$sb_line" in
+  *active*) ok "a session that just registered is active" ;;
+  *) no "a session that just registered is active" "line: $sb_line" ;;
+esac
+
+fresh_send="$(post /message --data-urlencode "from=$SS" \
+  --data-urlencode "repo=example.test/$RUN/stale" --data-urlencode "body=fresh $RUN")"
+equals "a fresh recipient carries no stale marker" "$(field "$fresh_send" delivered_to)" "$SB"
+lacks "a fresh recipient produces no staleness warning" "$fresh_send" "staleness window"
+
+# The operator's log has to show which mode the server came up in, which means the
+# banner must survive being redirected to a file.
+if [ -n "${CHATBOX_SERVER_LOG:-}" ] && [ -f "$CHATBOX_SERVER_LOG" ]; then
+  contains "the server banner reaches the log" "$(cat "$CHATBOX_SERVER_LOG")" "staleness:"
+  contains "the log records the auth mode" "$(cat "$CHATBOX_SERVER_LOG")" "auth:"
+else
+  printf '  skip  startup banner in the log (set CHATBOX_SERVER_LOG)\n'
+fi
+
+# Silencing a session needs either a wait of days or a write to the database. When
+# the caller has told us where the database is, the backdate is required: a skip
+# here would quietly stop testing the whole direction.
+can_backdate=0
+if [ -n "${CHATBOX_DB:-}" ] && [ -f "$CHATBOX_DB" ]; then
+  old_ts=""
+  if command -v date >/dev/null 2>&1; then
+    old_ts="$(date -u -v-30d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '')"
+  fi
+  if [ -n "$old_ts" ] && command -v sqlite3 >/dev/null 2>&1 \
+     && sqlite3 "$CHATBOX_DB" "UPDATE agents SET last_seen='$old_ts' WHERE id='$SB'" 2>/dev/null; then
+    can_backdate=1
+  else
+    no "the staleness fixture could be backdated" \
+      "CHATBOX_DB is set but sqlite3/date could not backdate it"
+  fi
+else
+  printf '  skip  stale direction (set CHATBOX_DB so a session can be backdated)\n'
+fi
+
+if [ "$can_backdate" = 1 ]; then
+  # A timestamp stamped by something other than this server may carry fractional
+  # seconds. Failing to parse it would report a live session as never seen.
+  frac_ts="$(date -u +%Y-%m-%dT%H:%M:%S).000Z"
+  sqlite3 "$CHATBOX_DB" "UPDATE agents SET last_seen='$frac_ts' WHERE id='$SB'" 2>/dev/null
+  frac_line="$(get /peers | grep "^$SB ")"
+  case "$frac_line" in
+    *active*) ok "a timestamp with fractional seconds still parses" ;;
+    *) no "a timestamp with fractional seconds still parses" "line: $frac_line" ;;
+  esac
+  sqlite3 "$CHATBOX_DB" "UPDATE agents SET last_seen='$old_ts' WHERE id='$SB'" 2>/dev/null
+
+  stale_peers="$(get /peers)"
+  stale_line="$(printf '%s\n' "$stale_peers" | grep "^$SB ")"
+  case "$stale_line" in
+    *STALE*) ok "a session silent past the window is marked STALE" ;;
+    *) no "a session silent past the window is marked STALE" "line: $stale_line" ;;
+  esac
+  contains "the registry says how long it has been" "$stale_peers" "30d ago"
+  # The control: backdating one session must not make its neighbour look stale.
+  ss_line="$(printf '%s\n' "$stale_peers" | grep "^$SS ")"
+  case "$ss_line" in
+    *active*) ok "backdating one session leaves the others active" ;;
+    *) no "backdating one session leaves the others active" "line: $ss_line" ;;
+  esac
+  stale_send="$(post /message --data-urlencode "from=$SS" \
+    --data-urlencode "repo=example.test/$RUN/stale" --data-urlencode "body=anyone there $RUN")"
+  equals "the send response marks the recipient stale" "$(field "$stale_send" delivered_to)" "$SB (stale)"
+  contains "the send response names the staleness window" "$stale_send" "staleness window"
+  contains "the send response says nobody may read it" "$stale_send" "nobody may read it"
+  contains "the registry json reports it stale" "$(get /peers "json=1")" '"stale"'
+fi
+
+# An unregistered recipient is not a stale one, and a duplicate is not two.
+mixed_to="$(post /message --data-urlencode "from=$SS" \
+  --data-urlencode "to=$SS-x,$SB,$SS-x,it-$RUN-nobody" --data-urlencode "body=mixed $RUN")"
+contains "an unregistered recipient is labelled as such" "$mixed_to" "(unregistered)"
+equals "a duplicated recipient is reported once" \
+  "$(printf '%s' "$(field "$mixed_to" delivered_to)" | grep -o "$SS-x" | wc -l | tr -d ' ')" "1"
+
+# ---------------------------------------------------------------------------
+# 13b. Presence timing
+# The window and the long-poll refresh have to agree: a waiter that is still
+# connected must not age out of a short window, and one whose client has gone must
+# stop looking alive. Neither is observable against a seven-day default, so this
+# starts its own server with a six-second one.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  sport="${CHATBOX_STALE_PORT:-8791}"
+  sbase="http://127.0.0.1:$sport"
+  stok="$SCRATCH/stale-${RUN}.token"
+  printf '%s\n' "$TOKEN" > "$stok"
+  chmod 600 "$stok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$sport" --db "$SCRATCH/stale-${RUN}.sqlite" \
+    --token-file "$stok" --stale-after 6 > "$SCRATCH/stale-${RUN}.log" 2>&1 &
+  spid=$!
+  sready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS "$sbase/health?token=$TOKEN" >/dev/null 2>&1; then sready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$sready" = 1 ]; then
+    sreg() { curl -sS -G -X POST --data-urlencode "token=$TOKEN" "$sbase/register" \
+      --data-urlencode "id=$1" --data-urlencode "node=n" --data-urlencode "agent=dsh" >/dev/null; }
+    sstatus() { curl -sS "$sbase/peers?token=$TOKEN" | grep "^$1 " | sed 's/.*)  //'; }
+
+    # Still connected: alive, however short the window.
+    sreg "$WV-live"
+    ( curl -sS --max-time 30 "$sbase/inbox?id=$WV-live&wait=25&token=$TOKEN" >/dev/null 2>&1 ) &
+    live_pid=$!
+    sleep 8
+    equals "a waiter that is still connected stays active" "$(sstatus "$WV-live")" "active"
+    kill "$live_pid" 2>/dev/null
+    wait "$live_pid" 2>/dev/null
+
+    # Client gone: it must stop being reported as alive.
+    sreg "$WV-dead"
+    curl -sS --max-time 2 "$sbase/inbox?id=$WV-dead&wait=60&token=$TOKEN" >/dev/null 2>&1
+    sleep 7
+    equals "a waiter whose client has gone goes stale" "$(sstatus "$WV-dead")" "STALE"
+
+    # A negative window is a mistake rather than "off" — it used to fail open and
+    # silently switch presence reporting off. It has to be run in the background: a
+    # server that wrongly accepts it would otherwise never return.
+    "$CHATBOX_BIN" --port "$((sport + 1))" --db "$SCRATCH/neg-${RUN}.sqlite" \
+      --token-file "$stok" --stale-after -1 > "$SCRATCH/neg-${RUN}.log" 2>&1 &
+    negpid=$!
+    sleep 1
+    if kill -0 "$negpid" 2>/dev/null; then
+      no "a negative staleness window is refused" "it started anyway: $(head -1 "$SCRATCH/neg-${RUN}.log")"
+      kill "$negpid" 2>/dev/null
+    else
+      ok "a negative staleness window is refused"
+    fi
+    wait "$negpid" 2>/dev/null
+
+    # With reporting switched off, the status is "unknown", not "active".
+    "$CHATBOX_BIN" --port "$((sport + 2))" --db "$SCRATCH/off-${RUN}.sqlite" \
+      --token-file "$stok" --stale-after 0 > "$SCRATCH/off-${RUN}.log" 2>&1 &
+    offpid=$!
+    offbase="http://127.0.0.1:$((sport + 2))"
+    offready=0
+    for _ in $(seq 1 50); do
+      if curl -fsS "$offbase/health?token=$TOKEN" >/dev/null 2>&1; then offready=1; break; fi
+      sleep 0.2
+    done
+    if [ "$offready" = 1 ]; then
+      curl -sS -G -X POST --data-urlencode "token=$TOKEN" "$offbase/register" \
+        --data-urlencode "id=$WV-off" --data-urlencode "node=n" >/dev/null
+      equals "staleness off reports unknown, not active" \
+        "$(curl -sS "$offbase/peers?json=1&token=$TOKEN" | grep -o '"status" : "[a-z]*"')" \
+        '"status" : "unknown"'
+      contains "staleness off says so in the text" "$(curl -sS "$offbase/peers?token=$TOKEN")" \
+        "(staleness reporting is off)"
+      contains "health reports the presence window" "$(curl -sS "$offbase/health?token=$TOKEN")" "presence: off"
+    else
+      no "the staleness-off server started" "no answer on $offbase"
+    fi
+    kill "$offpid" 2>/dev/null
+    wait "$offpid" 2>/dev/null
+  else
+    no "the presence-timing server started" "no answer on $sbase (port $sport may be taken)"
+  fi
+  kill "$spid" 2>/dev/null
+  wait "$spid" 2>/dev/null
+else
+  printf '  skip  presence timing (set CHATBOX_BIN to the built server)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 14. Parameter validation
 # ---------------------------------------------------------------------------
 equals "register without id is 400" "$(status_post /register --data-urlencode "node=x")" "400"
 contains "register without id says why" \

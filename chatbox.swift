@@ -9,6 +9,7 @@
 //
 // Build: xcrun swiftc -O chatbox.swift -o chatbox
 // Run:   ./chatbox --port 8787 --db ~/chatbox.sqlite [--token SECRET] [--open]
+//        [--stale-after SECONDS]   (default 604800 = 7 days; 0 disables)
 //
 // Every response is plain text by default (readable by any model); add ?json=1
 // for structured output.
@@ -25,8 +26,13 @@ private let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 // serial queue and every other request is answered normally while it waits.
 private let longPollInterval: TimeInterval = 0.25
 private let maxWaitSeconds = 300
-/// How often a held waiter refreshes `last_seen` (see the presence rules).
-private let longPollTouchInterval: TimeInterval = 60
+/// How often a held waiter refreshes `last_seen`, at most. It is capped by the
+/// staleness window: refreshing every 60s would report a live waiter as stale
+/// whenever the window is shorter than that.
+private func longPollTouchInterval(_ staleAfter: Int) -> TimeInterval {
+    if staleAfter <= 0 { return 60 }
+    return min(60, max(1, Double(staleAfter) / 2))
+}
 
 private func nowISO() -> String {
     let f = ISO8601DateFormatter()
@@ -53,6 +59,24 @@ private func validRepoKey(_ repo: String) -> Bool {
     if repo.isEmpty { return false }
     for bad in ["*", "?", "[", "]", " ", "\t"] where repo.contains(bad) { return false }
     return true
+}
+
+/// Shared between the connection watcher and the poll loop. Both run on the
+/// server's serial queue, so no locking is needed.
+final class Waiter {
+    /// The peer has finished sending. It may still be reading (a half-close is
+    /// legitimate), so the request is still answered — but it is no longer evidence
+    /// that anyone is there, so `last_seen` stops being refreshed.
+    var peerGone = false
+}
+
+/// A compact duration for operator-facing text, floored: `7d`, `3h`, `90s` -> `1m`.
+private func humanSeconds(_ seconds: Int) -> String {
+    if seconds <= 0 { return "0s" }
+    if seconds >= 86400 { return "\(seconds / 86400)d" }
+    if seconds >= 3600 { return "\(seconds / 3600)h" }
+    if seconds >= 60 { return "\(seconds / 60)m" }
+    return "\(seconds)s"
 }
 
 private func randomHex(_ bytes: Int) -> String {
@@ -223,6 +247,11 @@ final class Store: @unchecked Sendable {
         """)
     }
 
+    /// Empty when the session has never registered.
+    func lastSeen(of id: String) -> String {
+        scalar("SELECT last_seen FROM agents WHERE id = ?", [id])
+    }
+
     /// nil when the session has never registered.
     func nodeOf(_ id: String) -> String? {
         rows("SELECT node FROM agents WHERE id = ? LIMIT 1", [id]).first.map { $0["node"] ?? "" }
@@ -309,11 +338,57 @@ private func parseForm(_ s: String) -> [String: String] {
 final class Chatbox: @unchecked Sendable {
     let store: Store
     let token: String?
+    /// How long a session may go unheard from before it is reported stale. Zero
+    /// disables staleness reporting entirely.
+    let staleAfter: Int
     let queue = DispatchQueue(label: "chatbox.queue")
 
-    init(store: Store, token: String?) {
+    init(store: Store, token: String?, staleAfter: Int) {
         self.store = store
         self.token = token
+        self.staleAfter = staleAfter
+    }
+
+    // ---------- presence ----------
+    //
+    // `last_seen` is refreshed by registering, sending, reading an inbox or acking,
+    // and by a held long poll for as long as its peer is still connected — at most
+    // once a minute, and more often when the window is shorter than that. So a
+    // session past the window is one that has gone quiet, rather than one that is
+    // merely waiting. Nothing is ever probed or evicted: this is an inference, and
+    // the response says what the server believes rather than what it knows.
+
+    static let iso: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    /// A timestamp this server did not write may still carry fractional seconds;
+    /// failing to parse it would report a live session as never seen.
+    static let isoTiny: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    static func parseISO(_ s: String) -> Date? {
+        iso.date(from: s) ?? isoTiny.date(from: s)
+    }
+
+    /// A never-seen or unparseable timestamp counts as stale: the only sessions in
+    /// that state are ones that were never really here.
+    func isStale(_ lastSeen: String, now: Date) -> Bool {
+        guard staleAfter > 0 else { return false }
+        guard let then = Self.parseISO(lastSeen) else { return true }
+        return now.timeIntervalSince(then) > Double(staleAfter)
+    }
+
+    func ageDescription(_ lastSeen: String, now: Date) -> String {
+        guard let then = Self.parseISO(lastSeen) else { return "never seen" }
+        let seconds = Int(now.timeIntervalSince(then))
+        if seconds < 0 { return "just now" }
+        return humanSeconds(seconds) + " ago"
     }
 
     // ---------- routing ----------
@@ -442,7 +517,8 @@ final class Chatbox: @unchecked Sendable {
         let a = store.scalar("SELECT COUNT(*) FROM agents")
         let t = store.scalar("SELECT COUNT(*) FROM threads")
         let m = store.scalar("SELECT COUNT(*) FROM messages")
-        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\nnow: \(nowISO())\n"
+        let presence = staleAfter == 0 ? "off" : "stale after \(humanSeconds(staleAfter))"
+        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\nnow: \(nowISO())\n"
     }
 
     func register(_ req: Request, _ who: Principal) -> (Int, String) {
@@ -562,6 +638,9 @@ final class Chatbox: @unchecked Sendable {
             recipients = Array(set).sorted()
         }
         recipients = recipients.filter { $0 != from }
+        // An explicit to=a,b,a should not deliver, mark or warn twice.
+        var already = Set<String>()
+        recipients = recipients.filter { already.insert($0).inserted }
 
         let replyTo = Int64(req.p("reply_to")) ?? 0
         let msgId = store.run("""
@@ -575,18 +654,44 @@ final class Chatbox: @unchecked Sendable {
         }
         store.run("UPDATE threads SET last_at=? WHERE id=?", [nowISO(), String(threadId)])
 
+        // A report sent to a machine that has gone away is still stored, but the
+        // sender deserves to know nobody is likely to read it.
+        let now = Date()
+        // A recipient nobody is listening for: gone quiet, or never registered at all.
+        let unseen = recipients.filter { isStale(store.lastSeen(of: $0), now: now) }
+        func unseenLabel(_ id: String) -> String {
+            store.lastSeen(of: id).isEmpty ? "unregistered" : "stale"
+        }
+        func unseenReason(_ id: String) -> String {
+            let seen = store.lastSeen(of: id)
+            return seen.isEmpty ? "never registered" : ageDescription(seen, now: now)
+        }
+        let deliveredTo = recipients.map { r in
+            unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r
+        }.joined(separator: ", ")
+
         var note = ""
         if recipients.isEmpty {
             note = effRepo.isEmpty
                 ? "\nnote: no recipient — pass repo=<key>, to=<agent>, or thread=<id>\n"
                 : "\nnote: nobody has registered as an owner of '\(effRepo)' yet; message stored in thread \(threadId)\n"
         }
+        if !unseen.isEmpty {
+            let who = unseen.map { "\($0) (\(unseenReason($0)))" }.joined(separator: ", ")
+            // Only claim nobody will read it when nobody is left to.
+            let everyone = unseen.count == recipients.count
+            note += "\nwarning: no sign of \(who) inside the \(humanSeconds(staleAfter)) staleness window"
+                + (everyone
+                    ? " — the message is stored, but nobody may read it\n"
+                    : " — the message is stored, but it may not reach "
+                      + (unseen.count == 1 ? "that session" : "those sessions") + "\n")
+        }
         return (200, """
         ok posted
         message: \(msgId)
         thread: \(threadId)
         repo: \(effRepo.isEmpty ? "-" : effRepo)
-        delivered_to: \(recipients.isEmpty ? "(nobody)" : recipients.joined(separator: ", "))
+        delivered_to: \(recipients.isEmpty ? "(nobody)" : deliveredTo)
         at: \(nowISO())
         \(note)
         """)
@@ -657,21 +762,24 @@ final class Chatbox: @unchecked Sendable {
         // entitled to half-close its write side and still wait for the answer, and
         // cancelling on EOF would silently deny it one. Either way the deadline
         // bounds how long an abandoned waiter lives.
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, error in
+        let waiter = Waiter()
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, isComplete, error in
+            if isComplete || error != nil { waiter.peerGone = true }
             if error != nil { conn.cancel() }
         }
         FileHandle.standardError.write(
             "chatbox: GET /inbox waiting up to \(seconds)s for \(id)\n".data(using: .utf8)!)
         let now = Date()
         pollInbox(req, id: id, deadline: now.addingTimeInterval(TimeInterval(seconds)),
-                  nextTouch: now.addingTimeInterval(longPollTouchInterval), conn: conn)
+                  nextTouch: now.addingTimeInterval(longPollTouchInterval(staleAfter)),
+                  waiter: waiter, conn: conn)
     }
 
     /// Re-check on a timer until there is something to report or the deadline
     /// passes. Deliberately *not* a blocking wait: the re-check is scheduled, so
     /// the serial queue stays free and other requests are answered normally.
     private func pollInbox(_ req: Request, id: String, deadline: Date, nextTouch: Date,
-                           conn: NWConnection) {
+                           waiter: Waiter, conn: NWConnection) {
         // The client may have given up. A clean end-of-stream is *not* treated as
         // abandonment — see beginInboxWait.
         if case .cancelled = conn.state { return }
@@ -687,12 +795,14 @@ final class Chatbox: @unchecked Sendable {
             break
         }
 
-        // A waiting session is provably alive, so keep last_seen fresh: otherwise a
-        // long wait would make a healthy session look stale to the presence rules.
+        // A waiting session that is still connected is alive, so keep last_seen
+        // fresh — otherwise a long wait would make it look stale. Once the peer has
+        // finished sending there is no evidence it is still there, so it stops being
+        // refreshed and the session ages normally.
         var touch = nextTouch
-        if Date() >= nextTouch {
+        if !waiter.peerGone, Date() >= nextTouch {
             store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
-            touch = Date().addingTimeInterval(longPollTouchInterval)
+            touch = Date().addingTimeInterval(longPollTouchInterval(staleAfter))
         }
 
         // Wait for something *unread*. `all=1` widens the payload once there is
@@ -710,7 +820,8 @@ final class Chatbox: @unchecked Sendable {
             return
         }
         queue.asyncAfter(deadline: .now() + longPollInterval) {
-            self.pollInbox(req, id: id, deadline: deadline, nextTouch: touch, conn: conn)
+            self.pollInbox(req, id: id, deadline: deadline, nextTouch: touch,
+                           waiter: waiter, conn: conn)
         }
     }
 
@@ -752,6 +863,7 @@ final class Chatbox: @unchecked Sendable {
         let id = req.p("id").isEmpty ? req.p("agent") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id required\n") }
         if let rejection = mayAct(as: id, who) { return rejection }
+        store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
         var n = 0
         if !req.p("message").isEmpty {
             store.run("UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=?", [nowISO(), id, req.p("message")])
@@ -774,16 +886,25 @@ final class Chatbox: @unchecked Sendable {
     }
 
     func peers(_ req: Request) -> (Int, String) {
-        let rows = store.agentsListing()
+        var rows = store.agentsListing()
+        let now = Date()
+        for i in rows.indices {
+            let seen = rows[i]["last_seen"] ?? ""
+            rows[i]["status"] = staleAfter == 0 ? "unknown"
+                : (isStale(seen, now: now) ? "stale" : "active")
+            rows[i]["age"] = ageDescription(seen, now: now)
+        }
         if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
         var out = "registered agents — \(rows.count)\n"
+        if staleAfter == 0 { out += "(staleness reporting is off)\n" }
         for r in rows {
-            out += "\n\(r["id"] ?? "")  (\(r["agent"] ?? "-") on \(r["node"] ?? "-"))\n"
+            let status = r["status"] ?? "active"
+            out += "\n\(r["id"] ?? "")  (\(r["agent"] ?? "-") on \(r["node"] ?? "-"))  \(status == "stale" ? "STALE" : status)\n"
             out += "  repos: \((r["repos"] ?? "").isEmpty ? "(none declared)" : r["repos"]!)\n"
             if !(r["ip"] ?? "").isEmpty || !(r["session"] ?? "").isEmpty {
                 out += "  ip: \(r["ip"] ?? "-")  session: \(r["session"] ?? "-")  harness: \(r["harness"] ?? "-")\n"
             }
-            out += "  last seen: \(r["last_seen"] ?? "-")\n"
+            out += "  last seen: \(r["last_seen"] ?? "-")  (\(r["age"] ?? "-"))\n"
         }
         return (200, out)
     }
@@ -1004,7 +1125,15 @@ if !tokenFile.isEmpty && tokenFromFile.isEmpty {
 let token = !tokenArg.isEmpty ? tokenArg : (tokenFromFile.isEmpty ? nil : tokenFromFile)
 
 let store = Store(path: dbPath)
-let server = Chatbox(store: store, token: token)
+let staleAfterRaw = argValue("--stale-after", "604800")
+let staleAfterValue = Int(staleAfterRaw) ?? 604800
+if staleAfterValue < 0 {
+    // A negative window used to mean "off", which fails open on a typo.
+    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds\n".data(using: .utf8)!)
+    exit(2)
+}
+let staleAfter = staleAfterValue
+let server = Chatbox(store: store, token: token, staleAfter: staleAfter)
 Chatbox.publicURL = "http://\(Host.current().name ?? "localhost"):\(port)"
 
 let params = NWParameters.tcp
@@ -1024,7 +1153,11 @@ listener.stateUpdateHandler = { state in
         print("chatbox listening on port \(port)")
         print("db: \(dbPath)")
         print("auth: \(token == nil ? "OPEN (no token)" : "token required")")
+        print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")
         for a in addrs { print("  http://\(a):\(port)/") }
+        // stdout is block-buffered when redirected to a file, and this process never
+        // exits, so without a flush the banner never reaches chatbox.log.
+        fflush(stdout)
     case .failed(let e):
         FileHandle.standardError.write("chatbox: listener failed: \(e)\n".data(using: .utf8)!)
         exit(1)

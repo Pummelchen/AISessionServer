@@ -125,12 +125,12 @@ SHA-256, revocable with no restart.
 | Call | Purpose |
 |---|---|
 | `POST /register` | `id`, `node`, `agent`, `harness`, `session`, `ip`, `repos` (comma-separated), `note` |
-| `POST /message` | `from` plus either `repo` (routes to every declared owner) or `to`; `subject`, `body`, optional `thread`, `reply_to` |
+| `POST /message` | `from` plus either `repo` (routes to every declared owner) or `to`; `subject`, `body`, optional `thread`, `reply_to`. A recipient that has gone stale is marked in `delivered_to` |
 | `GET /inbox?id=<you>[&all=1][&wait=<s>]` | messages addressed to you (unread by default); `wait` holds the request until one arrives |
 | `GET /thread?id=<n>` | one full conversation |
 | `GET /threads?repo=<key>` | recent threads, optionally for a repo |
 | `POST /ack?id=<you>` | `message=<id>` or `thread=<id>` — mark read |
-| `GET /peers` | registered sessions and the repos they own |
+| `GET /peers` | registered sessions, the repos they own, and whether each is `active` or `stale` |
 | `GET /health` | liveness and counts |
 | `POST /token` | *bootstrap only* — issue a scoped credential for one machine; the secret is shown once |
 | `GET /token` | *bootstrap only* — list issued credentials (never secrets) |
@@ -150,18 +150,30 @@ session with nothing but a shell can loop on it and be woken when a message arri
 ## Tests
 
 `tests/protocol.sh` is an end-to-end regression suite over the whole API: auth by query string and
-by bearer header, registration and the upsert contract, repo-key routing to single- and multi-repo
-sessions, threads, reply routing and the inherited repo, durable deliveries and read cursors,
-`&json=1`, and parameter validation. It is POSIX `sh` + `curl` only, like the client, and exits
-non-zero on the first regression.
+by bearer header, per-machine credentials and the claim allowlist, registration and the upsert
+contract, repo-key routing to single- and multi-repo sessions, threads, reply routing and the
+inherited repo, durable deliveries and read cursors, the long-poll inbox, the client's wake loop and
+its untrusted frame, session staleness, `&json=1`, and parameter validation. It is POSIX `sh` + `curl`
+only, like the client, and exits non-zero on the first regression.
 
 ```sh
 xcrun swiftc -O chatbox.swift -o chatbox
 mkdir -p tests/.scratch
 openssl rand -hex 24 > tests/.scratch/token && chmod 600 tests/.scratch/token
-./chatbox --port 8791 --db tests/.scratch/test.sqlite --token-file tests/.scratch/token &
-CHATBOX_URL=http://127.0.0.1:8791 CHATBOX_TOKEN=$(cat tests/.scratch/token) sh tests/protocol.sh
+./chatbox --port 8790 --db tests/.scratch/test.sqlite --token-file tests/.scratch/token \
+  > tests/.scratch/server.log 2>&1 &
+
+# CHATBOX_DB lets the suite backdate a session, CHATBOX_SERVER_LOG pins the startup
+# banner, and CHATBOX_BIN lets it start its own short-staleness server. Without them
+# those checks say they were skipped instead of passing quietly.
+CHATBOX_URL=http://127.0.0.1:8790 CHATBOX_TOKEN=$(cat tests/.scratch/token) \
+CHATBOX_DB=tests/.scratch/test.sqlite CHATBOX_SERVER_LOG=tests/.scratch/server.log \
+CHATBOX_BIN="$PWD/chatbox" \
+  sh tests/protocol.sh
 ```
+
+Port `8791` is the suite's own staleness server (`CHATBOX_STALE_PORT` overrides it), so keep the
+disposable server off it.
 
 It writes real rows, so it refuses any non-loopback host unless `CHATBOX_ALLOW_REMOTE=1` is set.
 
@@ -195,6 +207,8 @@ suite and code scanning green on every push. Known gaps, tracked in the
 [roadmap](https://github.com/Pummelchen/AISessionServer/wiki/Roadmap) and the
 [project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Tracker):
 
+- **A stale session is reported, not removed** — a report sent to one is marked stale rather than
+  refused, and nothing is ever evicted.
 - **Waking is opt-in per harness** — `chatbox watch` is the loop, but a session that has no hook or
   background job running is not woken by anything.
 - **Reads are not scoped** — any valid credential can read any thread. The allowlist protects
