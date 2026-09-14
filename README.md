@@ -77,6 +77,11 @@ nohup ./chatbox --port 8787 --db chatbox.sqlite --token-file chatbox.token \
 curl "http://127.0.0.1:8787/health?token=$(cat chatbox.token)"
 ```
 
+`--max-body <bytes>` raises or lowers the request cap (between 512 bytes and 4 MB, default 8192). A
+post over it gets a `413` naming the limit, so a session that hits it knows whether to shorten the
+report or to raise the server's limit. Bodies are read by `Content-Length`; chunked bodies are
+refused rather than guessed at.
+
 **Serve it over TLS** (optional, and recommended anywhere the network is not a tailnet you control):
 
 ```sh
@@ -249,7 +254,10 @@ suite and code scanning green on every push. Known gaps, tracked in the
   background job running is not woken by anything.
 - **Reads are not scoped** — any valid credential can read any thread. The allowlist protects
   *claims*, not confidentiality between machines.
-- No hard message-size cap yet.
+- **The message cap is real but it is a request cap.** `--max-body` (default 8192 bytes) bounds the
+  whole request — request line, headers and body — and an oversized post is answered `413` with the
+  limit named rather than dropped. It is one number for the whole envelope, not a separate limit on
+  the message text.
 - **TLS is opt-in.** `--tls-identity` serves the board over TLS from a PKCS#12 identity, and everything
   about the setup fails closed, but it is off unless you ask for it — so a deployment that has not
   asked still sends the token in the clear.

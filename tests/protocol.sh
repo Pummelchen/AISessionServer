@@ -1984,6 +1984,150 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 16. Message size cap (TRK-08)
+# The channel exists to carry a bug report, not a diff, so the server bounds what it
+# will read. The cap covers the whole request — request line, headers and body — and an
+# oversized one is *answered* rather than dropped, because a sender that is told nothing
+# cannot learn what went wrong.
+#
+# The same code has to wait for the body it was promised. It used to accept a request as
+# soon as the headers were in, so a form-encoded post that TCP split across two reads was
+# stored truncated — silently, and only for the larger messages this cap is about.
+# ---------------------------------------------------------------------------
+contains "health reports the request cap" "$(get /health)" "max request:"
+bigbody="$(awk 'BEGIN { for (i = 0; i < 9000; i++) printf "x" }')"
+# Kept under the inbox preview's own 1200-character limit, and ended with a marker, so
+# "accepted" can be checked as "stored" rather than as a status code that a bodyless
+# request would also return.
+smallbody="$(awk 'BEGIN { for (i = 0; i < 900; i++) printf "y"; printf "SMALLTAIL" }')"
+equals "a post inside the cap is accepted" \
+  "$(status_post /message --data-urlencode "from=$A" --data-urlencode "to=$B" \
+      --data-urlencode "body=$smallbody")" "200"
+contains "the accepted post is stored whole" "$(get /inbox "id=$B&all=1")" "SMALLTAIL"
+# Everything refused below must leave the message count alone, which is a stronger claim
+# than "the marker is absent" — that would also hold if the post went to the wrong place.
+mcount_before="$(field "$(get /health)" "messages")"
+equals "an oversized post is 413" \
+  "$(status_post /message --data-urlencode "from=$A" --data-urlencode "to=$B" \
+      --data-urlencode "body=$bigbody")" "413"
+big_reply="$(post /message --data-urlencode "from=$A" --data-urlencode "to=$B" \
+  --data-urlencode "body=$bigbody")"
+contains "the refusal says the request is too large" "$big_reply" "request too large"
+contains "the refusal names the limit" "$big_reply" "8192 bytes"
+contains "the refusal says how to raise it" "$big_reply" "--max-body"
+# The same size in a real POST body rather than the query string: the `-G` idiom the rest
+# of the suite uses puts the payload in the request line, which is a different path.
+equals "an over-cap POST body is 413 too" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST \
+      --data-urlencode "from=$A" --data-urlencode "to=$B" --data-urlencode "body=$bigbody" \
+      "$URL/message?token=$TOKEN")" "413"
+# A peer that understates its Content-Length used to have the bytes behind the declared
+# body treated as the body: a truncated message stored, and `200` for a request that was
+# never complete.
+# The sender and recipient go in the query string, so the *only* thing that can make this
+# succeed is the server treating the bytes behind the declared length as the message. With
+# the bytes ignored it has no body and says so; with them adopted it posts them.
+equals "an understated Content-Length is refused" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST -H "Content-Length: 0" \
+      --data "UNDERSTATED-TAIL" "$URL/say?from=$A&to=$B&token=$TOKEN")" "400"
+lacks "nothing was stored for the understated request" "$(get /inbox "id=$B&all=1")" "UNDERSTATED-TAIL"
+# Chunked framing is not decoded, so it is refused rather than stored as framing.
+equals "a chunked body is 400" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST -H "Transfer-Encoding: chunked" \
+      --data "body=CHUNKED-TAIL" "$URL/message?token=$TOKEN")" "400"
+contains "the chunked refusal says why" \
+  "$(curl -sS --max-time 20 -X POST -H "Transfer-Encoding: chunked" --data "body=x" \
+      "$URL/message?token=$TOKEN")" "chunked bodies are not supported"
+equals "no refused post was stored" "$(field "$(get /health)" "messages")" "$mcount_before"
+
+# A peer controls `Content-Length`, including by lying. An announced size over the cap is
+# refused before the body is read, and an impossible one is *answered* rather than waited
+# on — the arithmetic comparing them must not be able to overflow, or a single malformed
+# request takes the board down. Measured: it did, until the comparison was rewritten as a
+# subtraction.
+equals "an announced size over the cap is refused" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -X POST \
+      -H "Content-Length: 65536" --data "body=hi" "$URL/message?token=$TOKEN")" "413"
+equals "an impossible Content-Length is answered, not fatal" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -X POST \
+      -H "Content-Length: 9223372036854775807" --data "body=hi" "$URL/message?token=$TOKEN")" "413"
+equals "the board is still serving after a malformed length" "$(code_of /health)" "200"
+
+# A body the cap refuses when it arrives all at once must still be stored whole when TCP
+# splits it, which a slow sender makes happen every time. The tail is the part a
+# truncation loses, so the tail is what the check looks for — and the body is kept under
+# the inbox preview's own 1200-character limit so the whole of it is visible.
+slowbody="$(awk 'BEGIN { for (i = 0; i < 880; i++) printf "A"; printf "TAILMARK" }')"
+curl -sS --max-time 40 --limit-rate 300 -o /dev/null -X POST \
+  --data-urlencode "token=$TOKEN" --data-urlencode "from=$A" --data-urlencode "to=$B" \
+  --data-urlencode "body=$slowbody" "$URL/message" 2>/dev/null
+contains "a body split across reads is stored whole" "$(get /inbox "id=$B&all=1")" "TAILMARK"
+
+# The limit is a deployment decision, and the flag has to be believed.
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  bigport="${CHATBOX_MAX_PORT:-8793}"
+  mbtok="$SCRATCH/mb-${RUN}.token"
+  printf '%s\n' "$TOKEN" > "$mbtok"
+  "$CHATBOX_BIN" --port "$bigport" --db "$SCRATCH/mb-${RUN}.sqlite" --token-file "$mbtok" \
+    --max-body 65536 > "$SCRATCH/mb-${RUN}.log" 2>&1 &
+  mbpid=$!
+  mbready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS "http://127.0.0.1:$bigport/health?token=$TOKEN" >/dev/null 2>&1; then mbready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$mbready" = 1 ]; then
+    contains "a raised cap is reported by health" \
+      "$(curl -sS --max-time 5 "http://127.0.0.1:$bigport/health?token=$TOKEN")" "max request: 65536 bytes"
+    equals "a raised --max-body accepts what the default refused" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST \
+          --data-urlencode "token=$TOKEN" "http://127.0.0.1:$bigport/message" \
+          --data-urlencode "from=$A" --data-urlencode "to=$B" --data-urlencode "body=$bigbody")" "200"
+  else
+    no "the raised-cap server started" "no answer on $bigport: $(head -1 "$SCRATCH/mb-${RUN}.log")"
+  fi
+  kill "$mbpid" 2>/dev/null
+  wait "$mbpid" 2>/dev/null
+
+  # A cap too small to hold a request line and its headers would refuse everything, which
+  # reads as a broken server rather than a configured one, so it is refused at startup —
+  # and the check is bounded, because a server that wrongly started would listen for ever.
+  mb_refuses() { # label, then the arguments to pass
+    _lbl="$1"; shift
+    "$CHATBOX_BIN" --port "$((bigport + 1))" --db "$SCRATCH/mbr-${RUN}.sqlite" \
+      --token-file "$mbtok" "$@" > "$SCRATCH/mbr-${RUN}.log" 2>&1 &
+    _mrpid=$!
+    _mrw=0
+    while [ "$_mrw" -lt 30 ] && kill -0 "$_mrpid" 2>/dev/null; do
+      sleep 0.1
+      _mrw=$((_mrw + 1))
+    done
+    if kill -0 "$_mrpid" 2>/dev/null; then
+      no "$_lbl" "it started anyway: $(head -1 "$SCRATCH/mbr-${RUN}.log")"
+      kill "$_mrpid" 2>/dev/null
+      wait "$_mrpid" 2>/dev/null
+    else
+      wait "$_mrpid" 2>/dev/null; _mrrc=$?
+      # Exit 2 *and* a diagnostic naming the flag: an unrelated exit-2 path — an unknown
+      # flag elsewhere on the line, a bad --stale-after — would otherwise pass as a refusal.
+      if [ "$_mrrc" -eq 2 ] && grep -q -- "--max-body" "$SCRATCH/mbr-${RUN}.log"; then
+        ok "$_lbl"
+      else
+        no "$_lbl" "exit=$_mrrc: $(head -1 "$SCRATCH/mbr-${RUN}.log")"
+      fi
+    fi
+  }
+  mb_refuses "a cap smaller than a request is refused" --max-body 100
+  mb_refuses "a cap that is not a number is refused" --max-body abc
+  # The cap is what bounds memory, so a cap that is itself unbounded is not a cap.
+  mb_refuses "a cap above the ceiling is refused" --max-body 4194305
+  # Every flag here takes a value, so a trailing one is a mistake rather than a default.
+  mb_refuses "a flag with no value is refused" --max-body
+else
+  printf '  skip  configurable size cap (set CHATBOX_BIN to the built server)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

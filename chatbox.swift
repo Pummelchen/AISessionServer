@@ -387,6 +387,10 @@ struct Request {
     var token: String?
     /// Set when ?token= and Authorization: Bearer disagree.
     var tokenConflicts = false
+    /// Set when the request asks for chunked framing. This server reads a body by its
+    /// `Content-Length` and nothing else, so a chunked body is refused rather than
+    /// half-read: the alternative is storing the framing itself as the message.
+    var chunked = false
     /// The peer address, when the server could determine it. Used to warn when a
     /// freshly issued secret crosses a network in the clear.
     var peer = ""
@@ -422,13 +426,20 @@ final class Chatbox: @unchecked Sendable {
     /// the transport line in `/health`, and whether issuing a credential off
     /// loopback is worth warning about.
     let tlsEnabled: Bool
+    /// The largest request the server will read, in bytes. The channel exists to carry a
+    /// bug report between sessions, not a diff, so an unbounded post is the wrong shape
+    /// as well as a memory risk. It bounds the whole envelope — request line, headers and
+    /// body — because that is what actually arrives on the socket and what a sender
+    /// controls; a message is the body inside it.
+    let maxBody: Int
     let queue = DispatchQueue(label: "chatbox.queue")
 
-    init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool) {
+    init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool, maxBody: Int) {
         self.store = store
         self.token = token
         self.staleAfter = staleAfter
         self.tlsEnabled = tlsEnabled
+        self.maxBody = maxBody
     }
 
     // ---------- presence ----------
@@ -528,6 +539,10 @@ final class Chatbox: @unchecked Sendable {
 
     /// Route a parsed request — including the one route that answers later.
     func dispatch(_ req: Request, conn: NWConnection) {
+        if req.chunked {
+            finish(req, conn: conn, status: 400, body: "error: chunked bodies are not supported — send Content-Length\n")
+            return
+        }
         let who: Principal
         switch authorize(req) {
         case .denied(let status, let body):
@@ -601,7 +616,7 @@ final class Chatbox: @unchecked Sendable {
         let m = store.scalar("SELECT COUNT(*) FROM messages")
         let presence = staleAfter == 0 ? "off" : "stale after \(humanSeconds(staleAfter))"
         let transport = tlsEnabled ? "tls" : "plain http"
-        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nnow: \(nowISO())\n"
+        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nnow: \(nowISO())\n"
     }
 
     func register(_ req: Request, _ who: Principal) -> (Int, String) {
@@ -1112,18 +1127,37 @@ final class Chatbox: @unchecked Sendable {
         req.method = String(parts[0]).uppercased()
         let target = String(parts[1])
         var contentType = ""
+        var declared = 0
+        var sawLength = false
         for l in lines {
             let kv = l.split(separator: ":", maxSplits: 1)
             if kv.count == 2 {
                 let k = kv[0].trimmingCharacters(in: .whitespaces).lowercased()
                 let v = kv[1].trimmingCharacters(in: .whitespaces)
-                if k == "content-length" { } // used below via raw length
+                // The first one wins, here and in `declaredLength`. Two of them are a
+                // malformed request, and reading different ones in the two places is worse
+                // than reading either: the cap would clear a request the parser then waits
+                // on for ever.
+                if k == "content-length" && !sawLength { declared = max(0, Int(v) ?? 0); sawLength = true }
+                if k == "transfer-encoding" { req.chunked = true }
                 if k == "content-type" { contentType = v.lowercased() }
                 if k == "authorization" {
                     if let r = v.range(of: "Bearer ") { req.token = String(v[r.upperBound...]).trimmingCharacters(in: .whitespaces) }
                 }
             }
         }
+        // Wait for the whole body before treating the request as arrived. Without this
+        // the parser accepted it as soon as the headers were in, so a body that TCP split
+        // across two reads was stored truncated — silently, and only for large messages,
+        // which is exactly the sort a size cap exists to talk about.
+        //
+        // Compared by subtraction, not by adding the two: `Content-Length` is whatever a
+        // peer typed, and `headerEnd.upperBound + Int.max` overflows — which is not a wrong
+        // answer, it is a trap, and a board that one malformed request can kill. The first
+        // of these bounds is already guaranteed (the terminator was found inside the
+        // buffer), so the subtraction cannot go negative.
+        guard buffer.count >= headerEnd.upperBound,
+              buffer.count - headerEnd.upperBound >= declared else { return nil }
         // path + query
         if let q = target.firstIndex(of: "?") {
             req.path = String(target[target.startIndex..<q])
@@ -1131,9 +1165,13 @@ final class Chatbox: @unchecked Sendable {
         } else {
             req.path = target
         }
-        // body
+        // body — exactly the declared bytes, and nothing that happens to be sitting behind
+        // them. Treating trailing bytes as the body is how a peer that understates its
+        // Content-Length got a truncated message stored and answered `200`: the tail it
+        // sent later belongs to a request that was never made.
         let bodyStart = headerEnd.upperBound
-        let bodyData = buffer.subdata(in: bodyStart..<buffer.count)
+        let bodyEnd = bodyStart + declared
+        let bodyData = buffer.subdata(in: bodyStart..<bodyEnd)
         if !bodyData.isEmpty, let bodyString = String(data: bodyData, encoding: .utf8) {
             if contentType.contains("json"), let d = bodyString.data(using: .utf8),
                let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
@@ -1163,7 +1201,12 @@ final class Chatbox: @unchecked Sendable {
     }
 
     func respond(_ conn: NWConnection, status: Int, body: String) {
-        let reason = status == 200 ? "OK" : (status == 400 ? "Bad Request" : (status == 401 ? "Unauthorized" : (status == 403 ? "Forbidden" : (status == 404 ? "Not Found" : "Error"))))
+        let reason = status == 200 ? "OK"
+            : (status == 400 ? "Bad Request"
+            : (status == 401 ? "Unauthorized"
+            : (status == 403 ? "Forbidden"
+            : (status == 404 ? "Not Found"
+            : (status == 413 ? "Payload Too Large" : "Error")))))
         let payload = Data(body.utf8)
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
         head += "Content-Type: text/plain; charset=utf-8\r\n"
@@ -1183,16 +1226,57 @@ final class Chatbox: @unchecked Sendable {
     }
 
     private func receive(_ conn: NWConnection, buffer: Data) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 131072) { data, _, isComplete, error in
+        // Never read far past the cap: the point of the limit is the memory, so the read
+        // itself is bounded by it rather than by whatever the peer decides to send.
+        conn.receive(minimumIncompleteLength: 1, maximumLength: min(131_072, self.maxBody + 1)) { data, _, isComplete, error in
             var buf = buffer
             if let d = data { buf.append(d) }
+            // The cap is checked *before* the parse, and that order is the whole point:
+            // a request that happens to arrive in one read would otherwise be parsed and
+            // answered before anything looked at its size, so the limit would only apply
+            // to the requests that came in pieces. The read bound above is a memory
+            // optimisation; this is the rule.
+            let announced = self.declaredLength(buf) ?? 0
+            if buf.count > self.maxBody || announced > self.maxBody {
+                self.tooLarge(conn)
+                return
+            }
             if let req = self.parse(buf) {
                 self.dispatch(req, conn: conn)
                 return
             }
-            if error != nil || isComplete || buf.count > 4_000_000 { conn.cancel(); return }
+            if error != nil || isComplete { conn.cancel(); return }
             self.receive(conn, buffer: buf)
         }
+    }
+
+    /// What a request's `Content-Length` says, or nil when its header block is not complete
+    /// yet. Read separately from `parse` because the cap has to act on it *before* the body
+    /// arrives: a peer that announces eight exabytes should be answered, not waited on until
+    /// it gives up, and the announced size is also the earliest honest signal that a request
+    /// is too big.
+    private func declaredLength(_ buffer: Data) -> Int? {
+        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)),
+              let head = String(data: buffer.subdata(in: 0..<headerEnd.lowerBound), encoding: .utf8) else { return nil }
+        for l in head.components(separatedBy: "\r\n") {
+            let kv = l.split(separator: ":", maxSplits: 1)
+            if kv.count == 2, kv[0].trimmingCharacters(in: .whitespaces).lowercased() == "content-length" {
+                return Int(kv[1].trimmingCharacters(in: .whitespaces)) ?? 0
+            }
+        }
+        return 0
+    }
+
+    /// Answer rather than drop the connection: an oversized report is an ordinary mistake,
+    /// and a sender that is told nothing has no way to learn what went wrong.
+    private func tooLarge(_ conn: NWConnection) {
+        FileHandle.standardError.write("chatbox: request over \(maxBody) bytes -> 413\n".data(using: .utf8)!)
+        respond(conn, status: 413, body: """
+        error: request too large — the limit is \(maxBody) bytes, and it covers the whole \
+        request (request line, headers and body). Raise it with --max-body, or send the \
+        report in a shorter form.
+
+        """)
     }
 }
 
@@ -1204,7 +1288,7 @@ final class Chatbox: @unchecked Sendable {
 /// left the board serving plain HTTP behind a flag that looked like it had turned
 /// encryption on. A flag nobody recognises now stops the server instead.
 let knownFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--stale-after",
-                              "--tls-identity", "--tls-password-file"]
+                              "--max-body", "--tls-identity", "--tls-password-file"]
 
 func checkArguments(_ argv: [String]) {
     var seen = Set<String>()
@@ -1225,6 +1309,13 @@ func checkArguments(_ argv: [String]) {
         }
         guard seen.insert(name).inserted else {
             FileHandle.standardError.write("chatbox: '\(name)' given more than once\n".data(using: .utf8)!)
+            exit(2)
+        }
+        // Every flag here takes a value, so a trailing one is a mistake — and silently
+        // falling back to the default is the same failure as a misspelt flag: the server
+        // starts with a setting nobody asked for.
+        if !hasInlineValue && i + 1 >= argv.count {
+            FileHandle.standardError.write("chatbox: '\(name)' needs a value\n".data(using: .utf8)!)
             exit(2)
         }
         i += (hasInlineValue ? 1 : 2)
@@ -1280,6 +1371,22 @@ if staleAfterValue < 0 {
 }
 let staleAfter = staleAfterValue
 
+// A cap that is too small to hold a request line and its headers would refuse every
+// request, which looks like a broken server rather than a configured one, so it is
+// refused at startup instead. 512 is comfortably above the ~300 bytes a request with a
+// bearer token needs.
+let maxBodyRaw = argValue("--max-body", "8192")
+let maxBodyValue = Int(maxBodyRaw) ?? 0
+// A ceiling as well as a floor. The cap is what bounds memory, so a cap that is itself
+// unbounded is not a cap: one connection then decides how much this server allocates.
+// 4 MB is the guard the receive loop used to carry on its own.
+let maxBodyCeiling = 4 * 1024 * 1024
+if maxBodyValue < 512 || maxBodyValue > maxBodyCeiling {
+    FileHandle.standardError.write("chatbox: --max-body must be between 512 and \(maxBodyCeiling) bytes (a request line and its headers need the floor; the ceiling is what bounds memory) — got '\(maxBodyRaw)'\n".data(using: .utf8)!)
+    exit(2)
+}
+let maxBody = maxBodyValue
+
 // TLS is opt-in, because turning it on changes the URL every client has to use.
 // Everything about it fails closed: a password without an identity, an unreadable
 // password file, an identity that will not open — each one stops the server rather
@@ -1324,7 +1431,8 @@ if !tlsIdentityPath.isEmpty {
     tlsIdentity = identity
 }
 
-let server = Chatbox(store: store, token: token, staleAfter: staleAfter, tlsEnabled: tlsIdentity != nil)
+let server = Chatbox(store: store, token: token, staleAfter: staleAfter,
+                     tlsEnabled: tlsIdentity != nil, maxBody: maxBody)
 let scheme = tlsIdentity == nil ? "http" : "https"
 Chatbox.publicURL = "\(scheme)://\(Host.current().name ?? "localhost"):\(port)"
 
@@ -1359,6 +1467,7 @@ listener.stateUpdateHandler = { state in
         print("auth: \(token == nil ? "OPEN (no token)" : "token required")")
         print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")
         print("transport: \(tlsIdentity == nil ? "plain HTTP — the token crosses the network in the clear" : "TLS")")
+        print("max request: \(maxBody) bytes")
         for a in addrs { print("  \(tlsIdentity == nil ? "http" : "https")://\(a):\(port)/") }
         // stdout is block-buffered when redirected to a file, and this process never
         // exits, so without a flush the banner never reaches chatbox.log.
