@@ -26,6 +26,23 @@ fi
 
 URL="${CHATBOX_URL:-http://100.66.125.48:8787}"
 TOKEN="${CHATBOX_TOKEN:-}"
+# A private CA, for a server whose certificate no system trust store knows about —
+# which is the normal case for a self-signed deployment. curl uses this *instead of*
+# the system bundle for the invocation, so it can only ever narrow trust, never widen
+# it, and there is no flag to skip verification: a client that will talk to anything
+# makes the encryption decorative.
+CACERT="${CHATBOX_CACERT:-}"
+# Trusting a CA only means anything over TLS. Naming one while pointing at http://
+# would send the token in the clear with every appearance of being encrypted, so it is
+# refused rather than ignored.
+case "$URL" in
+  https://*) ;;
+  *) if [ -n "$CACERT" ]; then
+       echo "chatbox: CHATBOX_CACERT is set but CHATBOX_URL is not https:// ($URL)" >&2
+       echo "  a CA only applies to TLS; over http the token would cross the network in the clear" >&2
+       exit 2
+     fi ;;
+esac
 
 usage() {
   cat <<EOF
@@ -76,14 +93,28 @@ the server confirming what you just did. The server refuses an id or a repo key
 that contains a control character, so a peer cannot smuggle a line of its own
 into either one.
 
-Env: CHATBOX_URL, CHATBOX_TOKEN
+Env: CHATBOX_URL, CHATBOX_TOKEN, CHATBOX_CACERT
+
+CHATBOX_CACERT names the CA certificate to trust instead of the system bundle —
+what a self-signed server needs, and only meaningful with an https:// URL. It can
+only narrow trust, never widen it, and there is no flag to skip verification: a
+client that will talk to anything makes the encryption decorative.
 EOF
+}
+
+curl_tls() { # curl, with the configured CA if there is one
+  if [ -n "$CACERT" ]; then
+    # =https, not +https: a redirect must not be able to move the token onto http.
+    curl --cacert "$CACERT" --proto '=https' "$@"
+  else
+    curl "$@"
+  fi
 }
 
 http_get() { # path [query]
   _q="${2:-}"
   [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
-  curl -sS --max-time 30 "${URL}${1}${_q:+?$_q}"
+  curl_tls -sS --max-time 30 "${URL}${1}${_q:+?$_q}"
 }
 
 # A long poll is meant to be held open, so the client's own timeout has to
@@ -91,7 +122,7 @@ http_get() { # path [query]
 http_get_wait() { # path, query, curl --max-time
   _q="${2:-}"
   [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
-  curl -sS --max-time "$3" "${URL}${1}${_q:+?$_q}"
+  curl_tls -sS --max-time "$3" "${URL}${1}${_q:+?$_q}"
 }
 
 # ---------- untrusted framing ----------
@@ -368,9 +399,9 @@ repo_primary() { # directory -> the canonical key of origin, else of the first u
 http_post() { # path, then k=v pairs
   _path="$1"; shift
   if [ -n "$TOKEN" ]; then
-    curl -sS --max-time 60 -G -X POST "$@" --data-urlencode "token=$TOKEN" "${URL}${_path}"
+    curl_tls -sS --max-time 60 -G -X POST "$@" --data-urlencode "token=$TOKEN" "${URL}${_path}"
   else
-    curl -sS --max-time 60 -G -X POST "$@" "${URL}${_path}"
+    curl_tls -sS --max-time 60 -G -X POST "$@" "${URL}${_path}"
   fi
 }
 

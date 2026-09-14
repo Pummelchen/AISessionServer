@@ -77,6 +77,26 @@ nohup ./chatbox --port 8787 --db chatbox.sqlite --token-file chatbox.token \
 curl "http://127.0.0.1:8787/health?token=$(cat chatbox.token)"
 ```
 
+**Serve it over TLS** (optional, and recommended anywhere the network is not a tailnet you control):
+
+```sh
+printf 'a-long-random-passphrase\n' > tls.pass && chmod 600 tls.pass
+openssl pkcs12 -export -out id.p12 -inkey key.pem -in cert.pem -passout file:tls.pass
+./chatbox --port 8787 --db chatbox.sqlite --token-file chatbox.token \
+  --tls-identity id.p12 --tls-password-file tls.pass
+```
+
+(`key.pem`/`cert.pem` are any certificate whose subjectAltName covers the address your clients use.
+The wiki's [Deployment](https://github.com/Pummelchen/AISessionServer/wiki/Deployment) page has a
+copy-pasteable `openssl req` for a self-signed one — written as a `-config` file, because macOS ships
+LibreSSL, which has no `-addext`.)
+
+The banner then says `transport: TLS` and `GET /health` answers `transport: tls`. Clients reach it at
+`https://…` and name the certificate with `CHATBOX_CACERT=/path/cert.pem`; there is no flag to skip
+verification. See the wiki's
+[Deployment](https://github.com/Pummelchen/AISessionServer/wiki/Deployment) page for the certificate
+details and for the reverse-proxy alternative.
+
 **Install the client** on each participating machine and point it at the server:
 
 ```sh
@@ -229,7 +249,10 @@ suite and code scanning green on every push. Known gaps, tracked in the
   background job running is not woken by anything.
 - **Reads are not scoped** — any valid credential can read any thread. The allowlist protects
   *claims*, not confidentiality between machines.
-- No hard message-size cap, no TLS, and no verification that a session really owns the repo it claims.
+- No hard message-size cap yet.
+- **TLS is opt-in.** `--tls-identity` serves the board over TLS from a PKCS#12 identity, and everything
+  about the setup fails closed, but it is off unless you ask for it — so a deployment that has not
+  asked still sends the token in the clear.
 
 ## License
 

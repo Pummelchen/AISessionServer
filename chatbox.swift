@@ -55,6 +55,57 @@ private func isLoopback(_ host: String) -> Bool {
     host.hasPrefix("127.") || host == "::1" || host.hasPrefix("[::1]") || host == "localhost"
 }
 
+/// A PKCS#12 bundle is the one identity format that can be loaded without a
+/// keychain: `SecPKCS12Import` returns an in-memory `SecIdentity`, and
+/// `sec_identity_create` turns it into what the TLS options want. Every symbol here
+/// is re-exported through `Network`, so the server still imports nothing beyond
+/// Foundation, Network and SQLite3.
+///
+/// A failure is reported and returns nil; the caller must refuse to start, because
+/// a misspelt path that quietly served plaintext is the worst possible outcome for
+/// a flag whose entire purpose is encryption.
+func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
+    let p = NSString(string: p12Path).expandingTildeInPath
+    guard let data = FileManager.default.contents(atPath: p) else {
+        FileHandle.standardError.write("chatbox: cannot read --tls-identity \(p)\n".data(using: .utf8)!)
+        return nil
+    }
+    var items: CFArray?
+    var opts: [String: Any] = [kSecImportExportPassphrase as String: password]
+    if #available(macOS 15.0, *) {
+        // Documented to keep the imported key out of the default keychain. Without it
+        // macOS copies the private key into the login keychain, which is a surprise for
+        // an operator and a problem for a server started from launchd or over ssh.
+        opts[kSecImportToMemoryOnly as String] = true
+    }
+    let status = SecPKCS12Import(data as CFData, opts as CFDictionary, &items)
+    // The status is not the answer. macOS returns -26276 for a bundle it imported
+    // perfectly well — measured against identities produced by LibreSSL, OpenSSL 3 and
+    // `security export` alike — so the question is whether an identity came out, and
+    // the status is only worth printing when none did.
+    guard let list = items as? [[String: Any]] else {
+        FileHandle.standardError.write("chatbox: cannot open --tls-identity \(p): OSStatus \(status) — wrong password, or not a PKCS#12 bundle\n".data(using: .utf8)!)
+        return nil
+    }
+    var identities: [SecIdentity] = []
+    for item in list {
+        // Type-checked rather than `as!`: the contract says the value is an identity,
+        // but a bundle that says otherwise should be a diagnostic, not a trap.
+        if let raw = item[kSecImportItemIdentity as String] {
+            let cf = raw as CFTypeRef
+            if CFGetTypeID(cf) == SecIdentityGetTypeID() { identities.append(cf as! SecIdentity) }
+        }
+    }
+    // Exactly one. A bundle holding several makes the choice arbitrary, and the
+    // arbitrary one is presented along with its private key — an operator who bundled
+    // a CA or a client-auth key next to the server key would publish the wrong one.
+    guard identities.count == 1 else {
+        FileHandle.standardError.write("chatbox: --tls-identity \(p) holds \(identities.count) identities — a server identity must be the only one in the bundle (OSStatus \(status))\n".data(using: .utf8)!)
+        return nil
+    }
+    return sec_identity_create(identities[0])
+}
+
 private func hasControlByte(_ s: String) -> Bool {
     for scalar in s.unicodeScalars where scalar.value < 0x20 || scalar.value == 0x7F { return true }
     return false
@@ -367,12 +418,17 @@ final class Chatbox: @unchecked Sendable {
     /// How long a session may go unheard from before it is reported stale. Zero
     /// disables staleness reporting entirely.
     let staleAfter: Int
+    /// Whether the listener is serving TLS. It changes two things the server says:
+    /// the transport line in `/health`, and whether issuing a credential off
+    /// loopback is worth warning about.
+    let tlsEnabled: Bool
     let queue = DispatchQueue(label: "chatbox.queue")
 
-    init(store: Store, token: String?, staleAfter: Int) {
+    init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool) {
         self.store = store
         self.token = token
         self.staleAfter = staleAfter
+        self.tlsEnabled = tlsEnabled
     }
 
     // ---------- presence ----------
@@ -544,7 +600,8 @@ final class Chatbox: @unchecked Sendable {
         let t = store.scalar("SELECT COUNT(*) FROM threads")
         let m = store.scalar("SELECT COUNT(*) FROM messages")
         let presence = staleAfter == 0 ? "off" : "stale after \(humanSeconds(staleAfter))"
-        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\nnow: \(nowISO())\n"
+        let transport = tlsEnabled ? "tls" : "plain http"
+        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nnow: \(nowISO())\n"
     }
 
     func register(_ req: Request, _ who: Principal) -> (Int, String) {
@@ -971,14 +1028,16 @@ final class Chatbox: @unchecked Sendable {
         store.addToken(id: id, hash: sha256Hex(secret), node: node,
                        namespaces: namespaces, note: req.p("note"), at: nowISO())
         // CodeQL flags this response as cleartext transmission of sensitive data,
-        // and it is right: the secret travels in the body. Loopback never leaves the
-        // machine, but anything else is only as private as the transport, so say so
-        // rather than let an operator assume otherwise.
-        let exposure = req.peer.isEmpty || isLoopback(req.peer)
+        // and without TLS it is right: the secret travels in the body. Loopback never
+        // leaves the machine and a TLS listener is encrypted, so the warning is for
+        // the one case that is actually exposed — a plain listener reached from
+        // somewhere else.
+        let exposure = tlsEnabled || req.peer.isEmpty || isLoopback(req.peer)
             ? ""
             : "\nwarning: this was issued over a non-loopback connection (\(req.peer)) with no TLS\n"
               + "         so the secret above crossed the network in the clear. Prefer issuing\n"
-              + "         from the server itself, or put TLS in front of it (tracked as TRK-07).\n"
+              + "         from the server itself, restart with --tls-identity, or terminate TLS\n"
+              + "         in front of it (see the Deployment page).\n"
         return (200, """
         ok credential issued
         id: \(id)
@@ -1139,11 +1198,55 @@ final class Chatbox: @unchecked Sendable {
 
 // MARK: - main
 
+/// The flags this server understands. Anything else on the command line is a
+/// mistake, and the mistake that matters is a security flag: `--tls-identity=/path`
+/// (the `=` form, which used to be ignored) and `--tls-identiy /path` (a typo) both
+/// left the board serving plain HTTP behind a flag that looked like it had turned
+/// encryption on. A flag nobody recognises now stops the server instead.
+let knownFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--stale-after",
+                              "--tls-identity", "--tls-password-file"]
+
+func checkArguments(_ argv: [String]) {
+    var seen = Set<String>()
+    var i = 1
+    while i < argv.count {
+        let raw = argv[i]
+        guard raw.hasPrefix("--") else {
+            FileHandle.standardError.write("chatbox: unexpected argument '\(raw)'\n".data(using: .utf8)!)
+            exit(2)
+        }
+        // `--name=value` is one token; `--name value` is two, and the value is whatever
+        // follows — including something that looks like another flag, so skip it.
+        let name = String(raw.prefix(while: { $0 != "=" }))
+        let hasInlineValue = raw.contains("=")
+        guard knownFlags.contains(name) else {
+            FileHandle.standardError.write("chatbox: unknown flag '\(name)' — refusing to start rather than ignore it\n".data(using: .utf8)!)
+            exit(2)
+        }
+        guard seen.insert(name).inserted else {
+            FileHandle.standardError.write("chatbox: '\(name)' given more than once\n".data(using: .utf8)!)
+            exit(2)
+        }
+        i += (hasInlineValue ? 1 : 2)
+    }
+}
+
 func argValue(_ name: String, _ def: String) -> String {
     let args = CommandLine.arguments
-    if let i = args.firstIndex(of: name), i + 1 < args.count { return args[i + 1] }
+    for (i, a) in args.enumerated() {
+        if a == name, i + 1 < args.count { return args[i + 1] }
+        if a.hasPrefix(name + "=") { return String(a.dropFirst(name.count + 1)) }
+    }
     return def
 }
+
+/// Whether a flag was given at all, which `argValue` cannot say: it returns the
+/// default both when the flag is absent and when it is present with no value.
+func argPresent(_ name: String) -> Bool {
+    CommandLine.arguments.contains(name)
+}
+
+checkArguments(CommandLine.arguments)
 
 let port = UInt16(argValue("--port", "8787")) ?? 8787
 let dbPath = argValue("--db", NSString(string: "~/chatbox.sqlite").expandingTildeInPath)
@@ -1176,10 +1279,68 @@ if staleAfterValue < 0 {
     exit(2)
 }
 let staleAfter = staleAfterValue
-let server = Chatbox(store: store, token: token, staleAfter: staleAfter)
-Chatbox.publicURL = "http://\(Host.current().name ?? "localhost"):\(port)"
 
-let params = NWParameters.tcp
+// TLS is opt-in, because turning it on changes the URL every client has to use.
+// Everything about it fails closed: a password without an identity, an unreadable
+// password file, an identity that will not open — each one stops the server rather
+// than leaving it listening in the clear under a name that promised otherwise.
+let tlsIdentityPath = argValue("--tls-identity", "")
+let tlsPasswordFile = argValue("--tls-password-file", "")
+// Present but unusable is a mistake, not a request for plain HTTP. `--tls-identity
+// "$UNSET"` — or the flag left dangling at the end of argv — would otherwise start a
+// cleartext board behind a flag that promised encryption, which is the exact failure
+// the rest of this block exists to prevent.
+if (argPresent("--tls-identity") || argPresent("--tls-password-file")) && tlsIdentityPath.isEmpty {
+    FileHandle.standardError.write("chatbox: --tls-identity was given without a usable path — refusing to start rather than serve in the clear\n".data(using: .utf8)!)
+    exit(2)
+}
+if tlsIdentityPath.isEmpty && !tlsPasswordFile.isEmpty {
+    FileHandle.standardError.write("chatbox: --tls-password-file means nothing without --tls-identity\n".data(using: .utf8)!)
+    exit(2)
+}
+// macOS will not open a bundle with an empty passphrase (measured: every
+// empty-password bundle, from OpenSSL 3 and LibreSSL alike, comes back as
+// errSecAuthFailed), so demanding the file turns a confusing "wrong password" into a
+// clear one.
+if !tlsIdentityPath.isEmpty && tlsPasswordFile.isEmpty {
+    FileHandle.standardError.write("chatbox: --tls-identity needs --tls-password-file — macOS cannot open a PKCS#12 bundle with no passphrase\n".data(using: .utf8)!)
+    exit(2)
+}
+var tlsPassword = ""
+if !tlsIdentityPath.isEmpty && !tlsPasswordFile.isEmpty {
+    let p = NSString(string: tlsPasswordFile).expandingTildeInPath
+    guard let s = try? String(contentsOfFile: p, encoding: .utf8) else {
+        FileHandle.standardError.write("chatbox: cannot read --tls-password-file \(p)\n".data(using: .utf8)!)
+        exit(2)
+    }
+    tlsPassword = s.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+var tlsIdentity: sec_identity_t? = nil
+if !tlsIdentityPath.isEmpty {
+    guard let identity = loadTLSIdentity(p12Path: tlsIdentityPath, password: tlsPassword) else {
+        FileHandle.standardError.write("chatbox: refusing to start — TLS was asked for and could not be set up\n".data(using: .utf8)!)
+        exit(2)
+    }
+    tlsIdentity = identity
+}
+
+let server = Chatbox(store: store, token: token, staleAfter: staleAfter, tlsEnabled: tlsIdentity != nil)
+let scheme = tlsIdentity == nil ? "http" : "https"
+Chatbox.publicURL = "\(scheme)://\(Host.current().name ?? "localhost"):\(port)"
+
+let params: NWParameters
+if let identity = tlsIdentity {
+    let tls = NWProtocolTLS.Options()
+    // No explicit version floor: Network.framework already refuses anything below
+    // TLS 1.2 (measured — a client capped at 1.1 is turned away with a protocol
+    // alert), so a line here would be a second copy of a platform guarantee. The
+    // suite asserts the property instead, which is the part that matters and the
+    // part that would notice if the platform ever changed its mind.
+    sec_protocol_options_set_local_identity(tls.securityProtocolOptions, identity)
+    params = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+} else {
+    params = NWParameters.tcp
+}
 params.allowLocalEndpointReuse = true
 let listener: NWListener
 do {
@@ -1197,7 +1358,8 @@ listener.stateUpdateHandler = { state in
         print("db: \(dbPath)")
         print("auth: \(token == nil ? "OPEN (no token)" : "token required")")
         print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")
-        for a in addrs { print("  http://\(a):\(port)/") }
+        print("transport: \(tlsIdentity == nil ? "plain HTTP — the token crosses the network in the clear" : "TLS")")
+        for a in addrs { print("  \(tlsIdentity == nil ? "http" : "https")://\(a):\(port)/") }
         // stdout is block-buffered when redirected to a file, and this process never
         // exits, so without a flush the banner never reaches chatbox.log.
         fflush(stdout)
