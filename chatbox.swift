@@ -419,6 +419,12 @@ final class Store: @unchecked Sendable {
         rows(sql, binds).first?.values.first ?? ""
     }
 
+    /// Rows changed by the most recent `run`. `last_insert_rowid` cannot answer this:
+    /// an `INSERT … SELECT … WHERE` that matches nothing leaves it at the previous
+    /// row's id, so a caller that needs to know whether the row was really stored has
+    /// to ask this instead.
+    func changedRows() -> Int32 { sqlite3_changes(db) }
+
     // MARK: credentials
 
     func tokenByHash(_ hash: String) -> [String: String]? {
@@ -722,7 +728,8 @@ final class Chatbox: @unchecked Sendable {
 
     // ---------- presence ----------
     //
-    // `last_seen` is refreshed by registering, sending, reading an inbox or acking,
+    // `last_seen` is refreshed by registering, by sending a message that was stored,
+    // by reading an inbox or acking,
     // and by a held long poll for as long as its peer is still connected — at most
     // once a minute, and more often when the window is shorter than that. So a
     // session past the window is one that has gone quiet, rather than one that is
@@ -1006,21 +1013,41 @@ final class Chatbox: @unchecked Sendable {
             guard validId(t) else { return (400, "error: to must name ids that are single lines, without control characters\n") }
         }
 
-        // keep the sender's liveness fresh
-        store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), from])
+        // `reply_to` is informational, but it is stored in an integer column: a value
+        // that is not a message id used to be dropped to 0 without a word, so the
+        // reader saw no reply marker and the sender was never told why. Checked with
+        // the other parameters, so a refusal cannot open a thread on its way out.
+        let replyToIn = req.p("reply_to")
+        var replyTo: Int64 = 0
+        if !replyToIn.isEmpty {
+            guard let r = Int64(replyToIn), r >= 0 else {
+                return (400, "error: reply_to must be a message id, not '\(oneLine(replyToIn))'\n")
+            }
+            replyTo = r
+        }
 
+        // Resolve the thread before anything else is written. A reply must name a thread
+        // that exists: `thread=N` with no `threads` row used to store the message under
+        // that id anyway, where nothing could reach it — `GET /thread?id=N` answered 404
+        // and no participant was ever routed to it. The id is never created on demand,
+        // so a caller cannot squat on one and claim a conversation that somebody else
+        // has not started. Whether the thread still exists *when the message is stored*
+        // is settled by the insert itself, below.
         var threadId: Int64
         var effRepo = canonicalRepo
-        if !threadIn.isEmpty, let t = Int64(threadIn), t > 0 {
+        if threadIn.isEmpty {
+            threadId = store.run("INSERT INTO threads (repo,subject,created_at,created_by,last_at) VALUES (?,?,?,?,?)",
+                                 [effRepo, subject, nowISO(), from, nowISO()])
+        } else {
+            guard let t = Int64(threadIn), t > 0 else {
+                return (400, "error: thread must be a positive integer, not '\(oneLine(threadIn))'\n")
+            }
             threadId = t
             // a reply inherits the thread's repo so routing stays consistent
-            if effRepo.isEmpty { effRepo = store.scalar("SELECT repo FROM threads WHERE id = ?", [threadIn]) }
+            if effRepo.isEmpty { effRepo = store.scalar("SELECT repo FROM threads WHERE id = ?", [String(t)]) }
             // A thread stored before the send path validated its key must not become a
             // way to echo that key back: it is dropped rather than repeated.
             if !effRepo.isEmpty { effRepo = canonicalRepoKey(effRepo) ?? "" }
-        } else {
-            threadId = store.run("INSERT INTO threads (repo,subject,created_at,created_by,last_at) VALUES (?,?,?,?,?)",
-                                 [effRepo, subject, nowISO(), from, nowISO()])
         }
         guard threadId > 0 else { return (500, "error: could not open thread\n") }
 
@@ -1047,11 +1074,24 @@ final class Chatbox: @unchecked Sendable {
         var already = Set<String>()
         recipients = recipients.filter { already.insert($0).inserted }
 
-        let replyTo = Int64(req.p("reply_to")) ?? 0
+        // The thread's existence is enforced by the insert, not by a read before it:
+        // `INSERT … SELECT … WHERE EXISTS` stores the row only while the thread is still
+        // there, so an operator's `--prune` racing this reply cannot leave a message
+        // nobody can reach. A reply into a thread that is not there stores nothing at
+        // all — no message, no delivery, and not even the sender's liveness stamp.
         let msgId = store.run("""
         INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,reply_to,recipients)
-        VALUES (?,?,?,?,?,?,?,?)
-        """, [String(threadId), nowISO(), from, effRepo, subject, body, replyTo == 0 ? nil : String(replyTo), recipients.joined(separator: ",")])
+        SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM threads WHERE id=?)
+        """, [String(threadId), nowISO(), from, effRepo, subject, body, replyTo == 0 ? nil : String(replyTo), recipients.joined(separator: ","), String(threadId)])
+        if store.changedRows() == 0 {
+            // The select matched no row, so nothing was stored. For a reply that means
+            // the thread is gone — and answering 404 here is what keeps a message from
+            // ever being written where no reader can reach it.
+            return (404, "error: no thread \(threadId) — send without thread= to open one\n")
+        }
+
+        // keep the sender's liveness fresh, once the message is known to be stored
+        store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), from])
 
         for r in recipients {
             store.run("INSERT OR IGNORE INTO deliveries (message_id,agent,created_at) VALUES (?,?,?)",
