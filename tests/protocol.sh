@@ -2581,6 +2581,96 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 19. Registration convenience (TRK-13)
+# A registration should be one argument, not five. The client derives the machine's name and
+# address from the machine and the agent product from the markers the products set, so
+# `chatbox register --repo X` is a complete registration. Every derived value is a *default*: an
+# explicit flag wins, and anything that cannot be determined is left empty rather than invented —
+# a session id that points at nothing is worse than no session id.
+# ---------------------------------------------------------------------------
+if [ -f "$CLI" ]; then
+  # A checkout to claim, so the verification path runs too.
+  rfixture="$SCRATCH/regfixture-${RUN}"
+  rm -rf "$rfixture"; mkdir -p "$rfixture"
+  git -C "$rfixture" init -q >/dev/null 2>&1
+  git -C "$rfixture" remote add origin 'git@github.com:acme/regfixture.git' >/dev/null 2>&1
+  # CHATBOX_AGENT makes the derived id deterministic wherever this runs.
+  reg_env() { # then the client arguments
+    CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" CHATBOX_AGENT=probe \
+      sh "$CLI" "$@"
+  }
+  hostshort="$(hostname -s 2>/dev/null || uname -n 2>/dev/null)"
+  hostshort="${hostshort%%.*}"
+
+  # The DoD, exactly: one argument.
+  bare="$( (cd "$rfixture" && CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+    CHATBOX_AGENT=probe sh "$CLI" register --repo github.com/acme/regfixture) 2>&1)"
+  contains "register with only a repo works" "$bare" "ok registered"
+  contains "and derives an id" "$bare" "id: $hostshort-probe"
+  contains "and the machine's own name" "$bare" "node: $hostshort"
+  contains "and the agent product" "$bare" "agent: probe"
+  contains "and claims the repo" "$bare" "repos: github.com/acme/regfixture"
+  # Derived, and then *stored*: the registry is where a peer reads it.
+  rpeers="$(get /peers)"
+  contains "the derived identity is on the board" "$rpeers" "$hostshort-probe"
+  contains "with the node it derived" "$rpeers" "probe on $hostshort"
+  # An address, when the machine has one. Loopback is not useful to another machine, so the
+  # derived value must not be it.
+  rbare_ip="$(printf '%s\n' "$bare" | sed -n 's/^ip: \([^ ]*\).*/\1/p')"
+  if [ -z "$rbare_ip" ]; then
+    printf '  skip  a derived address (this machine has no non-loopback IPv4)\n'
+  elif [ "$rbare_ip" = "127.0.0.1" ]; then
+    no "a derived address is not loopback" "got $rbare_ip"
+  else
+    ok "a derived address is not loopback"
+  fi
+
+  # Every one of them is a default, not a decision: an explicit flag still wins.
+  explicit="$(reg_env register --id chosen --node chosennode --agent chosenagent \
+    --session chosensession --ip 10.9.8.7 2>&1)"
+  contains "an explicit id wins" "$explicit" "id: chosen"
+  contains "an explicit node wins" "$explicit" "node: chosennode"
+  contains "an explicit agent wins" "$explicit" "agent: chosenagent"
+  contains "an explicit session wins" "$explicit" "session: chosensession"
+  contains "an explicit address wins" "$explicit" "ip: 10.9.8.7"
+
+  # The markers the agent products set themselves.
+  for marker in "CLAUDECODE=1:claude" "CODEX_HOME=/tmp:codex" "CURSOR_TRACE_ID=x:cursor"; do
+    _kv="${marker%%:*}"; _want="${marker#*:}"
+    _got="$(env "$_kv" CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+      sh "$CLI" register --id "m-$_want" --node n 2>&1 | sed -n 's/.*agent: \([^ ]*\).*/\1/p')"
+    equals "the $_kv marker is recognised" "$_got" "$_want"
+  done
+  equals "CHATBOX_AGENT beats the product markers" \
+    "$(env CLAUDECODE=1 CHATBOX_AGENT=mine CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" \
+        CHATBOX_TOKEN="$TOKEN" sh "$CLI" register --id m-mine --node n 2>&1 | sed -n 's/.*agent: \([^ ]*\).*/\1/p')" \
+    "mine"
+
+  # Nothing to go on: the fields are left out rather than guessed. `env -i` clears the DSH_*
+  # markers this harness exports, which would otherwise answer for it.
+  clean="$(env -i PATH="$PATH" HOME="$HOME" CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" \
+    CHATBOX_TOKEN="$TOKEN" sh "$CLI" register --id cleanenv --node n 2>&1)"
+  contains "with no markers the agent is left empty, not invented" "$clean" "agent:  "
+  # The session is the last field on its line, so this compares the value rather than a
+  # substring that an actual session id would also satisfy.
+  equals "and so is the session" \
+    "$(printf '%s\n' "$clean" | sed -n 's/.*session: //p' | head -1 | sed 's/ *$//')" ""
+  # The id is still derived, because the node is still known.
+  equals "the id falls back to the node alone when no agent is known" \
+    "$(printf '%s\n' "$clean" | sed -n 's/^id: //p')" "cleanenv"
+
+  # The verification the client has always done still applies to a defaulted registration.
+  if (cd "$rfixture" && CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+        CHATBOX_AGENT=probe sh "$CLI" register --repo github.com/other/thing >/dev/null 2>&1); then
+    no "a defaulted registration still verifies its claim" "it was accepted"
+  else
+    ok "a defaulted registration still verifies its claim"
+  fi
+else
+  printf '  skip  registration convenience (needs the client)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

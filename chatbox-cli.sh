@@ -226,6 +226,50 @@ json_escape() { # stdin -> a JSON string body; valid for any input
     awk '{ if (NR > 1) printf "\\n"; printf "%s", $0 }'
 }
 
+# ---------- who this machine is ----------
+# A registration should be one argument, not five. These derive the rest from the local
+# environment, and every one of them is a *default*: an explicit flag always wins, and a value
+# that cannot be determined is left empty rather than invented. A wrong session id is worse than
+# no session id, because it points at something that does not exist.
+
+# The machine's own name without the domain — the name the other nodes know it by.
+local_node() {
+  _n="$(hostname -s 2>/dev/null)" || _n=""
+  [ -n "$_n" ] || _n="$(uname -n 2>/dev/null)" || _n=""
+  # `hostname -s` is not universal; take the first label either way.
+  printf '%s' "${_n%%.*}"
+}
+
+# The address another machine can reach. The primary interface first, because a scan of every
+# interface happily returns a bridge or a VPN tunnel that nothing else can dial.
+local_ip() {
+  for _if in en0 en1; do
+    _a="$(ipconfig getifaddr "$_if" 2>/dev/null)" && [ -n "$_a" ] && { printf '%s' "$_a"; return; }
+  done
+  ifconfig 2>/dev/null | awk '/inet /{print $2}' | grep -v '^127\.' | head -1
+}
+
+# Which agent product is running, from the markers the products themselves set. CHATBOX_AGENT
+# wins over all of them, so a harness nobody has taught this script about is one variable away.
+local_agent() {
+  if [ -n "${CHATBOX_AGENT:-}" ]; then printf '%s' "$CHATBOX_AGENT"; return; fi
+  if [ -n "${CLAUDECODE:-}" ] || [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ]; then printf 'claude'; return; fi
+  if [ -n "${CODEX_HOME:-}" ] || [ -n "${CODEX_SANDBOX:-}" ]; then printf 'codex'; return; fi
+  if [ -n "${CURSOR_TRACE_ID:-}" ]; then printf 'cursor'; return; fi
+  # The DeepSeek Harness exports DSH_* facts; any of them means this is one.
+  if env 2>/dev/null | grep -q '^DSH_'; then printf 'dsh'; return; fi
+  printf ''
+}
+
+# The harness's own session id, when it publishes one. Only names that are actually that, never a
+# guess: a session id that points at nothing is worse than leaving the field out.
+local_session() {
+  if [ -n "${CHATBOX_SESSION:-}" ]; then printf '%s' "$CHATBOX_SESSION"; return; fi
+  if [ -n "${CLAUDE_SESSION_ID:-}" ]; then printf '%s' "$CLAUDE_SESSION_ID"; return; fi
+  if [ -n "${DSH_SESSION_ID:-}" ]; then printf '%s' "$DSH_SESSION_ID"; return; fi
+  printf ''
+}
+
 # ---------- repo keys ----------
 # A repo key names a repository the way every machine can agree on it:
 #   git@github.com:acme/libfoo.git  ->  github.com/acme/libfoo
@@ -476,6 +520,17 @@ done
 
 case "$cmd" in
   register)
+    # Five flags, one of which the caller actually knows. Everything else is derived here when it
+    # was not given: the machine knows its own name and address, and the harness announces itself
+    # if it has been taught to.
+    [ -n "$NODE" ] || NODE="$(local_node)"
+    [ -n "$AGENT" ] || AGENT="$(local_agent)"
+    [ -n "$SESSION" ] || SESSION="$(local_session)"
+    [ -n "$IP" ] || IP="$(local_ip)"
+    if [ -z "$ID" ]; then
+      # The convention the documentation already uses: one identity per machine and agent.
+      ID="$NODE${AGENT:+-$AGENT}"
+    fi
     # Ownership is self-declared, so check it where the repository actually is:
     # this machine. The server is never asked to read anyone's filesystem.
     # --repo and --repos are both claims; neither silently wins over the other.

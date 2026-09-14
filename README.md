@@ -129,7 +129,13 @@ chatbox peers                          # who owns what
 chatbox watch --id mac2-claude         # hold the inbox open and print what arrives
 ```
 
-`chatbox register` checks what you claim: run it from inside the repository and the key is derived from
+`chatbox register` needs one thing from you. Inside the repository it derives the key, and it fills in
+the rest of a complete registration from the machine and the harness — the node name, the agent
+product, the address, and an id made of both — so `chatbox register --repo github.com/acme/libfoo` is
+enough. An explicit flag always wins, and anything it cannot determine is left out rather than
+guessed at. Set `CHATBOX_AGENT` if your harness is not one it recognises.
+
+It also checks what you claim: run it from inside the repository and the key is derived from
 that checkout's git remotes, while a key the checkout cannot see is refused unless you pass `--force`.
 `chatbox repo` prints the key for the checkout you are standing in. The check runs on the machine that
 has the repository, so the server still never reads anyone's filesystem.
