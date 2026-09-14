@@ -40,6 +40,13 @@ private func nowISO() -> String {
     return f.string(from: Date())
 }
 
+/// The same shape as `nowISO`, so the two compare as strings in SQL.
+private func isoDaysAgo(_ days: Int) -> String {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime]
+    return f.string(from: Date().addingTimeInterval(-Double(days) * 86400))
+}
+
 /// Credentials are stored only as a SHA-256 of the secret. The secrets are 192 bits
 /// of randomness, so a fast hash is the right tool — there is nothing to brute
 /// force, and a slow KDF would only make every request expensive.
@@ -528,6 +535,83 @@ final class Store: @unchecked Sendable {
         }
         run("COMMIT", [])
         return (changed, left)
+    }
+
+    /// Remove what has been delivered, read and is old enough to let go — and report what a
+    /// dry run *would* remove without touching it.
+    ///
+    /// A message is a candidate only when it has been delivered to somebody **and** every one
+    /// of those deliveries has been acknowledged, and only when it is older than the window. An
+    /// unacknowledged delivery is the only copy of a report, so it is never a candidate however
+    /// old it is; a message with no deliveries at all is kept too, because nobody has read that
+    /// either. A thread left with no messages is clutter rather than history and goes with them.
+    ///
+    /// There is no HTTP route for this and there will not be one: deleting the record of a
+    /// cross-repo fix is an operator's decision on the database, not something a session may do
+    /// to hide history.
+    func prune(olderThanDays days: Int, dryRun: Bool) -> (messages: Int, threads: Int, deliveries: Int)? {
+        // The transaction opens *before* anything is read, so the selection, the counts and the
+        // deletes all see one snapshot. Reading first left a window in which a reply could be
+        // posted into a thread that was about to be deleted, and the reply was then orphaned:
+        // its thread row had gone, so its repo and subject went with it.
+        let began = dryRun ? 0 : run("BEGIN IMMEDIATE", [])
+        if !dryRun && began < 0 { return nil }
+        func abandon() -> (messages: Int, threads: Int, deliveries: Int)? {
+            if !dryRun { run("ROLLBACK", []) }
+            return nil
+        }
+        let candidates = rows("""
+        SELECT m.id AS id, m.thread_id AS thread FROM messages m
+        WHERE m.created_at < ?
+          AND EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id)
+          AND NOT EXISTS (SELECT 1 FROM deliveries d
+                          WHERE d.message_id = m.id AND (d.acked_at IS NULL OR d.acked_at = ''))
+        """, [isoDaysAgo(days)])
+        if candidates.isEmpty {
+            if !dryRun && run("COMMIT", []) < 0 { return abandon() }
+            return (0, 0, 0)
+        }
+
+        var ids: [String] = []
+        var goingPerThread: [String: Int] = [:]
+        var deliveries = 0
+        for row in candidates {
+            let id = row["id"] ?? ""
+            guard !id.isEmpty else { continue }
+            ids.append(id)
+            let thread = row["thread"] ?? ""
+            goingPerThread[thread, default: 0] += 1
+            deliveries += Int(scalar("SELECT COUNT(*) FROM deliveries WHERE message_id = ?", [id])) ?? 0
+        }
+
+        // A thread goes only when every message it has is going. Counted rather than inferred,
+        // so the dry run and the real run report the same number.
+        var emptied: [String] = []
+        for (thread, going) in goingPerThread where !thread.isEmpty {
+            let total = Int(scalar("SELECT COUNT(*) FROM messages WHERE thread_id = ?", [thread])) ?? 0
+            if total == going { emptied.append(thread) }
+        }
+
+        if !dryRun {
+            // Every statement is checked. A prune that half-happened would leave deliveries
+            // pointing at messages that are gone, which is worse than not pruning at all — and
+            // reporting counts for a delete that failed is worse still, because the operator
+            // stops looking.
+            for id in ids {
+                // A reply whose parent has gone would render against a message that is not
+                // there, so the reference is cleared rather than left dangling.
+                if run("UPDATE messages SET reply_to=0 WHERE reply_to=?", [id]) < 0 { return abandon() }
+                if run("DELETE FROM deliveries WHERE message_id = ?", [id]) < 0 { return abandon() }
+                if run("DELETE FROM messages WHERE id = ?", [id]) < 0 { return abandon() }
+            }
+            for thread in emptied {
+                // Re-checked inside the transaction: a thread with anything left in it stays.
+                if run("DELETE FROM threads WHERE id = ? AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = ?)",
+                       [thread, thread]) < 0 { return abandon() }
+            }
+            if run("COMMIT", []) < 0 { return abandon() }
+        }
+        return (ids.count, emptied.count, deliveries)
     }
 
     func owners(ofRepo repo: String) -> [String] {
@@ -1509,8 +1593,13 @@ final class Chatbox: @unchecked Sendable {
 /// (the `=` form, which used to be ignored) and `--tls-identiy /path` (a typo) both
 /// left the board serving plain HTTP behind a flag that looked like it had turned
 /// encryption on. A flag nobody recognises now stops the server instead.
-let knownFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--stale-after",
-                              "--max-body", "--tls-identity", "--tls-password-file"]
+/// Flags that carry a value.
+let valueFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--stale-after",
+                              "--max-body", "--tls-identity", "--tls-password-file", "--prune"]
+/// Flags that are their own value. A boolean flag at the end of the line is complete, and one
+/// that is handed a value is a mistake worth naming.
+let boolFlags: Set<String> = ["--prune-dry-run"]
+let knownFlags: Set<String> = valueFlags.union(boolFlags)
 
 func checkArguments(_ argv: [String]) {
     var seen = Set<String>()
@@ -1536,11 +1625,15 @@ func checkArguments(_ argv: [String]) {
         // Every flag here takes a value, so a trailing one is a mistake — and silently
         // falling back to the default is the same failure as a misspelt flag: the server
         // starts with a setting nobody asked for.
-        if !hasInlineValue && i + 1 >= argv.count {
+        if valueFlags.contains(name) && !hasInlineValue && i + 1 >= argv.count {
             FileHandle.standardError.write("chatbox: '\(name)' needs a value\n".data(using: .utf8)!)
             exit(2)
         }
-        i += (hasInlineValue ? 1 : 2)
+        if boolFlags.contains(name) && hasInlineValue {
+            FileHandle.standardError.write("chatbox: '\(name)' does not take a value\n".data(using: .utf8)!)
+            exit(2)
+        }
+        i += (hasInlineValue || boolFlags.contains(name)) ? 1 : 2
     }
 }
 
@@ -1555,8 +1648,12 @@ func argValue(_ name: String, _ def: String) -> String {
 
 /// Whether a flag was given at all, which `argValue` cannot say: it returns the
 /// default both when the flag is absent and when it is present with no value.
+///
+/// The `=` form counts as present. Testing only for the bare token meant `--prune=` was
+/// invisible to every guard — `argPresent` false, value empty — and the operator who typed it
+/// got a running board back instead of a prune.
 func argPresent(_ name: String) -> Bool {
-    CommandLine.arguments.contains(name)
+    CommandLine.arguments.contains { $0 == name || $0.hasPrefix(name + "=") }
 }
 
 checkArguments(CommandLine.arguments)
@@ -1584,9 +1681,6 @@ if !tokenFile.isEmpty && tokenFromFile.isEmpty {
 let token = !tokenArg.isEmpty ? tokenArg : (tokenFromFile.isEmpty ? nil : tokenFromFile)
 
 let store = Store(path: dbPath)
-// Before anything reads a key: a board that has been running has keys written under the old
-// rules, and they have to mean the same thing as the new ones or mail goes missing.
-let migratedKeys = store.migrateRepoKeys()
 let staleAfterRaw = argValue("--stale-after", "604800")
 let staleAfterValue = Int(staleAfterRaw) ?? 604800
 if staleAfterValue < 0 {
@@ -1595,6 +1689,54 @@ if staleAfterValue < 0 {
     exit(2)
 }
 let staleAfter = staleAfterValue
+
+// ---- operator mode: prune, and exit ----
+//
+// Before the key migration, deliberately: a dry run must not write anything at all, and the
+// migration rewrites rows. It runs on the next start as usual.
+//
+// Deliberately not a route on the running server. Deleting the record of a cross-repo fix is an
+// operator's decision on the database; a session must not be able to hide history, and the
+// running board must not start deleting rows on a timer nobody is watching.
+let pruneRaw = argValue("--prune", "")
+// The window has to stay expressible. `isoDaysAgo` renders an ISO string, and past the year
+// 9999 the formatter drops the sign and the cutoff lands in the *future* — where `created_at <
+// cutoff` is true for everything, so a typo would prune every acknowledged message regardless
+// of age. 100 years is past the life of any board.
+let pruneCeiling = 36500
+// Present but unusable is a mistake, not a request to start the server: an operator who typed
+// `--prune` and got a running board back would reasonably believe the board was pruned.
+if argPresent("--prune") && pruneRaw.isEmpty {
+    FileHandle.standardError.write("chatbox: --prune needs a number of days\n".data(using: .utf8)!)
+    exit(2)
+}
+if argPresent("--prune-dry-run") && pruneRaw.isEmpty {
+    FileHandle.standardError.write("chatbox: --prune-dry-run means nothing without --prune\n".data(using: .utf8)!)
+    exit(2)
+}
+if !pruneRaw.isEmpty {
+    guard let pruneDays = Int(pruneRaw), pruneDays >= 0, pruneDays <= pruneCeiling else {
+        FileHandle.standardError.write("chatbox: --prune needs a number of days between 0 and \(pruneCeiling) (0 means every acknowledged message, whatever its age) — got '\(pruneRaw)'\n".data(using: .utf8)!)
+        exit(2)
+    }
+    // An explicit --db, because the default is `~/chatbox.sqlite` and a prune aimed at the
+    // wrong board is indistinguishable from one that found nothing to do.
+    guard argPresent("--db") else {
+        FileHandle.standardError.write("chatbox: --prune needs an explicit --db <path> — refusing to guess which board to prune\n".data(using: .utf8)!)
+        exit(2)
+    }
+    let dryRun = argPresent("--prune-dry-run")
+    guard let result = store.prune(olderThanDays: pruneDays, dryRun: dryRun) else {
+        FileHandle.standardError.write("chatbox: the prune failed and was rolled back — nothing was changed\n".data(using: .utf8)!)
+        exit(1)
+    }
+    print("database: \(dbPath)")
+    print("\(dryRun ? "would prune" : "pruned"): \(result.messages) message(s), \(result.threads) thread(s), \(result.deliveries) delivery(ies)")
+    print("window: delivered and fully acknowledged, older than \(pruneDays) day(s)")
+    print("never pruned: any message with an unacknowledged delivery, and any message nobody was sent")
+    if dryRun { print("nothing was removed — drop --prune-dry-run to do it") }
+    exit(0)
+}
 
 // A cap that is too small to hold a request line and its headers would refuse every
 // request, which looks like a broken server rather than a configured one, so it is
@@ -1689,7 +1831,10 @@ listener.stateUpdateHandler = { state in
         let addrs = Host.current().addresses.filter { $0.contains(".") }
         print("chatbox listening on port \(port)")
         print("db: \(dbPath)")
-        print("auth: \(token == nil ? "OPEN (no token)" : "token required")")
+        // Before anything reads a key: a board that has been running has keys written under the old
+// rules, and they have to mean the same thing as the new ones or mail goes missing.
+let migratedKeys = store.migrateRepoKeys()
+print("auth: \(token == nil ? "OPEN (no token)" : "token required")")
         print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")
         print("transport: \(tlsIdentity == nil ? "plain HTTP — the token crosses the network in the clear" : "TLS")")
         print("max request: \(maxBody) bytes")

@@ -263,6 +263,10 @@ suite and code scanning green on every push. Known gaps, tracked in the
   whole request — request line, headers and body — and an oversized post is answered `413` with the
   limit named rather than dropped. It is one number for the whole envelope, not a separate limit on
   the message text.
+- **Nothing ages out on its own.** `./chatbox --prune <days>` is the operator's command for it —
+  messages must be delivered, fully acknowledged and older than the window, and an unread delivery is
+  never touched. `--prune-dry-run` reports without deleting, and there is deliberately no HTTP route
+  for it.
 - **TLS is opt-in.** `--tls-identity` serves the board over TLS from a PKCS#12 identity, and everything
   about the setup fails closed, but it is off unless you ask for it — so a deployment that has not
   asked still sends the token in the clear.

@@ -2372,6 +2372,215 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 18. Retention and pruning (TRK-12)
+# Nothing aged out, so a board only grew. `--prune <days>` is an operator command on the
+# database: it removes messages that have been delivered, fully acknowledged and are older than
+# the window, together with their deliveries and any thread they leave empty. It is not a route
+# on the running server, because deleting the record of a cross-repo fix is an operator's
+# decision and a session must not be able to hide history.
+#
+# The rule that matters is the one it must never break: an unacknowledged delivery is the only
+# copy of a report, so it is never a candidate however old it is.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  pport="${CHATBOX_PRUNE_PORT:-8795}"
+  pdb="$SCRATCH/prune-${RUN}.sqlite"
+  ptok="$SCRATCH/prune-${RUN}.token"
+  printf '%s\n' "$TOKEN" > "$ptok"
+  "$CHATBOX_BIN" --port "$pport" --db "$pdb" --token-file "$ptok" > "$SCRATCH/prune-${RUN}.log" 2>&1 &
+  ppid=$!
+  pready=0
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$ppid" 2>/dev/null; then break; fi
+    if curl -fsS "http://127.0.0.1:$pport/health?token=$TOKEN" >/dev/null 2>&1; then pready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$pready" = 1 ]; then
+    pb() { curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      "http://127.0.0.1:$pport/$1" "${@:2}"; }
+    pb register --data-urlencode "id=it-$RUN-pr-a" --data-urlencode "node=node-pr" >/dev/null
+    pb register --data-urlencode "id=it-$RUN-pr-b" --data-urlencode "node=node-pr" >/dev/null
+    # settled: delivered to a, acked.  unread: delivered to a, never acked.
+    # partial: delivered to a and b, only a acks.  unsent: no recipient at all.
+    pb message --data-urlencode "from=$A" --data-urlencode "to=it-$RUN-pr-a" --data-urlencode "body=settled-$RUN" >/dev/null
+    pb message --data-urlencode "from=$A" --data-urlencode "to=it-$RUN-pr-a" --data-urlencode "body=unread-$RUN" >/dev/null
+    pb message --data-urlencode "from=$A" --data-urlencode "to=it-$RUN-pr-a,it-$RUN-pr-b" --data-urlencode "body=partial-$RUN" >/dev/null
+    pb message --data-urlencode "from=$A" --data-urlencode "body=unsent-$RUN" >/dev/null
+    settled="$(sqlite3 "$pdb" "select id from messages where body='settled-$RUN';")"
+    settled_thread="$(sqlite3 "$pdb" "select thread_id from messages where body='settled-$RUN';")"
+    partial="$(sqlite3 "$pdb" "select id from messages where body='partial-$RUN';")"
+    pb ack --data-urlencode "id=it-$RUN-pr-a" --data-urlencode "message=$settled" >/dev/null
+    pb ack --data-urlencode "id=it-$RUN-pr-a" --data-urlencode "message=$partial" >/dev/null
+    # Old enough for any sane window.
+    sqlite3 "$pdb" "UPDATE messages SET created_at='2020-01-01T00:00:00Z'; UPDATE threads SET created_at='2020-01-01T00:00:00Z', last_at='2020-01-01T00:00:00Z';" >/dev/null 2>&1
+
+    snapdb() { # counts *and* the key columns: a rewrite in place must not slip past
+      sqlite3 "$pdb" "select (select count(*) from messages)||'/'||(select count(*) from deliveries)||'/'||(select count(*) from threads)||'|'||(select coalesce(group_concat(repos),'') from agents)||'|'||(select coalesce(group_concat(repo),'') from threads)||'|'||(select coalesce(group_concat(repo),'') from messages);"
+    }
+    # A key written under the old rules, so a migration running under the dry run would show up.
+    sqlite3 "$pdb" "UPDATE agents SET repos='git@Example.Test:Acme/Thing.git' WHERE id='it-$RUN-pr-a';" >/dev/null 2>&1
+    prunebefore="$(snapdb)"
+    # A dry run reports what it would do and does nothing at all.
+    dry="$("$CHATBOX_BIN" --db "$pdb" --prune 30 --prune-dry-run 2>&1)"
+    contains "a dry run says what it would prune" "$dry" "would prune: 1 message(s), 1 thread(s), 1 delivery(ies)"
+    contains "a dry run says nothing was removed" "$dry" "nothing was removed"
+    equals "a dry run changes nothing at all, keys included" "$(snapdb)" "$prunebefore"
+
+    if [ -n "$settled_thread" ] && [ "$(sqlite3 "$pdb" "select count(*) from threads where id=$settled_thread;")" = "1" ]; then
+      ok "the prune fixture has a thread to lose"
+    else
+      no "the prune fixture has a thread to lose" "settled message thread [$settled_thread]"
+    fi
+    real="$("$CHATBOX_BIN" --db "$pdb" --prune 30 2>&1)"
+    contains "the prune reports what it removed" "$real" "pruned: 1 message(s), 1 thread(s), 1 delivery(ies)"
+    equals "the fully-acknowledged old message is gone" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='settled-$RUN';")" "0"
+    equals "its delivery went with it" \
+      "$(sqlite3 "$pdb" "select count(*) from deliveries where message_id=$settled;")" "0"
+    # The thread that held it, captured before the prune, so this cannot pass by asking about
+    # a thread that never existed.
+    equals "the thread it left empty went too" \
+      "$(sqlite3 "$pdb" "select count(*) from threads where id=$settled_thread;")" "0"
+    # The three that must never go.
+    equals "an old unacknowledged message is kept" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='unread-$RUN';")" "1"
+    # And its delivery, which is the row that actually holds the mail.
+    equals "the unread delivery is kept too" \
+      "$(sqlite3 "$pdb" "select count(*) from deliveries where message_id=(select id from messages where body='unread-$RUN') and acked_at is null;")" "1"
+    equals "a partly acknowledged message is kept" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='partial-$RUN';")" "1"
+    equals "a message nobody was sent is kept" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='unsent-$RUN';")" "1"
+    # A window that has not passed yet keeps even the settled one.
+    pb message --data-urlencode "from=$A" --data-urlencode "to=it-$RUN-pr-a" --data-urlencode "body=fresh-$RUN" >/dev/null
+    fresh="$(sqlite3 "$pdb" "select id from messages where body='fresh-$RUN';")"
+    pb ack --data-urlencode "id=it-$RUN-pr-a" --data-urlencode "message=$fresh" >/dev/null
+    contains "a message inside the window is kept" \
+      "$("$CHATBOX_BIN" --db "$pdb" --prune 3650 2>&1)" \
+      "pruned: 0 message(s), 0 thread(s), 0 delivery(ies)"
+    # Acknowledge the second half of the partial one, and `0` takes it whatever its age. The
+    # assertion is about the rows, not a count: `fresh` is fully acknowledged too, so a correct
+    # `--prune 0` may take it as well once a wall-clock second has passed, and an exact count
+    # would fail on a slow machine for the right behaviour.
+    pb ack --data-urlencode "id=it-$RUN-pr-b" --data-urlencode "message=$partial" >/dev/null
+    "$CHATBOX_BIN" --db "$pdb" --prune 0 > "$SCRATCH/prunezero-${RUN}.out" 2>&1
+    equals "a window of zero takes the newly acknowledged message" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='partial-$RUN';")" "0"
+    equals "the unacknowledged one survives even that" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='unread-$RUN';")" "1"
+    equals "the never-sent one survives even that" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='unsent-$RUN';")" "1"
+
+    # A thread holding one candidate and one message that must stay: the thread row carries the
+    # repo and subject, so deleting it would lose the thread's identity while the reply remained.
+    mixed="$(pb message --data-urlencode "from=$A" --data-urlencode "to=it-$RUN-pr-a" \
+      --data-urlencode "subject=mixed-$RUN" --data-urlencode "body=mixed-parent-$RUN")"
+    mixed_thread="$(field "$mixed" thread)"
+    mixed_id="$(field "$mixed" message)"
+    pb message --data-urlencode "from=$A" --data-urlencode "to=it-$RUN-pr-a" \
+      --data-urlencode "thread=$mixed_thread" --data-urlencode "reply_to=$mixed_id" \
+      --data-urlencode "body=mixed-child-$RUN" >/dev/null
+    pb ack --data-urlencode "id=it-$RUN-pr-a" --data-urlencode "message=$mixed_id" >/dev/null
+    sqlite3 "$pdb" "UPDATE messages SET created_at='2020-01-01T00:00:00Z' WHERE id=$mixed_id;" >/dev/null 2>&1
+    "$CHATBOX_BIN" --db "$pdb" --prune 30 >/dev/null 2>&1
+    equals "the candidate in a mixed thread goes" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='mixed-parent-$RUN';")" "0"
+    equals "the thread that still holds a message stays" \
+      "$(sqlite3 "$pdb" "select count(*) from threads where id=$mixed_thread;")" "1"
+    equals "and the reply no longer points at a message that is gone" \
+      "$(sqlite3 "$pdb" "select reply_to from messages where body='mixed-child-$RUN';")" "0"
+    equals "no delivery outlives its message" \
+      "$(sqlite3 "$pdb" "select count(*) from deliveries d where not exists (select 1 from messages m where m.id=d.message_id);")" "0"
+
+    # A delete that fails must change nothing and say so, rather than reporting counts for work
+    # it did not do.
+    sqlite3 "$pdb" "CREATE TRIGGER refuse_delete BEFORE DELETE ON deliveries BEGIN SELECT RAISE(ABORT,'blocked'); END;" >/dev/null 2>&1
+    pb message --data-urlencode "from=$A" --data-urlencode "to=it-$RUN-pr-a" --data-urlencode "body=blocked-$RUN" >/dev/null
+    blocked_id="$(sqlite3 "$pdb" "select id from messages where body='blocked-$RUN';")"
+    pb ack --data-urlencode "id=it-$RUN-pr-a" --data-urlencode "message=$blocked_id" >/dev/null
+    sqlite3 "$pdb" "UPDATE messages SET created_at='2020-01-01T00:00:00Z' WHERE id=$blocked_id;" >/dev/null 2>&1
+    blocked_out="$("$CHATBOX_BIN" --db "$pdb" --prune 30 2>&1)"; blocked_rc=$?
+    if [ "$blocked_rc" -ne 0 ] && [ -n "$(printf '%s' "$blocked_out" | grep 'rolled back')" ]; then
+      ok "a prune that cannot delete says so and exits non-zero"
+    else
+      no "a prune that cannot delete says so and exits non-zero" \
+        "exit=$blocked_rc: $(printf '%s' "$blocked_out" | head -1)"
+    fi
+    equals "and it changed nothing" \
+      "$(sqlite3 "$pdb" "select count(*) from messages where body='blocked-$RUN';")" "1"
+    sqlite3 "$pdb" "DROP TRIGGER refuse_delete;" >/dev/null 2>&1
+
+    # Not reachable from a session, by design.
+    equals "there is no /prune route" "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+      -G -X POST --data-urlencode "token=$TOKEN" "http://127.0.0.1:$pport/prune")" "404"
+    # The 404 is what every unknown path gets, so the guarantee is structural rather than
+    # observational: no HTTP handler deletes. This is the check that would notice one being added.
+    equals "and none on GET either" "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+      "http://127.0.0.1:$pport/prune?token=$TOKEN")" "404"
+
+    # A flag that is present and unusable is a mistake, not a silent start.
+    prune_refuses() { # label, then the arguments
+      _lbl="$1"; shift
+      "$CHATBOX_BIN" --db "$pdb" --port "$((pport + 1))" "$@" > "$SCRATCH/pruneflag-${RUN}.log" 2>&1 &
+      _fpid=$!
+      _fw=0
+      while [ "$_fw" -lt 30 ] && kill -0 "$_fpid" 2>/dev/null; do sleep 0.1; _fw=$((_fw + 1)); done
+      if kill -0 "$_fpid" 2>/dev/null; then
+        no "$_lbl" "it started a server instead: $(head -1 "$SCRATCH/pruneflag-${RUN}.log")"
+        kill "$_fpid" 2>/dev/null; wait "$_fpid" 2>/dev/null
+      else
+        wait "$_fpid" 2>/dev/null; _frc=$?
+        if [ "$_frc" -eq 2 ] && grep -q -- "--prune" "$SCRATCH/pruneflag-${RUN}.log"; then
+          ok "$_lbl"
+        else
+          no "$_lbl" "exit=$_frc: $(head -1 "$SCRATCH/pruneflag-${RUN}.log")"
+        fi
+      fi
+    }
+    prune_refuses "a prune window that is not a number is refused" --prune abc
+    # The `=` form is present too: testing only for the bare token let `--prune=` fall through to
+    # the listener, so an operator who typed a prune got a running board back.
+    prune_refuses "an empty inline prune window is refused" --prune=
+    prune_refuses "a window beyond the ceiling is refused" --prune 1000000
+    prune_refuses "a window exactly at the ceiling is refused when out of range" --prune 36501
+    # Without --db the default is ~/chatbox.sqlite, and pruning the wrong board looks exactly
+    # like pruning one with nothing to do.
+    prune_refuses_no_db() {
+      "$CHATBOX_BIN" --prune 30 --port "$((pport + 1))" > "$SCRATCH/prunenodb-${RUN}.log" 2>&1 &
+      _npid=$!
+      _nw=0
+      while [ "$_nw" -lt 30 ] && kill -0 "$_npid" 2>/dev/null; do sleep 0.1; _nw=$((_nw + 1)); done
+      if kill -0 "$_npid" 2>/dev/null; then
+        no "a prune with no --db is refused" "it started something"
+        kill "$_npid" 2>/dev/null; wait "$_npid" 2>/dev/null
+      else
+        wait "$_npid" 2>/dev/null; _nrc=$?
+        if [ "$_nrc" -eq 2 ] && grep -q -- "--db" "$SCRATCH/prunenodb-${RUN}.log"; then
+          ok "a prune with no --db is refused"
+        else
+          no "a prune with no --db is refused" "exit=$_nrc: $(head -1 "$SCRATCH/prunenodb-${RUN}.log")"
+        fi
+      fi
+    }
+    prune_refuses_no_db
+    # A boolean flag must not swallow the token after it.
+    contains "a boolean flag does not consume the next argument" \
+      "$("$CHATBOX_BIN" --db "$pdb" --prune-dry-run --prune 30 2>&1)" "would prune:"
+    prune_refuses "a negative prune window is refused" --prune -1
+    prune_refuses "a prune with no window is refused" --prune ""
+    prune_refuses "a bare --prune is refused" --prune
+    prune_refuses "--prune-dry-run without --prune is refused" --prune-dry-run
+    prune_refuses "--prune-dry-run with a value is refused" --prune=30 --prune-dry-run=1
+  else
+    no "the prune fixture started a server" "no answer on $pport: $(head -1 "$SCRATCH/prune-${RUN}.log")"
+  fi
+  kill "$ppid" 2>/dev/null
+  wait "$ppid" 2>/dev/null
+else
+  printf '  skip  retention and pruning (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
