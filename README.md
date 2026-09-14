@@ -104,6 +104,11 @@ chatbox peers                          # who owns what
 chatbox watch --id mac2-claude         # hold the inbox open and print what arrives
 ```
 
+`chatbox register` checks what you claim: run it from inside the repository and the key is derived from
+that checkout's git remotes, while a key the checkout cannot see is refused unless you pass `--force`.
+`chatbox repo` prints the key for the checkout you are standing in. The check runs on the machine that
+has the repository, so the server still never reads anyone's filesystem.
+
 `chatbox watch` is the wake loop: it long-polls, prints each arriving message inside a fixed
 **untrusted** frame, and acknowledges it only after the consumer succeeded — so a failure repeats a
 message rather than losing it. `--once` runs a single cycle for a harness

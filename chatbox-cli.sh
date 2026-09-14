@@ -33,6 +33,13 @@ chatbox — session chatbox client   (server: $URL)
 
   register --id <you> [--node <mac>] [--agent <dsh|codex|claude>] [--harness <name>]
            [--session <id>] [--ip <ip>] [--repo <key> | --repos <k1,k2>] [--note <text>]
+           [--repo-dir <path>] [--force]
+           A claimed repo is checked against this checkout's git remotes and
+           canonicalised; a key the checkout does not have is refused. --repo-dir
+           says where to look, --force is for the genuine exception.
+           Only the host is case-folded: a remote whose group or repo name is
+           spelled in a different case is refused rather than guessed at.
+  repo     [--repo-dir <path>]   print the canonical key of this checkout
   say      --from <you> (--repo <key> | --to <ids>) [--subject <line>]
            --body <text>      (or: --body -   to read the body from stdin)
            [--thread <id>] [--reply-to <msgid>]
@@ -112,6 +119,182 @@ json_escape() { # stdin -> a JSON string body; valid for any input
     awk '{ if (NR > 1) printf "\\n"; printf "%s", $0 }'
 }
 
+# ---------- repo keys ----------
+# A repo key names a repository the way every machine can agree on it:
+#   git@github.com:acme/libfoo.git  ->  github.com/acme/libfoo
+#   ssh://git@host:2222/acme/x      ->  host/acme/x
+#   https://host/group/@scope/repo  ->  host/group/@scope/repo
+#   github.com/acme/libfoo          ->  github.com/acme/libfoo
+# A remote with no usable host — a local path, a bare name, an IPv6 literal — is
+# not a repo key. The server refuses `*`, `[` and `]` in a key, so this does too:
+# a client that canonicalises is still a client that has to send what the server
+# will accept. A `?query` or `#fragment`, by contrast, is URL syntax rather than
+# part of a key, so it is dropped instead.
+canon_repo() {
+  _r="${1:-}"
+  # A remote URL with a control byte in it is not something to interpret: silently
+  # deleting one would merge two keys, and keeping one would split a key in two.
+  # Compared, not pattern-matched: `$(printf '\n')` strips to an empty string, and
+  # an empty pattern matches everything.
+  if [ "$(printf '%s' "$_r" | tr -d '\001-\037\177')" != "$_r" ]; then
+    return 1
+  fi
+  # trim surrounding blanks
+  _r="${_r#"${_r%%[![:space:]]*}"}"
+  _r="${_r%"${_r##*[![:space:]]}"}"
+  [ -n "$_r" ] || return 1
+
+  # `host:path` is ambiguous: the part before the colon may be a username, so a
+  # single-label host is only accepted when a scheme, or an explicit user, made the
+  # authority explicit.
+  _ambiguous=0
+  case "$_r" in
+    *://*)
+      # A URL: credentials live in the authority and only there, and any port is
+      # dropped. Parsing this properly is why an `@` in the path survives and a
+      # port stops being mistaken for the scp separator.
+      _r="${_r#*://}"
+      case "$_r" in
+        */*) _auth="${_r%%/*}"; _tail="/${_r#*/}" ;;
+        *)   _auth="$_r";       _tail="" ;;
+      esac
+      case "$_auth" in *@*) _auth="${_auth##*@}" ;; esac
+      case "$_auth" in
+        \[*\]*) _auth="$(printf '%s' "$_auth" | sed 's/^\(\[[^]]*\]\).*/\1/')" ;;
+        *:*)    _auth="${_auth%%:*}" ;;
+      esac
+      _r="${_auth}${_tail}" ;;
+    *)
+      # scp syntax: [user@]host:path, and only when the colon precedes any slash.
+      _auth="${_r%%/*}"
+      case "$_auth" in
+        *:*)
+          _host="${_auth%%:*}"
+          # An explicit user settles it: `git@host:a/b` can only be a host called
+          # `host`, however it is spelled. Without one, `host:a/b` is still "a
+          # username called host" to git, so a single label stays ambiguous.
+          case "$_host" in
+            *@*) _host="${_host##*@}" ;;
+            *)   _ambiguous=1 ;;
+          esac
+          _r="${_host}/${_r#*:}" ;;
+      esac ;;
+  esac
+
+  _r="${_r%%\?*}"
+  _r="${_r%%#*}"
+  while [ "${_r%/}" != "$_r" ]; do _r="${_r%/}"; done
+  case "$_r" in *.git) _r="${_r%.git}" ;; esac
+  while [ "${_r%/}" != "$_r" ]; do _r="${_r%/}"; done
+
+  case "$_r" in */*) ;; *) return 1 ;; esac
+  _h="${_r%%/*}"
+  _p="${_r#*/}"
+  [ -n "$_h" ] || return 1
+  [ -n "$_p" ] || return 1
+  # a host is not a path
+  case "$_h" in
+    .*|*..*) return 1 ;;
+  esac
+  if [ "$_ambiguous" = 1 ]; then
+    case "$_h" in
+      localhost|*.*) ;;
+      *) return 1 ;;
+    esac
+  fi
+  # characters the server refuses, and any control byte, are refused here too
+  case "$_r" in
+    *'*'*|*'?'*|*'['*|*']'*|*' '*|*'	'*) return 1 ;;
+  esac
+  # Only the host is folded. Repository and group names can be case-sensitive on a
+  # self-hosted host, and the server compares namespaces as written; folding the
+  # path would make the client and the server disagree. Doing it on both sides at
+  # once is TRK-09.
+  printf '%s/%s\n' "$(printf '%s' "$_h" | tr '[:upper:]' '[:lower:]')" "$_p"
+}
+
+canon_repos() { # comma list -> canonical comma list, or non-zero with the reason on stderr
+  _raw="${1:-}"
+  [ -n "$_raw" ] || { printf '%s' ""; return 0; }
+  _t="$(mktemp "${TMPDIR:-/tmp}/chatbox-canon.XXXXXX" 2>/dev/null)" || {
+    echo "chatbox: cannot create a temporary file to check the claim" >&2; return 2; }
+  printf '%s\n' "$_raw" | tr ',' '\n' > "$_t"
+  _out=""
+  _n=0
+  while IFS= read -r _k; do
+    [ -n "$_k" ] || continue
+    _c="$(canon_repo "$_k" 2>/dev/null)" || {
+      rm -f "$_t"
+      echo "chatbox: '$_k' is not a usable repo key" >&2
+      echo "  expected host/owner/repo, e.g. github.com/acme/libfoo" >&2
+      return 2
+    }
+    _out="${_out:+$_out,}$_c"
+    _n=$((_n + 1))
+  done < "$_t"
+  rm -f "$_t"
+  # Nothing usable in the claim is not a successful claim of nothing. A list of
+  # separators, a claim that vanished in the split and a temp file that could not
+  # be written all end up here, and all of them must stop the registration rather
+  # than travel on as an empty claim that exits 0.
+  if [ "$_n" -eq 0 ] || [ -z "$_out" ]; then
+    echo "chatbox: '$_raw' contains no repo key" >&2
+    return 2
+  fi
+  printf '%s' "$_out"
+}
+
+git_at() { # directory, then git args
+  # GIT_DIR and friends in the caller's environment would override -C, letting this
+  # inspect a different repository than the one it was asked about.
+  _gd="${1:-.}"; shift
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    git -C "$_gd" "$@"
+}
+
+repo_remotes() { # directory -> the canonical key of every URL every remote has
+  _d="${1:-.}"
+  # read, never `for x in $(...)`: an unquoted expansion is glob-expanded, which
+  # would turn a remote containing * into a filename from the current directory.
+  git_at "$_d" remote 2>/dev/null | while IFS= read -r _r; do
+    [ -n "$_r" ] || continue
+    # The configured URLs, not `remote get-url`: that command has no --fetch and no
+    # --push option, so asking for either fails and returns no URL at all — a
+    # remote whose only URL is on the push side would never vouch for anything.
+    for _key in "remote.$_r.url" "remote.$_r.pushurl"; do
+      # A value containing a newline is indistinguishable from two values once git
+      # prints them one per line, and one of those halves could be a repository this
+      # checkout does not have. The NUL-separated record count is the one count a
+      # newline cannot forge, so the two have to agree before either is split.
+      _nul="$(git_at "$_d" config --null --get-all "$_key" 2>/dev/null | tr -cd '\000' | wc -c | tr -d ' ')"
+      _lines="$(git_at "$_d" config --get-all "$_key" 2>/dev/null | wc -l | tr -d ' ')"
+      [ "$_nul" = "$_lines" ] || continue
+      git_at "$_d" config --get-all "$_key" 2>/dev/null | while IFS= read -r _u; do
+        _c="$(canon_repo "$_u" 2>/dev/null)" || continue
+        [ -n "$_c" ] && printf '%s\n' "$_c"
+      done
+    done
+  done
+}
+
+repo_primary() { # directory -> the canonical key of origin, else of the first usable remote
+  _d="${1:-.}"
+  for _key in remote.origin.url remote.origin.pushurl; do
+    _nul="$(git_at "$_d" config --null --get-all "$_key" 2>/dev/null | tr -cd '\000' | wc -c | tr -d ' ')"
+    _lines="$(git_at "$_d" config --get-all "$_key" 2>/dev/null | wc -l | tr -d ' ')"
+    [ "$_nul" = "$_lines" ] || continue
+    # --get-all, not --get: a remote may carry more than one URL, and the first is
+    # the one git calls that remote's URL while --get returns the last. Falling
+    # through to repo_remotes still finds a later URL if the first is unusable.
+    _u="$(git_at "$_d" config --get-all "$_key" 2>/dev/null | sed -n '1p')"
+    [ -n "$_u" ] || continue
+    _c="$(canon_repo "$_u" 2>/dev/null)" && { printf '%s\n' "$_c"; return 0; }
+  done
+  _c="$(repo_remotes "$_d" | sed -n '1p')"
+  [ -n "$_c" ] || return 1
+  printf '%s\n' "$_c"
+}
+
 http_post() { # path, then k=v pairs
   _path="$1"; shift
   if [ -n "$TOKEN" ]; then
@@ -125,6 +308,7 @@ cmd="${1:-help}"
 [ $# -gt 0 ] && shift
 
 ID=""; NODE=""; AGENT=""; HARNESS=""; SESSION=""; IP=""; REPO=""; REPOS=""; NOTE=""; NAMESPACES=""; ONCE=""; HOOK=""; EXEC=""; NOACK=""
+REPO_DIR=""; FORCE=""
 FROM=""; TO=""; SUBJECT=""; BODY=""; THREAD=""; REPLYTO=""; MESSAGE=""; ALL=""; WAIT=""
 POS1=""
 
@@ -135,6 +319,7 @@ while [ $# -gt 0 ]; do
     --once) ONCE=1; shift; continue ;;
     --hook) HOOK=1; shift; continue ;;
     --no-ack|--noack) NOACK=1; shift; continue ;;
+    --force) FORCE=1; shift; continue ;;
   esac
   case "$arg" in
     --*=*) k="${arg%%=*}"; v="${arg#*=}"; k="${k#--}"; shift ;;
@@ -151,6 +336,7 @@ while [ $# -gt 0 ]; do
     repo)     REPO="$v" ;;
     repos)    REPOS="$v" ;;
     note)     NOTE="$v" ;;
+    repo-dir|repodir) REPO_DIR="$v" ;;
     namespaces|namespace) NAMESPACES="$v" ;;
     from)     FROM="$v" ;;
     to)       TO="$v" ;;
@@ -170,6 +356,49 @@ done
 
 case "$cmd" in
   register)
+    # Ownership is self-declared, so check it where the repository actually is:
+    # this machine. The server is never asked to read anyone's filesystem.
+    # --repo and --repos are both claims; neither silently wins over the other.
+    _raw="${REPOS}${REPOS:+${REPO:+,}}${REPO}"
+    if [ -n "$_raw" ]; then
+      _claimed="$(canon_repos "$_raw")" || exit 2
+      if [ "$FORCE" != 1 ]; then
+        _dir="${REPO_DIR:-.}"
+        # A path that is not a directory is a typo, not a repository without
+        # remotes. Say which it is instead of reporting an empty remote list.
+        if [ -n "$REPO_DIR" ] && [ ! -d "$REPO_DIR" ]; then
+          if [ -e "$REPO_DIR" ]; then
+            echo "chatbox: --repo-dir is not a directory: $REPO_DIR" >&2
+          else
+            echo "chatbox: --repo-dir does not exist: $REPO_DIR" >&2
+          fi
+          exit 2
+        fi
+        _have="$(repo_remotes "$_dir")"
+        _t="$(mktemp "${TMPDIR:-/tmp}/chatbox-claim.XXXXXX" 2>/dev/null)" || {
+          echo "chatbox: cannot create a temporary file to check the claim" >&2; exit 2; }
+        printf '%s\n' "$_claimed" | tr ',' '\n' > "$_t"
+        _bad=""
+        # Whole-line comparison. A claim that is only a prefix of a remote, or that
+        # merely shares a line with one, is not the same repository.
+        while IFS= read -r _k; do
+          [ -n "$_k" ] || continue
+          printf '%s\n' "$_have" | grep -qxF -- "$_k" || _bad="${_bad:+$_bad }$_k"
+        done < "$_t"
+        rm -f "$_t"
+        if [ -n "$_bad" ]; then
+          echo "chatbox: refusing to claim a repo this checkout does not have: $_bad" >&2
+          if [ -n "$_have" ]; then
+            echo "  remotes in $_dir: $(printf '%s' "$_have" | tr '\n' ' ')" >&2
+          else
+            echo "  $_dir has no usable git remote" >&2
+          fi
+          echo "  run it from the repo, point --repo-dir at it, or pass --force" >&2
+          exit 2
+        fi
+      fi
+      REPOS="$_claimed"; REPO=""
+    fi
     http_post /register \
       --data-urlencode "id=$ID" \
       --data-urlencode "node=$NODE" \
@@ -179,7 +408,23 @@ case "$cmd" in
       --data-urlencode "ip=$IP" \
       --data-urlencode "repos=${REPOS:-$REPO}" \
       --data-urlencode "note=$NOTE" ;;
+  repo)
+    _dir="${REPO_DIR:-${POS1:-.}}"
+    _key="$(repo_primary "$_dir")" || {
+      echo "chatbox: no usable git remote in $_dir" >&2
+      echo "  expected a checkout with an origin such as git@github.com:acme/libfoo.git" >&2
+      exit 2
+    }
+    printf '%s\n' "$_key" ;;
   say|message)
+    if [ -n "$REPO" ]; then
+      _orig="$REPO"
+      REPO="$(canon_repo "$_orig" 2>/dev/null)" || {
+        echo "chatbox: '$_orig' is not a usable repo key" >&2
+        echo "  expected host/owner/repo, e.g. github.com/acme/libfoo" >&2
+        exit 2
+      }
+    fi
     if [ "$BODY" = "-" ]; then BODY="$(cat)"; fi
     http_post /message \
       --data-urlencode "from=$FROM" \
@@ -198,6 +443,13 @@ case "$cmd" in
   thread)
     http_get /thread "id=${POS1:-$ID}" ;;
   threads)
+    if [ -n "$REPO" ]; then
+      _orig="$REPO"
+      REPO="$(canon_repo "$_orig" 2>/dev/null)" || {
+        echo "chatbox: '$_orig' is not a usable repo key" >&2
+        exit 2
+      }
+    fi
     http_get /threads "repo=$REPO" ;;
   ack)
     http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" --data-urlencode "thread=$THREAD" ;;

@@ -63,6 +63,10 @@ C4="it-$RUN-cred4-session"
 C5="it-$RUN-cred2-legacy"
 SB="it-$RUN-stale"
 SS="it-$RUN-stale-sender"
+SB2="it-$RUN-fixture-ok"
+SB3="it-$RUN-fixture-forced"
+SB4="it-$RUN-fixture-norepo"
+SB5="it-$RUN-fixture-spelling"
 WV="it-$RUN-watch"
 WS="it-$RUN-watch-sender"
 REPO_APP="example.test/$RUN/app"
@@ -109,6 +113,40 @@ lacks() { # description, haystack, needle
 
 equals() { # description, actual, expected
   if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "expected [$3], got [$2]"; fi
+}
+
+# ---------------------------------------------------------------------------
+# Bounded execution
+# A check that waits for a delivery has a legitimate reason to block, but only
+# until the delivery arrives. When it never does — which is exactly what a broken
+# routing change looks like — the client sits out its whole capped wait, and a
+# `--wait 99999` case caps at the server's 300 seconds. macOS ships no `timeout`,
+# so this is the small one the suite needs: run the command with a deadline and
+# report 124 when it passed. The green path returns in a second or two.
+# ---------------------------------------------------------------------------
+kill_tree() { # pid — children first, so a killed client leaves no curl holding a poll
+  for _kt in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$_kt"; done
+  kill -TERM "$1" 2>/dev/null
+}
+
+deadline() { # seconds, then command; prints the output, 124 if the deadline passed
+  _dl="$1"; shift
+  _dout="$SCRATCH/deadline-${RUN}.$$"
+  : > "$_dout"
+  "$@" > "$_dout" 2>&1 &
+  _dpid=$!
+  ( sleep "$_dl"; kill_tree "$_dpid" ) >/dev/null 2>&1 &
+  _dwatch=$!
+  wait "$_dpid" 2>/dev/null
+  _drc=$?
+  kill_tree "$_dwatch" 2>/dev/null
+  wait "$_dwatch" 2>/dev/null
+  # A shell reports a signal death as 128+signal; normalise it to the timeout code
+  # so the caller can tell "never answered" apart from "answered with an error".
+  [ "$_drc" -ge 128 ] && _drc=124
+  cat "$_dout"
+  rm -f "$_dout"
+  return "$_drc"
 }
 
 # ---------------------------------------------------------------------------
@@ -983,9 +1021,12 @@ if [ -f "$CLI" ]; then
   watch_run >/dev/null
 
   # --- an unusable wait is clamped, never a spin or an error ---------------
+  # Each value gets one message, so a working poll returns at once. The deadline
+  # is what keeps a *broken* delivery path failing here in seconds instead of
+  # sitting out the capped wait — 99999 caps at the server's 300 seconds.
   for odd in 09 08 abc -5 1.5 99999; do
     watch_send "wait clamp $RUN"   # one message per value, so each returns at once
-    clamp_out="$(watch_run --wait "$odd")"; clamp_rc=$?
+    clamp_out="$(deadline 15 watch_run --wait "$odd")"; clamp_rc=$?
     if [ "$clamp_rc" -eq 0 ] && [ -n "$clamp_out" ]; then
       ok "a wait of '$odd' is clamped and still polls"
     else
@@ -1204,7 +1245,240 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 14. Parameter validation
+# 14. Own-repo verification (TRK-05)
+# Ownership is self-declared, so the client checks the claim on the machine that
+# actually has the repository: it derives the key from the checkout's git remotes
+# and refuses one it cannot see. The server is still never asked to read a
+# filesystem, and a claim it never saw is a claim it cannot vouch for.
+#
+# The interesting cases are all in the *shape* of a remote, not in the happy path:
+# a scheme with a port, an `@` inside a path, a remote reachable at more than one
+# URL, and a claim that is merely a prefix of a real one.
+# ---------------------------------------------------------------------------
+if [ -f "$CLI" ] && command -v git >/dev/null 2>&1; then
+  fixture="$SCRATCH/fixture-${RUN}"
+  bare="$SCRATCH/noremote-${RUN}"
+  rm -rf "$fixture" "$bare"
+  mkdir -p "$fixture" "$bare"
+  if git -C "$fixture" init -q >/dev/null 2>&1 && git -C "$bare" init -q >/dev/null 2>&1; then
+    ok "the git fixtures were created"
+  else
+    no "the git fixtures were created" "git init failed in the scratch directory"
+  fi
+  git -C "$fixture" remote add origin 'git@github.com:acme/fixture.git' >/dev/null 2>&1
+  # a second URL on the same remote, and a remote whose host carries a port and
+  # whose path carries an `@` — both must resolve to one key each
+  git -C "$fixture" remote set-url --add origin 'https://github.com/acme/second.git' >/dev/null 2>&1
+  git -C "$fixture" remote add lab 'ssh://git@lab.example:2222/acme/third.git' >/dev/null 2>&1
+  git -C "$fixture" remote add scoped 'https://host.example/@scope/proj.git' >/dev/null 2>&1
+
+  cli_run() {
+    CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" sh "$CLI" "$@"
+  }
+
+  equals "the client derives the key from the checkout" \
+    "$(cli_run repo --repo-dir "$fixture")" "github.com/acme/fixture"
+  bare_out="$(cli_run repo --repo-dir "$bare" 2>&1)"
+  case "$bare_out" in
+    *"no usable git remote"*) ok "a checkout with no remote yields no key" ;;
+    *) no "a checkout with no remote yields no key" "got [$(printf '%s' "$bare_out" | head -1)]" ;;
+  esac
+
+  # Every remote, at every URL it has, is a key this checkout can prove.
+  declare_claim() { # id, key, expected outcome label
+    cli_run register --id "$1" --node node-fixture --repo "$2" --repo-dir "$fixture" >/dev/null 2>&1
+  }
+  if declare_claim "$SB2" 'git@github.com:acme/fixture.git'; then
+    ok "a key the checkout has is accepted"
+  else
+    no "a key the checkout has is accepted" "it was refused"
+  fi
+  contains "the canonical key is what the server records" "$(get /peers)" "github.com/acme/fixture"
+  for pair in "github.com/acme/second:a second URL on the same remote" \
+              "lab.example/acme/third:a remote whose host carries a port" \
+              "host.example/@scope/proj:an @ inside the path is not userinfo"; do
+    key="${pair%%:*}"; why="${pair#*:}"
+    if declare_claim "$SB5" "$key"; then
+      ok "$why resolves to one key"
+    else
+      no "$why resolves to one key" "$key was refused"
+    fi
+  done
+  lacks "no un-normalised key reached the server" "$(get /peers)" "acme/fixture.git"
+  lacks "no port survived into a key" "$(get /peers)" "2222"
+  lacks "no scp form reached the server" "$(get /peers)" "git@github.com"
+
+  # A multi-repo claim is a list, and must not depend on the shell splitting it.
+  if declare_claim "$SB5" 'github.com/acme/fixture,github.com/acme/second'; then
+    ok "a comma-separated claim is accepted"
+  else
+    no "a comma-separated claim is accepted" "it was refused"
+  fi
+  if command -v zsh >/dev/null 2>&1; then
+    if CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+         zsh "$CLI" register --id "$SB5" --node node-fixture --repo-dir "$fixture" \
+         --repos 'github.com/acme/fixture,github.com/acme/second' >/dev/null 2>&1; then
+      ok "a comma-separated claim is accepted under zsh too"
+    else
+      no "a comma-separated claim is accepted under zsh too" "zsh refused it"
+    fi
+  fi
+
+  # A claim that is merely close to a real key is not that key.
+  for near in "github.com/acme/fix" "acme/fixture" "github.com/acme/fixtureX"; do
+    if declare_claim "$SB4" "$near"; then
+      no "the near-miss claim '$near' is refused" "it was accepted"
+    else
+      ok "the near-miss claim '$near' is refused"
+    fi
+  done
+
+  # A key it does not have: refused, with the reason and the way out.
+  bad_claim="$(cli_run register --id "$SB3" --node node-fixture --repo github.com/other/thing \
+    --repo-dir "$fixture" 2>&1)"
+  contains "a key the checkout does not have is refused" "$bad_claim" "refusing to claim"
+  contains "the refusal names the key" "$bad_claim" "github.com/other/thing"
+  contains "the refusal names what the checkout does have" "$bad_claim" "github.com/acme/fixture"
+  if cli_run register --id "$SB3" --node node-fixture --repo github.com/other/thing \
+       --repo-dir "$fixture" >/dev/null 2>&1; then
+    no "the refusal exits non-zero" "it exited zero"
+  else
+    ok "the refusal exits non-zero"
+  fi
+  lacks "a refused claim never reaches the server" "$(get /peers)" "$SB3"
+
+  # --force is the genuine exception, for a machine that owns repos it does not
+  # have checked out at this path.
+  contains "--force allows a claim the checkout does not have" \
+    "$(cli_run register --id "$SB3" --node node-fixture --repo github.com/other/thing \
+        --repo-dir "$fixture" --force)" "ok registered"
+
+  # A checkout with no remote can prove nothing, so it vouches for nothing.
+  if cli_run register --id "$SB4" --node node-fixture --repo github.com/acme/fixture \
+       --repo-dir "$bare" >/dev/null 2>&1; then
+    no "a checkout with no remote cannot vouch for a key" "it exited zero"
+  else
+    ok "a checkout with no remote cannot vouch for a key"
+  fi
+  contains "registering nothing needs no evidence" \
+    "$(cli_run register --id "$SB4" --node node-fixture --repo-dir "$bare")" "ok registered"
+  contains "--repo and --repos are both honoured" \
+    "$(cli_run register --id "$SB4" --node node-fixture --repo lab.example/acme/third \
+        --repos github.com/acme/fixture --repo-dir "$fixture")" "lab.example/acme/third"
+
+  # Every spelling that names the same repo lands on the one key.
+  for spelling in 'https://github.com/acme/fixture.git' 'github.com/acme/fixture' \
+                  'https://GitHub.com/acme/fixture/'; do
+    spelled="$(cli_run register --id "$SB5" --node node-fixture --repo "$spelling" --repo-dir "$fixture")"
+    case "$spelled" in
+      *"ok registered"*) ok "the spelling '$spelling' is accepted as the same repo" ;;
+      *) no "the spelling '$spelling' is accepted as the same repo" "$(printf '%s' "$spelled" | head -1)" ;;
+    esac
+  done
+  lacks "no spelling variant survives on the server" "$(get /peers)" "acme/fixture/"
+  # A claim the server would refuse is refused here first, rather than sent to fail.
+  # The refusal has to name the canonicaliser: if the ownership check happened to
+  # dislike the key too, a regression in canonicalisation would still look green.
+  for junk in 'github.com/acme/*' 'github.com/acme/x[y' '/srv/repo' 'libfoo' 'host/a b'; do
+    contains "the unusable key '$junk' is refused as unusable" \
+      "$(cli_run register --id "$SB4" --node node-fixture --repo "$junk" --repo-dir "$fixture" 2>&1)" \
+      "is not a usable repo key"
+  done
+  # A query string and a fragment are URL syntax rather than part of a key, so
+  # they are dropped instead of making the key unusable.
+  contains "a query string is not part of the key" \
+    "$(cli_run register --id "$SB5" --node node-fixture --repo-dir "$fixture" \
+        --repo 'https://github.com/acme/fixture.git?ref=abc#readme' 2>&1)" "github.com/acme/fixture"
+  lacks "the query string never reached the server" "$(get /peers)" "ref=abc"
+  # A claim of nothing is not a successful claim of nothing.
+  for empty in ',,,' '   '; do
+    if cli_run register --id "$SB4" --node node-fixture --repo "$empty" --repo-dir "$fixture" >/dev/null 2>&1; then
+      no "a claim of only separators ('$empty') is refused" "it exited zero"
+    else
+      ok "a claim of only separators ('$empty') is refused"
+    fi
+  done
+
+  # A remote reachable only on the push side is still a remote this checkout has,
+  # so a claim that matches it must be accepted rather than reported as unseen.
+  pushonly="$SCRATCH/pushonly-${RUN}"
+  rm -rf "$pushonly"; mkdir -p "$pushonly"
+  if git -C "$pushonly" init -q >/dev/null 2>&1; then
+    git -C "$pushonly" config remote.origin.pushurl 'git@github.com:acme/pushonly.git' >/dev/null 2>&1
+    if cli_run register --id "$SB5" --node node-fixture --repo github.com/acme/pushonly \
+         --repo-dir "$pushonly" >/dev/null 2>&1; then
+      ok "a push-only remote vouches for its own key"
+    else
+      no "a push-only remote vouches for its own key" "it was refused"
+    fi
+  else
+    no "a push-only remote vouches for its own key" "git init failed"
+  fi
+
+  # A URL with a newline in it is not several URLs. Splitting it would let this
+  # checkout vouch for a repository it does not have, so the whole remote is
+  # ignored and the claim stays unproven.
+  sneaky="$SCRATCH/sneaky-${RUN}"
+  rm -rf "$sneaky"; mkdir -p "$sneaky"
+  if git -C "$sneaky" init -q >/dev/null 2>&1; then
+    git -C "$sneaky" remote add origin \
+      "$(printf 'https://github.com/acme/evil\nhttps://github.com/acme/innocent')" >/dev/null 2>&1
+    if cli_run register --id "$SB5" --node node-fixture --repo github.com/acme/innocent \
+         --repo-dir "$sneaky" >/dev/null 2>&1; then
+      no "a newline inside a remote URL vouches for nothing" "it was accepted"
+    else
+      ok "a newline inside a remote URL vouches for nothing"
+    fi
+  else
+    no "a newline inside a remote URL vouches for nothing" "git init failed"
+  fi
+
+  # An explicit user settles what the colon of scp syntax separates, so a
+  # single-label host is a host after all — but only when the user is there.
+  scphost="$SCRATCH/scphost-${RUN}"
+  rm -rf "$scphost"; mkdir -p "$scphost"
+  if git -C "$scphost" init -q >/dev/null 2>&1; then
+    git -C "$scphost" remote add origin 'git@lab:acme/thing.git' >/dev/null 2>&1
+    equals "a single-label host is usable once a user makes it unambiguous" \
+      "$(cli_run repo --repo-dir "$scphost")" "lab/acme/thing"
+    if cli_run register --id "$SB5" --node node-fixture --repo 'lab:acme/thing' \
+         --repo-dir "$scphost" >/dev/null 2>&1; then
+      no "the ambiguous colon form is still refused" "it was accepted"
+    else
+      ok "the ambiguous colon form is still refused"
+    fi
+  else
+    no "a single-label host is usable once a user makes it unambiguous" "git init failed"
+  fi
+
+  # The caller's environment must not point the check at another repository.
+  if GIT_DIR="$bare" CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+       sh "$CLI" register --id "$SB5" --node node-fixture --repo github.com/acme/fixture \
+       --repo-dir "$fixture" >/dev/null 2>&1; then
+    ok "GIT_DIR does not redirect the ownership check"
+  else
+    no "GIT_DIR does not redirect the ownership check" "it was refused"
+  fi
+
+  # A --repo-dir that is not a directory is a typo, and says so.
+  contains "--repo-dir pointing at a file is reported as such" \
+    "$(cli_run register --id "$SB5" --node node-fixture --repo github.com/acme/fixture \
+        --repo-dir "$fixture/.git/config" 2>&1)" "is not a directory"
+
+  # Sending is canonicalised too, or one repo grows two thread keys.
+  cli_run register --id "$SB2" --node node-fixture --repo github.com/acme/fixture --repo-dir "$fixture" >/dev/null
+  cli_run say --from "$SB2" --repo 'https://github.com/acme/fixture.git' --body "canon $RUN" >/dev/null
+  case "$(cli_run threads --repo github.com/acme/fixture)" in
+    *"github.com/acme/fixture"*) ok "say files a message under the canonical key" ;;
+    *) no "say files a message under the canonical key" "$(cli_run threads --repo github.com/acme/fixture | head -1)" ;;
+  esac
+  lacks "no second thread key was created by a spelling" "$(get /threads "json=1")" "fixture.git"
+else
+  printf '  skip  own-repo verification (needs the client and git)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 15. Parameter validation
 # ---------------------------------------------------------------------------
 equals "register without id is 400" "$(status_post /register --data-urlencode "node=x")" "400"
 contains "register without id says why" \
