@@ -134,6 +134,11 @@ that checkout's git remotes, while a key the checkout cannot see is refused unle
 `chatbox repo` prints the key for the checkout you are standing in. The check runs on the machine that
 has the repository, so the server still never reads anyone's filesystem.
 
+Every key has one canonical form — `git@github.com:acme/x.git`, `https://github.com/acme/x/` and
+`GitHub.com/Acme/X` are one repository — and **the server applies the rule as well as the client**, so
+a key that arrives by plain `curl` means the same thing. Keys already on the board are normalised once
+at startup, and the banner says how many were rewritten.
+
 `chatbox watch` is the wake loop: it long-polls, prints each arriving message inside a fixed
 **untrusted** frame, and acknowledges it only after the consumer succeeded — so a failure repeats a
 message rather than losing it. `--once` runs a single cycle for a harness

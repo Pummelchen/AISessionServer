@@ -16,6 +16,12 @@
 #
 # All values are URL-encoded by curl, so spaces, quotes, & and newlines are safe.
 set -u
+# The C locale on purpose. Everything here that looks at a character class — the whitespace
+# trim, the case fold — has to mean the same thing on every machine, and the server folds
+# ASCII only. Under a UTF-8 locale `[[:upper:]]` would fold `É` and the server would not, and
+# one repository would have two keys again.
+LC_ALL=C
+export LC_ALL
 
 # Per-machine defaults (optional): a ~/.chatbox file exporting CHATBOX_URL and
 # CHATBOX_TOKEN. The server's own host must use 127.0.0.1, because macOS+Tailscale
@@ -54,8 +60,8 @@ chatbox — session chatbox client   (server: $URL)
            A claimed repo is checked against this checkout's git remotes and
            canonicalised; a key the checkout does not have is refused. --repo-dir
            says where to look, --force is for the genuine exception.
-           Only the host is case-folded: a remote whose group or repo name is
-           spelled in a different case is refused rather than guessed at.
+           The key is case-folded throughout, host and path, because the server
+           stores one canonical form: a claim spelled in any case is the same repo.
   repo     [--repo-dir <path>]   print the canonical key of this checkout
   say      --from <you> (--repo <key> | --to <ids>) [--subject <line>]
            --body <text>      (or: --body -   to read the body from stdin)
@@ -244,6 +250,10 @@ canon_repo() {
   _r="${_r#"${_r%%[![:space:]]*}"}"
   _r="${_r%"${_r##*[![:space:]]}"}"
   [ -n "$_r" ] || return 1
+  # Folded here, not at the end: the `.git` suffix below has to be matched whatever its case,
+  # or `Thing.GIT` keeps its suffix on the first pass and loses it on the second — which is not
+  # a fixed point, and the server's migration relies on one pass being enough.
+  _r="$(printf '%s' "$_r" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')"
 
   # `host:path` is ambiguous: the part before the colon may be a username, so a
   # single-label host is only accepted when a scheme, or an explicit user, made the
@@ -285,7 +295,15 @@ canon_repo() {
   _r="${_r%%\?*}"
   _r="${_r%%#*}"
   while [ "${_r%/}" != "$_r" ]; do _r="${_r%/}"; done
-  case "$_r" in *.git) _r="${_r%.git}" ;; esac
+  # To a fixed point, so that canonicalising twice changes nothing — the server does the same,
+  # and the migration relies on one pass being enough.
+  while :; do
+    case "$_r" in
+      *.git) _r="${_r%.git}"
+             while [ "${_r%/}" != "$_r" ]; do _r="${_r%/}"; done ;;
+      *) break ;;
+    esac
+  done
   while [ "${_r%/}" != "$_r" ]; do _r="${_r%/}"; done
 
   case "$_r" in */*) ;; *) return 1 ;; esac
@@ -307,11 +325,12 @@ canon_repo() {
   case "$_r" in
     *'*'*|*'?'*|*'['*|*']'*|*' '*|*'	'*) return 1 ;;
   esac
-  # Only the host is folded. Repository and group names can be case-sensitive on a
-  # self-hosted host, and the server compares namespaces as written; folding the
-  # path would make the client and the server disagree. Doing it on both sides at
-  # once is TRK-09.
-  printf '%s/%s\n' "$(printf '%s' "$_h" | tr '[:upper:]' '[:lower:]')" "$_p"
+  # Folded at the top, so by here there is nothing left to fold. The whole key is folded
+  # rather than the host alone, exactly as the server folds it: folding only the host would
+  # make the client refuse a claim the server would have accepted, and one repository would
+  # still have two spellings on the board. The trade-off for a self-hosted host with
+  # case-sensitive paths is written down in Protocol rather than left implicit.
+  printf '%s\n' "$_h/$_p"
 }
 
 canon_repos() { # comma list -> canonical comma list, or non-zero with the reason on stderr

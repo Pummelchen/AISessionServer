@@ -115,10 +115,130 @@ private func hasControlByte(_ s: String) -> Bool {
 /// namespace pattern match itself; a line break is worse, because every response
 /// that echoes a key — a routing note, a `peers` listing, a delivery list — would
 /// then be forgeable from the repo name alone, which is the sender's to choose.
-private func validRepoKey(_ repo: String) -> Bool {
-    if repo.isEmpty { return false }
-    for bad in ["*", "?", "[", "]", " ", "\t"] where repo.contains(bad) { return false }
-    return !hasControlByte(repo)
+/// ASCII-only case folding, deliberately. Swift's `lowercased()` is full Unicode and the
+/// client is `tr` in a POSIX locale, so the two would disagree on `CAFÉ`, on `İ`, and on every
+/// other character whose case mapping is not one byte to one byte — and a disagreement here
+/// means one repository with two keys again. A key is a machine name, not prose.
+func asciiLowercased(_ s: String) -> String {
+    var out = ""
+    for scalar in s.unicodeScalars {
+        if scalar.value >= 65 && scalar.value <= 90 {
+            out.unicodeScalars.append(UnicodeScalar(scalar.value + 32)!)
+        } else {
+            out.unicodeScalars.append(scalar)
+        }
+    }
+    return out
+}
+
+/// Space and tab, and nothing else. `CharacterSet.whitespaces` is Unicode-wide while the
+/// client's `[[:space:]]` is whatever its locale says, so neither may be left to a default.
+let keyTrimSet = CharacterSet(charactersIn: " \t")
+
+/// The one form a repo key is stored and compared in. Returns nil when the input is not a
+/// key at all.
+///
+/// This is deliberately the same rule the client applies, because the two have to agree: a
+/// key that arrives by `curl` used to bypass the client entirely, so `git@github.com:acme/x`
+/// and `https://github.com/acme/x` were two repositories on the board and mail split between
+/// them.
+///
+/// The **whole** key is lowercased, not just the host. Repository paths are case-insensitive
+/// on every forge this is used with, so `github.com/Acme/LibFoo` and `github.com/acme/libfoo`
+/// are one repository, and treating them as two is the bug rather than the caution. The price
+/// is that a self-hosted host with genuinely case-sensitive paths sees two such repositories
+/// merged — written down here, and in [Protocol], rather than left to be discovered.
+func canonicalRepoKey(_ raw: String) -> String? {
+    if raw.isEmpty || hasControlByte(raw) { return nil }
+    var s = raw.trimmingCharacters(in: keyTrimSet)
+    if s.isEmpty { return nil }
+    // Folded before anything is stripped, not after: `Thing.GIT` would otherwise keep its
+    // `.git` on the first pass and lose it on the second, so the function was not idempotent
+    // and a migrated key could still be rewritten by the next restart — and a message to the
+    // form it settled on would not reach the session that registered the other one.
+    s = asciiLowercased(s)
+
+    var ambiguous = false
+    if let scheme = s.range(of: "://") {
+        // A URL: credentials live in the authority and only there, and a port is not a path.
+        s = String(s[scheme.upperBound...])
+        let slash = s.firstIndex(of: "/")
+        var auth = slash.map { String(s[..<$0]) } ?? s
+        let tail = slash.map { String(s[$0...]) } ?? ""
+        if let at = auth.lastIndex(of: "@") { auth = String(auth[auth.index(after: at)...]) }
+        if auth.hasPrefix("[") {
+            if let close = auth.firstIndex(of: "]") { auth = String(auth[...close]) }
+        } else if let colon = auth.firstIndex(of: ":") {
+            auth = String(auth[..<colon])
+        }
+        s = auth + tail
+    } else {
+        // scp syntax: [user@]host:path, and only when the colon precedes any slash.
+        let head = s.firstIndex(of: "/").map { String(s[..<$0]) } ?? s
+        if let colon = head.firstIndex(of: ":") {
+            var host = String(head[..<colon])
+            if let at = host.lastIndex(of: "@") { host = String(host[host.index(after: at)...]) }
+            else { ambiguous = true }
+            s = host + "/" + String(s[s.index(after: colon)...])
+        }
+    }
+
+    if let q = s.firstIndex(of: "?") { s = String(s[..<q]) }
+    if let h = s.firstIndex(of: "#") { s = String(s[..<h]) }
+    // To a fixed point, because the migration depends on one pass being enough: `x.git.git`
+    // would otherwise become `x.git` now and `x` on the next start, and a message to whichever
+    // form it settled on would miss the session that registered the other. Stripping `.git`
+    // twice is not a new kind of merge — `x.git` and `x` were already one key, which is what
+    // the rule is for.
+    while s.hasSuffix("/") { s.removeLast() }
+    while s.hasSuffix(".git") {
+        s.removeLast(4)
+        while s.hasSuffix("/") { s.removeLast() }
+    }
+
+    guard let slash = s.firstIndex(of: "/") else { return nil }
+    let host = String(s[..<slash])
+    let path = String(s[s.index(after: slash)...])
+    if host.isEmpty || path.isEmpty { return nil }
+    // A host is not a path.
+    if host.hasPrefix(".") || host.contains("..") { return nil }
+    // A single-label host is only a host when a scheme, or an explicit user, settled it.
+    if ambiguous && !(host == "localhost" || host.contains(".")) { return nil }
+    // The characters the client refuses, so that what one accepts the other does too.
+    for bad in ["*", "?", "[", "]", " ", "\t"] where s.contains(bad) { return nil }
+    return s
+}
+
+/// A host on its own, for a host-wide namespace: `example.test/*` was a valid namespace
+/// before the canonical rule and has to stay one, or existing credentials stop working.
+func canonicalHostOnly(_ raw: String) -> String? {
+    guard let probe = canonicalRepoKey(raw + "/x") else { return nil }
+    guard let slash = probe.firstIndex(of: "/") else { return nil }
+    return String(probe[..<slash])
+}
+
+/// A namespace is a canonical key, a canonical key with a trailing `/*`, or `*` alone.
+/// Canonicalised on the way in *and* on the way out, so a credential issued before this rule
+/// existed still matches exactly what it was meant to and nothing that merely looks like it.
+func canonicalNamespace(_ raw: String) -> String? {
+    let s = asciiLowercased(raw.trimmingCharacters(in: keyTrimSet))
+    if s.isEmpty { return nil }
+    if s == "*" { return "*" }
+    // A namespace is written as a key, so a `?`, a `#` or a trailing slash means it is not
+    // one. Refusing is the only safe direction: dropping them *widens* what a credential
+    // issued before the rule may claim — `example.test/y?query/*` used to match nothing and
+    // would start matching `example.test/y/victim` — and a credential that quietly claims
+    // more than it was issued for is worse than one that claims nothing.
+    if s.contains("?") || s.contains("#") { return nil }
+    if s.hasSuffix("/*") {
+        let base = String(s.dropLast(2))
+        if base.hasSuffix("/") { return nil }
+        if let key = canonicalRepoKey(base) { return key + "/*" }
+        if let host = canonicalHostOnly(base) { return host + "/*" }
+        return nil
+    }
+    if s.hasSuffix("/") { return nil }
+    return canonicalRepoKey(s)
 }
 
 /// An agent id is a routing key that gets echoed into text: into `peers`, into a
@@ -172,11 +292,14 @@ struct Principal {
 
     static let bootstrap = Principal(isBootstrap: true)
 
-    /// `*` allows any repo, `host/owner/*` allows a prefix, anything else is exact.
+    /// `*` allows any repo, `host/owner/*` allows a prefix, anything else is exact. Both
+    /// sides are canonical, so a namespace written `GitHub.com/Acme/*` allows exactly the
+    /// keys `github.com/acme/*` does.
     static func namespace(_ ns: String, allows repo: String) -> Bool {
-        if ns == "*" { return true }
-        if ns.hasSuffix("/*") { return repo.hasPrefix(String(ns.dropLast())) }
-        return repo == ns
+        guard let n = canonicalNamespace(ns) else { return false }
+        if n == "*" { return true }
+        if n.hasSuffix("/*") { return repo.hasPrefix(String(n.dropLast())) }
+        return repo == n
     }
 
     func mayClaim(repo: String) -> Bool {
@@ -199,6 +322,10 @@ final class Store: @unchecked Sendable {
             exit(1)
         }
         exec("PRAGMA journal_mode=WAL;")
+        // Wait rather than fail when another process holds the write lock. Two servers on one
+        // database is a supported shape (a restart overlaps the old one), and the alternative
+        // is a write that reports failure and a caller that does not look.
+        exec("PRAGMA busy_timeout=5000;")
         exec("""
         CREATE TABLE IF NOT EXISTS agents (
           id TEXT PRIMARY KEY, node TEXT, agent TEXT, harness TEXT, session TEXT,
@@ -335,6 +462,73 @@ final class Store: @unchecked Sendable {
     }
 
     // MARK: domain helpers
+
+    /// Bring keys written before the canonical rule into the one form.
+    ///
+    /// This is not tidiness. Routing compares an agent's stored `repos` against a canonical
+    /// key, so a session registered as `git@github.com:acme/x.git` before this rule existed
+    /// would stop receiving mail the moment a sender used the canonical spelling — silently,
+    /// which is the worst way for it to happen. Runs once at startup, is idempotent, and
+    /// leaves a key it cannot canonicalise exactly as it found it rather than dropping a
+    /// claim.
+    func migrateRepoKeys() -> (changed: Int, left: Int) {
+        var changed = 0
+        var left = 0
+        func canonicalList(_ raw: String, _ canon: (String) -> String?) -> String {
+            var out: [String] = []
+            for one in raw.split(separator: ",") {
+                let k = one.trimmingCharacters(in: .whitespaces)
+                if k.isEmpty { continue }
+                let c = canon(k) ?? k
+                if !out.contains(c) { out.append(c) }
+            }
+            return out.joined(separator: ",")
+        }
+        // One transaction, and a timeout: the migration is the one thing that runs before the
+        // listener starts, so a second server holding the write lock must make it wait rather
+        // than half-apply and report success it did not have.
+        run("BEGIN IMMEDIATE", [])
+        for row in rows("SELECT id, repos FROM agents") {
+            let raw = row["repos"] ?? ""
+            if raw.isEmpty { continue }
+            let joined = canonicalList(raw, canonicalRepoKey)
+            if joined != raw {
+                if run("UPDATE agents SET repos=? WHERE id=?", [joined, row["id"] ?? ""]) >= 0 { changed += 1 } else { left += 1 }
+            } else if canonicalRepoKey(raw) == nil { left += 1 }
+        }
+        for row in rows("SELECT id, repo FROM threads") {
+            let raw = row["repo"] ?? ""
+            if raw.isEmpty { continue }
+            // Left exactly as it was when it cannot be canonicalised. Blanking it would drop
+            // the routing of every reply in that thread, which is a data loss this function
+            // exists to prevent.
+            let canon = canonicalRepoKey(raw) ?? raw
+            if canon != raw {
+                if run("UPDATE threads SET repo=? WHERE id=?", [canon, row["id"] ?? ""]) >= 0 { changed += 1 } else { left += 1 }
+            } else if canonicalRepoKey(raw) == nil { left += 1 }
+        }
+        for row in rows("SELECT id, namespaces FROM tokens") {
+            let raw = row["namespaces"] ?? ""
+            if raw.isEmpty { continue }
+            let joined = canonicalList(raw, canonicalNamespace)
+            if joined != raw {
+                if run("UPDATE tokens SET namespaces=? WHERE id=?", [joined, row["id"] ?? ""]) >= 0 { changed += 1 } else { left += 1 }
+            } else if canonicalNamespace(raw) == nil { left += 1 }
+        }
+        // History too: the record is shown by `inbox` and by `&json=1`, so a key there that no
+        // longer means what the rule says is a report that reads wrongly even though routing
+        // does not depend on it.
+        for row in rows("SELECT id, repo FROM messages") {
+            let raw = row["repo"] ?? ""
+            if raw.isEmpty { continue }
+            let canon = canonicalRepoKey(raw) ?? raw
+            if canon != raw {
+                if run("UPDATE messages SET repo=? WHERE id=?", [canon, row["id"] ?? ""]) >= 0 { changed += 1 } else { left += 1 }
+            }
+        }
+        run("COMMIT", [])
+        return (changed, left)
+    }
 
     func owners(ofRepo repo: String) -> [String] {
         let all = rows("SELECT id, repos FROM agents")
@@ -625,23 +819,33 @@ final class Chatbox: @unchecked Sendable {
         guard validId(id) else { return (400, "error: id must be a single line, without control characters\n") }
         let node = req.p("node")
         let repos = req.p("repos").isEmpty ? req.p("repo") : req.p("repos")
-        // What the session will own *after* the upsert. An omitted repos= preserves
-        // the stored value, and that stored value has to be inside this credential's
-        // namespaces too — otherwise a scoped credential could re-register a session
-        // and inherit a claim it was never allowed to make.
         let kept = store.scalar("SELECT repos FROM agents WHERE id = ?", [id])
-        let effectiveRepos = repos.isEmpty ? kept : repos
 
-        // A repo key is a name, not a pattern. Refusing wildcards here also stops a
-        // namespace pattern such as `acme/*` from matching *itself* and being
-        // claimed as a literal repo key, which would route real mail to it.
+        // A repo key is a name, not a pattern, and it has one spelling. Canonicalising here
+        // is what makes a key that arrived by `curl` mean the same thing as one the client
+        // sent. Refusing wildcards also stops a namespace pattern such as `acme/*` from
+        // matching *itself* and being claimed as a literal repo key.
+        var canonical: [String] = []
         for claimed in repos.split(separator: ",") {
             let repo = claimed.trimmingCharacters(in: .whitespaces)
             if repo.isEmpty { continue }
-            guard validRepoKey(repo) else {
+            guard let key = canonicalRepoKey(repo) else {
                 return (400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
             }
+            if !canonical.contains(key) { canonical.append(key) }
         }
+
+        // An omitted repos= preserves the stored claim; a *present* one that names no usable
+        // key does not. It cannot, or `repos=,,` would reach the update with an empty string,
+        // the update would read that as "preserve", and a scoped credential could keep a claim
+        // its namespaces do not allow — which is the one thing this check exists to stop.
+        if !repos.isEmpty && canonical.isEmpty {
+            return (400, "error: repos= was given but names no usable repo key — omit it to keep the stored claim\n")
+        }
+        // What the session will own *after* the upsert, and what the namespace check below
+        // validates: the stored value too, so a credential cannot inherit a claim it was never
+        // allowed to make.
+        let effectiveRepos = repos.isEmpty ? kept : canonical.joined(separator: ",")
 
         // A scoped credential speaks for one machine: it must name that machine,
         // must not take over a session that lives elsewhere, and may only claim
@@ -671,19 +875,19 @@ final class Chatbox: @unchecked Sendable {
         let existing = store.scalar("SELECT id FROM agents WHERE id = ?", [id])
         if existing.isEmpty {
             store.run("INSERT INTO agents (id,node,agent,harness,session,ip,repos,note,registered_at,last_seen) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                      [id, req.p("node"), req.p("agent"), req.p("harness"), req.p("session"), req.p("ip"), repos, req.p("note"), ts, ts])
+                      [id, req.p("node"), req.p("agent"), req.p("harness"), req.p("session"), req.p("ip"), effectiveRepos, req.p("note"), ts, ts])
         } else {
             store.run("""
             UPDATE agents SET node=?, agent=?, harness=?, session=?, ip=?,
               repos=CASE WHEN ?='' THEN repos ELSE ? END, note=?, last_seen=? WHERE id=?
-            """, [req.p("node"), req.p("agent"), req.p("harness"), req.p("session"), req.p("ip"), repos, repos, req.p("note"), ts, id])
+            """, [req.p("node"), req.p("agent"), req.p("harness"), req.p("session"), req.p("ip"), effectiveRepos, effectiveRepos, req.p("note"), ts, id])
         }
         return (200, """
         ok registered
         id: \(id)
         node: \(req.p("node","-"))  agent: \(req.p("agent","-"))  session: \(req.p("session","-"))
         ip: \(req.p("ip","-"))  harness: \(req.p("harness","-"))
-        repos: \(repos.isEmpty ? "(none declared)" : repos)
+        repos: \(repos.isEmpty ? "(none declared)" : oneLine(effectiveRepos))
         at: \(ts)
 
         Next: POST /message?from=\(id)&repo=<repo>&subject=<...>&body=<...>
@@ -705,8 +909,12 @@ final class Chatbox: @unchecked Sendable {
         guard !body.isEmpty || !subject.isEmpty else { return (400, "error: body (or text) required\n") }
         // Register has always refused a malformed key; the send path did not, so a key
         // could be stored on a thread and then echoed back by every later reply.
-        guard repo.isEmpty || validRepoKey(repo) else {
-            return (400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
+        var canonicalRepo = ""
+        if !repo.isEmpty {
+            guard let key = canonicalRepoKey(repo) else {
+                return (400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
+            }
+            canonicalRepo = key
         }
         for one in toExplicit.split(separator: ",") {
             let t = one.trimmingCharacters(in: .whitespaces)
@@ -718,17 +926,17 @@ final class Chatbox: @unchecked Sendable {
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), from])
 
         var threadId: Int64
-        var effRepo = repo
+        var effRepo = canonicalRepo
         if !threadIn.isEmpty, let t = Int64(threadIn), t > 0 {
             threadId = t
             // a reply inherits the thread's repo so routing stays consistent
             if effRepo.isEmpty { effRepo = store.scalar("SELECT repo FROM threads WHERE id = ?", [threadIn]) }
             // A thread stored before the send path validated its key must not become a
             // way to echo that key back: it is dropped rather than repeated.
-            if !effRepo.isEmpty && !validRepoKey(effRepo) { effRepo = "" }
+            if !effRepo.isEmpty { effRepo = canonicalRepoKey(effRepo) ?? "" }
         } else {
             threadId = store.run("INSERT INTO threads (repo,subject,created_at,created_by,last_at) VALUES (?,?,?,?,?)",
-                                 [repo, subject, nowISO(), from, nowISO()])
+                                 [effRepo, subject, nowISO(), from, nowISO()])
         }
         guard threadId > 0 else { return (500, "error: could not open thread\n") }
 
@@ -958,7 +1166,12 @@ final class Chatbox: @unchecked Sendable {
     }
 
     func listThreads(_ req: Request) -> (Int, String) {
-        let repo = req.p("repo")
+        let repoRaw = req.p("repo")
+        var repo = ""
+        if !repoRaw.isEmpty {
+            guard let key = canonicalRepoKey(repoRaw) else { return (400, "error: '\(oneLine(repoRaw))' is not a valid repo key\n") }
+            repo = key
+        }
         var sql = "SELECT t.id, t.repo, t.subject, t.created_at, t.last_at, (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n FROM threads t"
         var binds: [String?] = []
         if !repo.isEmpty { sql += " WHERE t.repo = ?"; binds.append(repo) }
@@ -1015,7 +1228,7 @@ final class Chatbox: @unchecked Sendable {
         for r in rows {
             let status = r["status"] ?? "active"
             out += "\n\(r["id"] ?? "")  (\(r["agent"] ?? "-") on \(r["node"] ?? "-"))  \(status == "stale" ? "STALE" : status)\n"
-            out += "  repos: \((r["repos"] ?? "").isEmpty ? "(none declared)" : r["repos"]!)\n"
+            out += "  repos: \((r["repos"] ?? "").isEmpty ? "(none declared)" : oneLine(r["repos"]!))\n"
             if !(r["ip"] ?? "").isEmpty || !(r["session"] ?? "").isEmpty {
                 out += "  ip: \(r["ip"] ?? "-")  session: \(r["session"] ?? "-")  harness: \(r["harness"] ?? "-")\n"
             }
@@ -1037,11 +1250,20 @@ final class Chatbox: @unchecked Sendable {
         guard !node.isEmpty else {
             return (400, "error: node required (which machine this credential is for)\n")
         }
-        let namespaces = req.p("namespaces").isEmpty ? req.p("namespace") : req.p("namespaces")
+        let namespacesRaw = req.p("namespaces").isEmpty ? req.p("namespace") : req.p("namespaces")
+        var namespaces: [String] = []
+        for one in namespacesRaw.split(separator: ",") {
+            let ns = one.trimmingCharacters(in: .whitespaces)
+            if ns.isEmpty { continue }
+            guard let canon = canonicalNamespace(ns) else {
+                return (400, "error: '\(oneLine(ns))' is not a usable namespace — use a repo key, a key ending in /*, or *\n")
+            }
+            if !namespaces.contains(canon) { namespaces.append(canon) }
+        }
         let secret = randomHex(24)
         let id = "tk-" + randomHex(6)
         store.addToken(id: id, hash: sha256Hex(secret), node: node,
-                       namespaces: namespaces, note: req.p("note"), at: nowISO())
+                       namespaces: namespaces.joined(separator: ","), note: req.p("note"), at: nowISO())
         // CodeQL flags this response as cleartext transmission of sensitive data,
         // and without TLS it is right: the secret travels in the body. Loopback never
         // leaves the machine and a TLS listener is encrypted, so the warning is for
@@ -1057,7 +1279,7 @@ final class Chatbox: @unchecked Sendable {
         ok credential issued
         id: \(id)
         node: \(node)
-        namespaces: \(namespaces.isEmpty ? "(none — this credential may claim no repos)" : namespaces)
+        namespaces: \(namespaces.isEmpty ? "(none — this credential may claim no repos)" : namespaces.joined(separator: ","))
         secret: \(secret)
         \(exposure)
         The secret is shown once and never stored — only its SHA-256 is. Put it in
@@ -1077,7 +1299,7 @@ final class Chatbox: @unchecked Sendable {
         for r in rows {
             let revoked = !(r["revoked_at"] ?? "").isEmpty
             out += "\n\(r["id"] ?? "")  \(revoked ? "REVOKED" : "active")  node: \(r["node"] ?? "-")\n"
-            out += "  namespaces: \((r["namespaces"] ?? "").isEmpty ? "(none)" : r["namespaces"]!)\n"
+            out += "  namespaces: \((r["namespaces"] ?? "").isEmpty ? "(none)" : oneLine(r["namespaces"]!))\n"
             out += "  issued: \(r["created_at"] ?? "-")   last used: \((r["last_used"] ?? "").isEmpty ? "never" : r["last_used"]!)\n"
             if !(r["note"] ?? "").isEmpty { out += "  note: \(r["note"]!)\n" }
             if revoked { out += "  revoked: \(r["revoked_at"]!)\n" }
@@ -1362,6 +1584,9 @@ if !tokenFile.isEmpty && tokenFromFile.isEmpty {
 let token = !tokenArg.isEmpty ? tokenArg : (tokenFromFile.isEmpty ? nil : tokenFromFile)
 
 let store = Store(path: dbPath)
+// Before anything reads a key: a board that has been running has keys written under the old
+// rules, and they have to mean the same thing as the new ones or mail goes missing.
+let migratedKeys = store.migrateRepoKeys()
 let staleAfterRaw = argValue("--stale-after", "604800")
 let staleAfterValue = Int(staleAfterRaw) ?? 604800
 if staleAfterValue < 0 {
@@ -1468,6 +1693,8 @@ listener.stateUpdateHandler = { state in
         print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")
         print("transport: \(tlsIdentity == nil ? "plain HTTP — the token crosses the network in the clear" : "TLS")")
         print("max request: \(maxBody) bytes")
+        if migratedKeys.changed > 0 { print("normalised: \(migratedKeys.changed) stored repo key(s) rewritten to the canonical form") }
+        if migratedKeys.left > 0 { print("normalised: \(migratedKeys.left) stored key(s) are not usable keys and were left alone — see Protocol") }
         for a in addrs { print("  \(tlsIdentity == nil ? "http" : "https")://\(a):\(port)/") }
         // stdout is block-buffered when redirected to a file, and this process never
         // exits, so without a flush the banner never reaches chatbox.log.
