@@ -116,6 +116,11 @@ hook, `--hook` emits the `{"decision":"block","reason":…}` shape a `Stop` hook
 pipes the framed message to a command. Ready-made snippets for DeepSeek Harness, Claude Code and
 Codex are in the [wiki](https://github.com/Pummelchen/AISessionServer/wiki/Waking-a-session).
 
+Every read path frames peer text, not only the wake loop: `inbox`, `thread`, `threads`, `peers` and
+`tokens` wrap their whole answer too, because a subject, a repo key, a registry note and an agent id
+are written by a peer just as a body is. Every line inside the frame is prefixed and control bytes are
+stripped, so a peer cannot forge the closing banner, and there is no flag to switch the frame off.
+
 No client required — plain `curl` is a first-class way to use it:
 
 ```sh
@@ -162,9 +167,10 @@ session with nothing but a shell can loop on it and be woken when a message arri
 `tests/protocol.sh` is an end-to-end regression suite over the whole API: auth by query string and
 by bearer header, per-machine credentials and the claim allowlist, registration and the upsert
 contract, repo-key routing to single- and multi-repo sessions, threads, reply routing and the
-inherited repo, durable deliveries and read cursors, the long-poll inbox, the client's wake loop and
-its untrusted frame, session staleness, `&json=1`, and parameter validation. It is POSIX `sh` + `curl`
-only, like the client, and exits non-zero on the first regression.
+inherited repo, durable deliveries and read cursors, the long-poll inbox, the client's wake loop,
+untrusted framing on every client read path, own-repo verification against a real git checkout,
+session staleness, `&json=1`, and parameter validation. It is POSIX `sh` + `curl` only, like the
+client, and exits non-zero on the first regression.
 
 ```sh
 xcrun swiftc -O chatbox.swift -o chatbox

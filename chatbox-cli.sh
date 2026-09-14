@@ -62,6 +62,20 @@ chatbox — session chatbox client   (server: $URL)
            --exec pipes the framed message to a command; --no-ack (one-shot
            only) leaves it unread. --wait defaults to 300, or 30 with --once.
 
+Every listing and every message this client prints — a body, a subject, a repo
+key, a registry note, an agent id — arrives inside the untrusted frame, with
+every line prefixed by "| ". That is inbox, thread, threads, peers and tokens,
+not just watch. The frame cannot be switched off: a caller that wants raw bytes
+should be using curl, not a client whose job is to keep a model's context
+honest.
+
+Two things are deliberately not framed, and neither can carry a peer's line
+breaks: health, which reports server counters and a timestamp; and the
+single-line status a write returns ("ok posted", "inbox for X: empty"), which is
+the server confirming what you just did. The server refuses an id or a repo key
+that contains a control character, so a peer cannot smuggle a line of its own
+into either one.
+
 Env: CHATBOX_URL, CHATBOX_TOKEN
 EOF
 }
@@ -111,6 +125,62 @@ framed_of() { # message body -> the framed block on stdout
   frame_start
   printf '%s\n' "$1" | sanitize | sed 's/^/| /'
   frame_end
+}
+
+# The body of a whole response, for the read paths that return a listing rather
+# than one message. `inbox`, `thread`, `threads`, `peers` and `tokens` are all
+# written by whoever registered or sent: ids, repo keys, subjects and notes are
+# peer text, and a listing is untrusted for the same reason a body is.
+#
+# The context line is a label the client itself chose, so it is not peer text —
+# but it is sanitised and prefixed like everything else, because a frame in which
+# one line is special is a frame a peer can aim at.
+#
+# An empty response stays empty: that is the long poll saying "nothing arrived",
+# and framing it would turn a quiet timeout into a message.
+framed_response() { # context -> the framed block on stdout
+  _fr="$(cat)"
+  [ -n "$_fr" ] || return 0
+  frame_start
+  printf '| %s\n' "$(printf '%s' "$1" | sanitize | tr '\n' ' ')"
+  printf '%s\n' "$_fr" | sanitize | sed 's/^/| /'
+  frame_end
+}
+
+# Every read path goes through here, so a new one cannot quietly skip the frame.
+read_framed() { # context, path, query, [wait-seconds]
+  if [ -n "${4:-}" ]; then
+    # A leading zero is octal to the shell, and `08` is not a valid octal number:
+    # `$(( 08 + 20 ))` does not return a wrong number, it aborts the client under
+    # /bin/sh and dash. `watch` normalises the wait the same way; this path has to
+    # as well, or `chatbox inbox --wait 08` is a crash rather than a request.
+    _w="$(printf '%s' "$4" | sed 's/^0*//')"
+    [ -n "$_w" ] || _w=0
+    [ "${#_w}" -gt 4 ] && _w=300
+    [ "$_w" -gt 300 ] && _w=300
+    _rr="$(http_get_wait "$2" "$3" "$(( _w + 20 ))")" || return $?
+  else
+    _rr="$(http_get "$2" "$3")" || return $?
+  fi
+  # An empty body is the long poll saying "nothing arrived", which is not a message
+  # and must not be framed into one. `framed_response` is the single place that
+  # decides this — a second guard here would only hide the real one.
+  #
+  # A poll without a wait gets a one-line status instead of an empty body. That line
+  # is the server talking about the inbox, not a peer talking to you, and `watch`
+  # already treats it as nothing to report: a banner announcing that the text below
+  # came from another AI session would be a lie about text nobody wrote. It still
+  # gets printed, because "empty" is worth knowing. The id inside it is one line —
+  # the server refuses one that is not — so it cannot carry a line of its own.
+  #
+  # An empty body is deliberately NOT handled here: it falls through to
+  # `framed_response`, which is the single place that decides that nothing arrived.
+  # A guard here as well would be dead code, and dead code that hides the live one
+  # from a mutation test.
+  case "$_rr" in
+    inbox\ for\ *:\ empty) printf '%s\n' "$_rr"; return 0 ;;
+  esac
+  printf '%s\n' "$_rr" | framed_response "$1"
 }
 
 json_escape() { # stdin -> a JSON string body; valid for any input
@@ -437,11 +507,11 @@ case "$cmd" in
   inbox)
     _q="id=$ID"; [ -n "$ALL" ] && _q="$_q&all=1"
     case "$WAIT" in
-      ''|*[!0-9]*) http_get /inbox "$_q" ;;
-      *)           http_get_wait /inbox "$_q&wait=$WAIT" "$((WAIT + 20))" ;;
+      ''|*[!0-9]*) read_framed "chatbox inbox --id $ID" /inbox "$_q" ;;
+      *)           read_framed "chatbox inbox --id $ID" /inbox "$_q&wait=$WAIT" "$WAIT" ;;
     esac ;;
   thread)
-    http_get /thread "id=${POS1:-$ID}" ;;
+    read_framed "chatbox thread ${POS1:-$ID}" /thread "id=${POS1:-$ID}" ;;
   threads)
     if [ -n "$REPO" ]; then
       _orig="$REPO"
@@ -450,21 +520,25 @@ case "$cmd" in
         exit 2
       }
     fi
-    http_get /threads "repo=$REPO" ;;
+    read_framed "chatbox threads${REPO:+ --repo $REPO}" /threads "repo=$REPO" ;;
   ack)
     http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" --data-urlencode "thread=$THREAD" ;;
   peers)
-    http_get /peers "" ;;
+    read_framed "chatbox peers" /peers "" ;;
   token)
     http_post /token \
       --data-urlencode "node=$NODE" \
       --data-urlencode "namespaces=$NAMESPACES" \
       --data-urlencode "note=$NOTE" ;;
   tokens)
-    http_get /token "" ;;
+    read_framed "chatbox tokens" /token "" ;;
   revoke)
     http_post /token/revoke --data-urlencode "id=$ID" ;;
   health)
+    # Not framed, and deliberately: /health is counters, a timestamp and the
+    # presence window. Nothing in it was written by a peer, and framing a
+    # monitoring check would make `chatbox health | grep` useless to protect
+    # against text that is not there.
     http_get /health "" ;;
   watch)
     if [ -z "$ID" ]; then

@@ -55,10 +55,36 @@ private func isLoopback(_ host: String) -> Bool {
     host.hasPrefix("127.") || host == "::1" || host.hasPrefix("[::1]") || host == "localhost"
 }
 
+private func hasControlByte(_ s: String) -> Bool {
+    for scalar in s.unicodeScalars where scalar.value < 0x20 || scalar.value == 0x7F { return true }
+    return false
+}
+
+/// A repo key is a name, not a pattern and not a paragraph. `*` and `?` would let a
+/// namespace pattern match itself; a line break is worse, because every response
+/// that echoes a key — a routing note, a `peers` listing, a delivery list — would
+/// then be forgeable from the repo name alone, which is the sender's to choose.
 private func validRepoKey(_ repo: String) -> Bool {
     if repo.isEmpty { return false }
     for bad in ["*", "?", "[", "]", " ", "\t"] where repo.contains(bad) { return false }
-    return true
+    return !hasControlByte(repo)
+}
+
+/// An agent id is a routing key that gets echoed into text: into `peers`, into a
+/// delivery list, into "nobody owns this repo" notes. One line by construction.
+private func validId(_ id: String) -> Bool {
+    if id.isEmpty { return false }
+    return !hasControlByte(id)
+}
+
+/// Echoing a rejected value back is useful; echoing its line breaks is not, because
+/// the message is printed by clients and read by whatever is driving them.
+private func oneLine(_ s: String) -> String {
+    var out = ""
+    for scalar in s.unicodeScalars {
+        if scalar.value < 0x20 || scalar.value == 0x7F { out.append(" ") } else { out.unicodeScalars.append(scalar) }
+    }
+    return out
 }
 
 /// Shared between the connection watcher and the poll loop. Both run on the
@@ -524,6 +550,7 @@ final class Chatbox: @unchecked Sendable {
     func register(_ req: Request, _ who: Principal) -> (Int, String) {
         let id = req.p("id").isEmpty ? req.p("from") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id required (who you are, e.g. node1-dsh-abc)\n") }
+        guard validId(id) else { return (400, "error: id must be a single line, without control characters\n") }
         let node = req.p("node")
         let repos = req.p("repos").isEmpty ? req.p("repo") : req.p("repos")
         // What the session will own *after* the upsert. An omitted repos= preserves
@@ -540,7 +567,7 @@ final class Chatbox: @unchecked Sendable {
             let repo = claimed.trimmingCharacters(in: .whitespaces)
             if repo.isEmpty { continue }
             guard validRepoKey(repo) else {
-                return (400, "error: '\(repo)' is not a valid repo key — keys name a repo, they do not contain '*' or '?'\n")
+                return (400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
             }
         }
 
@@ -594,6 +621,7 @@ final class Chatbox: @unchecked Sendable {
     func message(_ req: Request, _ who: Principal) -> (Int, String) {
         let from = req.p("from").isEmpty ? req.p("id") : req.p("from")
         guard !from.isEmpty else { return (400, "error: from required\n") }
+        guard validId(from) else { return (400, "error: from must be a single line, without control characters\n") }
         if let rejection = mayAct(as: from, who) { return rejection }
         var body = req.p("body")
         if body.isEmpty { body = req.p("text") }
@@ -603,6 +631,16 @@ final class Chatbox: @unchecked Sendable {
         let threadIn = req.p("thread")
         let toExplicit = req.p("to")
         guard !body.isEmpty || !subject.isEmpty else { return (400, "error: body (or text) required\n") }
+        // Register has always refused a malformed key; the send path did not, so a key
+        // could be stored on a thread and then echoed back by every later reply.
+        guard repo.isEmpty || validRepoKey(repo) else {
+            return (400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
+        }
+        for one in toExplicit.split(separator: ",") {
+            let t = one.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty { continue }
+            guard validId(t) else { return (400, "error: to must name ids that are single lines, without control characters\n") }
+        }
 
         // keep the sender's liveness fresh
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), from])
@@ -613,6 +651,9 @@ final class Chatbox: @unchecked Sendable {
             threadId = t
             // a reply inherits the thread's repo so routing stays consistent
             if effRepo.isEmpty { effRepo = store.scalar("SELECT repo FROM threads WHERE id = ?", [threadIn]) }
+            // A thread stored before the send path validated its key must not become a
+            // way to echo that key back: it is dropped rather than repeated.
+            if !effRepo.isEmpty && !validRepoKey(effRepo) { effRepo = "" }
         } else {
             threadId = store.run("INSERT INTO threads (repo,subject,created_at,created_by,last_at) VALUES (?,?,?,?,?)",
                                  [repo, subject, nowISO(), from, nowISO()])
@@ -700,6 +741,7 @@ final class Chatbox: @unchecked Sendable {
     func inbox(_ req: Request, _ who: Principal) -> (Int, String) {
         let id = req.p("id").isEmpty ? req.p("for") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id required\n") }
+        guard validId(id) else { return (400, "error: id must be a single line, without control characters\n") }
         if let rejection = mayAct(as: id, who) { return rejection }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
         let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
@@ -862,6 +904,7 @@ final class Chatbox: @unchecked Sendable {
     func ack(_ req: Request, _ who: Principal) -> (Int, String) {
         let id = req.p("id").isEmpty ? req.p("agent") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id required\n") }
+        guard validId(id) else { return (400, "error: id must be a single line, without control characters\n") }
         if let rejection = mayAct(as: id, who) { return rejection }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
         var n = 0
