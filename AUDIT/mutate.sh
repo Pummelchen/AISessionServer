@@ -753,8 +753,12 @@ m('174-trk30-oldestfirst', '''          FROM messages WHERE thread_id = ? ORDER 
   '''          FROM messages WHERE thread_id = ? ORDER BY id ASC LIMIT \\(limit)''')
 m('175-trk30-jsonflat', '''        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "agents", matching: matchingAgents)) }''',
   '''        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }''')
-m('178-trk30-migratealways', '''let store = chatboxQueue.sync { Store(path: dbPath, migrating: !argPresent("--prune-dry-run"), queue: chatboxQueue) }''',
-  '''let store = chatboxQueue.sync { Store(path: dbPath, migrating: true, queue: chatboxQueue) }''')
+# RETIRED AUDIT #0042: `178-trk30-migratealways` replaced the `migrating: !--prune-dry-run` flag with
+# `true`, i.e. "a dry run must not migrate the schema it is only reading". The prune dry run now opens
+# its own store with a **read-only** connection, so a migration cannot happen however the flag is set,
+# and the mutant would no longer be red for any reason. The property is enforced structurally and
+# pinned by `253-audit0042-readwrite` (which restores the read-write open); retiring this cell in the
+# same commit that made it unreachable is recorded in the ledger under #0042.
 
 # TRK-28: a credential may carry an expiry, and an expired one is refused.
 m('166-trk28-noexpirycheck', '''        if !expiresAt.isEmpty {''', '''        if false, !expiresAt.isEmpty {''')
@@ -1059,6 +1063,39 @@ m('250-audit0025-unframed',
 
 # AUDIT #0025: the frame is only half the defence - the sanitizer is what stops a peer reordering a
 # framed line with a bidi control.
+# AUDIT #0042: a prune aimed at a path that does not exist must not create a board to prune. Both
+# validation guards go, which is the pre-fix path: the store was opened straight away. Removing only
+# the `fileExists` guard is NOT a regression - `readBoard` refuses a missing file itself (with a
+# backup-flavoured message) and opens read-only, so nothing is created - and a mutant that does not
+# reintroduce the bug is a mutant to fix, not a check to strengthen (recorded under #0042).
+m('252-audit0042-nofilecheck',
+  r'''    let prunePath = NSString(string: dbPath).expandingTildeInPath
+    guard FileManager.default.fileExists(atPath: prunePath) else {
+        FileHandle.standardError.write("chatbox: \(prunePath) does not exist — refusing to create a board to prune\n".data(using: .utf8)!)
+        exit(1)
+    }
+    if case .problem(let why) = readBoard(prunePath) {
+        FileHandle.standardError.write("chatbox: \(why) — refusing to open it for prune\n".data(using: .utf8)!)
+        exit(1)
+    }''',
+  r'''    let prunePath = NSString(string: dbPath).expandingTildeInPath''')
+
+# AUDIT #0042: a dry run must open read-only, or it converts the board it is only reading.
+m('253-audit0042-readwrite',
+  r'''        Store(path: prunePath, migrating: !dryRun, readOnly: dryRun, queue: chatboxQueue)''',
+  r'''        Store(path: prunePath, migrating: !dryRun, readOnly: false, queue: chatboxQueue)''')
+
+# AUDIT #0042: two operator modes at once must be refused, not silently serialised.
+m('254-audit0042-noconflict',
+  r'''let operatorModes = [("--backup", backupRaw), ("--verify-backup", verifyRaw), ("--prune", pruneRaw)]
+    .filter { !$0.1.isEmpty }.map { $0.0 }
+if operatorModes.count > 1 {
+    FileHandle.standardError.write("chatbox: \(operatorModes.joined(separator: " and ")) ask for different things — give one operator mode\n".data(using: .utf8)!)
+    exit(2)
+}
+''',
+  r'''''')
+
 m('251-audit0025-nosanitize',
   r'''func sanitize(_ text: String) -> String {
     var out = ""

@@ -2577,10 +2577,21 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
     # A dry run writes nothing at all — including the schema work every normal start does. The
     # board is made "legacy" (the column a migration would add is dropped) so that a write would
     # show up as a changed file rather than as a row nobody looks at.
+    #
+    # The copy is made with SQLite's own `.backup`, not `cp`: the board is live and in WAL mode, so
+    # the schema can live entirely in the `-wal` and a `cp` of the main file can yield an empty
+    # database. That is exactly what happened — the fixture used to hand the prune a file with no
+    # tables at all, the guard below only asked "is `expires_at` absent" (true of a file with no
+    # `tokens` table too), and the check passed because the *prune* created the schema it was
+    # supposed to be migrating. The guard now also requires the table to exist, so the fixture
+    # cannot degrade back into that silently.
     legacy_pdb="$SCRATCH/legacy-${RUN}.sqlite"
-    cp "$pdb" "$legacy_pdb" >/dev/null 2>&1
+    rm -f "$legacy_pdb"*
+    sqlite3 "$pdb" ".backup '$legacy_pdb'" >/dev/null 2>&1
     sqlite3 "$legacy_pdb" "CREATE TABLE legacy_tokens AS SELECT id,hash,node,namespaces,note,created_at,last_used,revoked_at FROM tokens; DROP TABLE tokens; ALTER TABLE legacy_tokens RENAME TO tokens;" >/dev/null 2>&1
-    if [ -f "$legacy_pdb" ] && [ "$(sqlite3 "$legacy_pdb" "select count(*) from pragma_table_info('tokens') where name='expires_at';")" = "0" ]; then
+    if [ -f "$legacy_pdb" ] \
+       && [ "$(sqlite3 "$legacy_pdb" "select count(*) from sqlite_master where type='table' and name='tokens';")" = "1" ] \
+       && [ "$(sqlite3 "$legacy_pdb" "select count(*) from pragma_table_info('tokens') where name='expires_at';")" = "0" ]; then
       # Compared as *schema and rows*, not as file bytes: the board runs in WAL mode, so a write
       # lands in the -wal and the main file can be byte-identical while the database has changed —
       # which is exactly how the first cut of this check passed a dry run that migrated.
@@ -2593,7 +2604,8 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
       equals "while a real prune migrates the board it is about to change" \
         "$(sqlite3 "$legacy_pdb" "select count(*) from pragma_table_info('tokens') where name='expires_at';")" "1"
     else
-      no "the legacy board for the dry-run check was built" "the column could not be dropped"
+      no "the legacy board for the dry-run check was built" \
+         "the copy has no tokens table, or still has the column"
     fi
 
     # A key written under the old rules, so a migration running under the dry run would show up.
@@ -2750,6 +2762,90 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
     prune_refuses "a bare --prune is refused" --prune
     prune_refuses "--prune-dry-run without --prune is refused" --prune-dry-run
     prune_refuses "--prune-dry-run with a value is refused" --prune=30 --prune-dry-run=1
+
+    # The file has to exist before anything opens it. `sqlite3_open` *creates* a missing file, so a
+    # mistyped --db used to produce a brand-new board and a cheerful "pruned: 0 message(s)", and a
+    # dry run left that new board behind in a mode whose whole promise is that it changes nothing.
+    missing_db="$SCRATCH/prune-missing-${RUN}.sqlite"
+    missing_dry="$SCRATCH/prune-missing-dry-${RUN}.sqlite"
+    rm -f "$missing_db" "$missing_db-wal" "$missing_db-shm" "$missing_dry" "$missing_dry-wal" "$missing_dry-shm"
+    missing_out="$("$CHATBOX_BIN" --db "$missing_db" --prune 30 2>&1)"; missing_rc=$?
+    if [ "$missing_rc" -ne 0 ] && printf '%s' "$missing_out" | grep -q "does not exist"; then
+      ok "a prune aimed at a path that does not exist is refused"
+    else
+      no "a prune aimed at a path that does not exist is refused" \
+         "exit=$missing_rc: $(printf '%s' "$missing_out" | head -1)"
+    fi
+    equals "and it does not create the board it was aimed at" \
+      "$([ -e "$missing_db" ] && echo created || echo absent)" "absent"
+    dry_missing_out="$("$CHATBOX_BIN" --db "$missing_dry" --prune 30 --prune-dry-run 2>&1)"; dry_missing_rc=$?
+    if [ "$dry_missing_rc" -ne 0 ] && printf '%s' "$dry_missing_out" | grep -q "does not exist"; then
+      ok "and so is a dry run, which used to leave a new board behind"
+    else
+      no "and so is a dry run, which used to leave a new board behind" \
+         "exit=$dry_missing_rc: $(printf '%s' "$dry_missing_out" | head -1)"
+    fi
+    equals "and the dry run creates nothing either" \
+      "$([ -e "$missing_dry" ] && echo created || echo absent)" "absent"
+
+    # A file that exists but is not a board is refused rather than "pruned" to nothing.
+    garbage_db="$SCRATCH/prune-garbage-${RUN}.sqlite"
+    printf 'not a database\n' > "$garbage_db"
+    garbage_before="$(cksum "$garbage_db" | awk '{print $1" "$2}')"
+    garbage_out="$("$CHATBOX_BIN" --db "$garbage_db" --prune 30 2>&1)"; garbage_rc=$?
+    if [ "$garbage_rc" -ne 0 ] && printf '%s' "$garbage_out" | grep -q "not a usable board"; then
+      ok "a prune aimed at a file that is not a board is refused"
+    else
+      no "a prune aimed at a file that is not a board is refused" \
+         "exit=$garbage_rc: $(printf '%s' "$garbage_out" | head -1)"
+    fi
+    equals "and that file is left exactly as it was" \
+      "$(cksum "$garbage_db" | awk '{print $1" "$2}')" "$garbage_before"
+
+    # A dry run must not convert the board it is reading. A read-write open runs
+    # `PRAGMA journal_mode=WAL`, so a rollback-journal board would come back as a WAL board with a
+    # `-wal` beside it — a mode changing the file it was only supposed to read. The mode, the bytes
+    # and the file list are all asserted, because any one of them alone can miss it.
+    rollback_db="$SCRATCH/prune-rollback-${RUN}.sqlite"
+    rm -f "$rollback_db"*
+    sqlite3 "$pdb" ".backup '$rollback_db'" >/dev/null 2>&1
+    sqlite3 "$rollback_db" "PRAGMA journal_mode=DELETE;" >/dev/null 2>&1
+    # The setup itself leaves a `-shm` behind; the file list has to start clean, or this would
+    # measure the fixture rather than the dry run.
+    rm -f "$rollback_db"-*
+    roll_before="$(cksum "$rollback_db" | awk '{print $1" "$2}')"
+    "$CHATBOX_BIN" --db "$rollback_db" --prune 0 --prune-dry-run >/dev/null 2>&1
+    roll_after="$(cksum "$rollback_db" | awk '{print $1" "$2}')"
+    roll_sidecars=0
+    for roll_f in "$rollback_db"-*; do [ -e "$roll_f" ] && roll_sidecars=$((roll_sidecars + 1)); done
+    roll_mode="$(sqlite3 "$rollback_db" "PRAGMA journal_mode;" 2>/dev/null)"
+    equals "a dry run does not convert the journal mode of the board it reads" "$roll_mode" "delete"
+    equals "and leaves it byte-identical" "$roll_after" "$roll_before"
+    equals "and leaves no sidecar file beside it" "$roll_sidecars" "0"
+
+    # Two operator modes at once: each runs and exits, so the second was silently dropped.
+    # `--backup x --prune 30` copied the board, exited 0 and never pruned, and exit 0 said both had
+    # happened.
+    conflict_backup="$SCRATCH/prune-conflict-${RUN}.sqlite"
+    rm -f "$conflict_backup"
+    conflict_out="$("$CHATBOX_BIN" --db "$pdb" --backup "$conflict_backup" --prune 30 2>&1)"; conflict_rc=$?
+    if [ "$conflict_rc" -eq 2 ] && printf '%s' "$conflict_out" | grep -q "one operator mode"; then
+      ok "two operator modes at once are refused"
+    else
+      no "two operator modes at once are refused" "exit=$conflict_rc: $(printf '%s' "$conflict_out" | head -1)"
+    fi
+    equals "and neither of them ran" \
+      "$([ -e "$conflict_backup" ] && echo ran || echo neither)" "neither"
+
+    # Flags are validated before a mode acts on them: a bad window used to be ignored by a prune
+    # that had already printed success.
+    bad_stale_out="$("$CHATBOX_BIN" --db "$pdb" --prune 30 --stale-after abc 2>&1)"; bad_stale_rc=$?
+    if [ "$bad_stale_rc" -eq 2 ] && printf '%s' "$bad_stale_out" | grep -q -- "--stale-after"; then
+      ok "a bad --stale-after stops a prune rather than being ignored by it"
+    else
+      no "a bad --stale-after stops a prune rather than being ignored by it" \
+         "exit=$bad_stale_rc: $(printf '%s' "$bad_stale_out" | head -1)"
+    fi
   else
     no "the prune fixture started a server" "no answer on $pport: $(head -1 "$SCRATCH/prune-${RUN}.log")"
   fi

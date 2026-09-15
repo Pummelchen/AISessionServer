@@ -445,19 +445,24 @@ final class Store: @unchecked Sendable {
     /// The file this store was opened on, kept for the messages that have to name it.
     private let path: String
 
-    init(path: String, migrating: Bool = true, queue: DispatchQueue) {
+    init(path: String, migrating: Bool = true, readOnly: Bool = false, queue: DispatchQueue) {
         self.path = path
         self.queue = queue
-        if sqlite3_open(path, &db) != SQLITE_OK {
+        // `readOnly` exists for the prune dry run: `sqlite3_open` *creates* a file that is not there,
+        // and any successful open can leave a `-wal`/`-shm` behind, so a mode whose whole promise is
+        // "nothing was removed" must not be handed a connection that can write at all.
+        let flags = readOnly ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
+        if sqlite3_open_v2(path, &db, flags, nil) != SQLITE_OK {
             FileHandle.standardError.write("chatbox: cannot open db at \(path)\n".data(using: .utf8)!)
             exit(1)
         }
-        // `journal_mode=WAL` and `busy_timeout` are connection settings, not schema: they are set
-        // either way, because a read is what a dry run does with them.
-        exec("PRAGMA journal_mode=WAL;")
+        // `journal_mode=WAL` writes to the database header and is refused on a read-only connection;
+        // a dry run reading a rollback-journal board must not convert it either.
+        if !readOnly { exec("PRAGMA journal_mode=WAL;") }
         // Wait rather than fail when another process holds the write lock. Two servers on one
         // database is a supported shape (a restart overlaps the old one), and the alternative
-        // is a write that reports failure and a caller that does not look.
+        // is a write that reports failure and a caller that does not look. A connection setting,
+        // not a write, so it is set for a read-only connection too.
         exec("PRAGMA busy_timeout=5000;")
         if !migrating { return }
         exec("""
@@ -3076,6 +3081,21 @@ if !tokenFile.isEmpty && tokenFromFile.isEmpty {
 }
 let token = !tokenArg.isEmpty ? tokenArg : (tokenFromFile.isEmpty ? nil : tokenFromFile)
 
+// Every flag is validated before any mode acts on it. `--stale-after` used to be checked after the
+// store had been opened and after the operator modes had already exited, so `--prune 30
+// --stale-after abc` pruned, printed success and never read the window on the command line.
+let staleAfterRaw = argValue("--stale-after", "604800")
+// `?? -1` rather than `?? 604800`: a window nobody asked for must stop the server, not restore the
+// seven-day default. `--stale-after 7d` used to be accepted *as* the default, so a session that had
+// gone quiet was still reported active — presence reporting behaving unlike the command line.
+let staleAfterValue = Int(staleAfterRaw) ?? -1
+if staleAfterValue < 0 {
+    // A negative window used to mean "off", which fails open on a typo.
+    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds — got '\(staleAfterRaw)'\n".data(using: .utf8)!)
+    exit(2)
+}
+let staleAfter = staleAfterValue
+
 // ---- operator mode: backup, and exit ----
 //
 // Deliberately before `Store` is opened: opening a store *creates* the schema, so a backup that
@@ -3089,6 +3109,9 @@ let token = !tokenArg.isEmpty ? tokenArg : (tokenFromFile.isEmpty ? nil : tokenF
 // destination rather than quietly replacing a good backup with today's.
 let backupRaw = argValue("--backup", "")
 let verifyRaw = argValue("--verify-backup", "")
+// Read here, with the other operator modes, so the flags can be checked against each other before
+// any of them acts.
+let pruneRaw = argValue("--prune", "")
 if argPresent("--backup") && backupRaw.isEmpty {
     FileHandle.standardError.write("chatbox: --backup needs a destination path\n".data(using: .utf8)!)
     exit(2)
@@ -3099,6 +3122,15 @@ if argPresent("--verify-backup") && verifyRaw.isEmpty {
 }
 if !backupRaw.isEmpty && !verifyRaw.isEmpty {
     FileHandle.standardError.write("chatbox: --backup and --verify-backup do different things — give one of them\n".data(using: .utf8)!)
+    exit(2)
+}
+// One operator mode at a time. Each of these runs and exits, so a second one was silently ignored:
+// `--backup x --prune 30` copied the board, exited 0 and never pruned, and the operator had every
+// reason to believe both had happened.
+let operatorModes = [("--backup", backupRaw), ("--verify-backup", verifyRaw), ("--prune", pruneRaw)]
+    .filter { !$0.1.isEmpty }.map { $0.0 }
+if operatorModes.count > 1 {
+    FileHandle.standardError.write("chatbox: \(operatorModes.joined(separator: " and ")) ask for different things — give one operator mode\n".data(using: .utf8)!)
     exit(2)
 }
 if !verifyRaw.isEmpty {
@@ -3180,24 +3212,6 @@ if !backupRaw.isEmpty {
     exit(0)
 }
 
-// A dry run only reads. `Store` normally creates the tables, adds a column a board may be missing
-// and backfills one, all of which are writes: a run whose whole promise is "nothing was removed"
-// must not leave a changed file behind either.
-// The store is created on the queue it will be used on, so its `dispatchPrecondition` holds from the
-// first statement of the schema migration to the last request it serves.
-let store = chatboxQueue.sync { Store(path: dbPath, migrating: !argPresent("--prune-dry-run"), queue: chatboxQueue) }
-let staleAfterRaw = argValue("--stale-after", "604800")
-// `?? -1` rather than `?? 604800`: a window nobody asked for must stop the server, not restore the
-// seven-day default. `--stale-after 7d` used to be accepted *as* the default, so a session that had
-// gone quiet was still reported active — presence reporting behaving unlike the command line.
-let staleAfterValue = Int(staleAfterRaw) ?? -1
-if staleAfterValue < 0 {
-    // A negative window used to mean "off", which fails open on a typo.
-    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds — got '\(staleAfterRaw)'\n".data(using: .utf8)!)
-    exit(2)
-}
-let staleAfter = staleAfterValue
-
 // ---- operator mode: prune, and exit ----
 //
 // Before the key migration, deliberately: a dry run must not write anything at all, and the
@@ -3206,7 +3220,11 @@ let staleAfter = staleAfterValue
 // Deliberately not a route on the running server. Deleting the record of a cross-repo fix is an
 // operator's decision on the database; a session must not be able to hide history, and the
 // running board must not start deleting rows on a timer nobody is watching.
-let pruneRaw = argValue("--prune", "")
+//
+// Like the backup modes, this validates the *file* before anything opens it. `sqlite3_open` creates
+// a missing file, so a mistyped `--db` used to produce a brand-new board and a cheerful
+// "pruned: 0 message(s)" - and a dry run left that new file behind, in a mode whose whole promise is
+// that it changes nothing.
 // The window has to stay expressible. `isoDaysAgo` renders an ISO string, and past the year
 // 9999 the formatter drops the sign and the cutoff lands in the *future* — where `created_at <
 // cutoff` is true for everything, so a typo would prune every acknowledged message regardless
@@ -3233,10 +3251,24 @@ if !pruneRaw.isEmpty {
         FileHandle.standardError.write("chatbox: --prune needs an explicit --db <path> — refusing to guess which board to prune\n".data(using: .utf8)!)
         exit(2)
     }
+    let prunePath = NSString(string: dbPath).expandingTildeInPath
+    guard FileManager.default.fileExists(atPath: prunePath) else {
+        FileHandle.standardError.write("chatbox: \(prunePath) does not exist — refusing to create a board to prune\n".data(using: .utf8)!)
+        exit(1)
+    }
+    if case .problem(let why) = readBoard(prunePath) {
+        FileHandle.standardError.write("chatbox: \(why) — refusing to open it for prune\n".data(using: .utf8)!)
+        exit(1)
+    }
     let dryRun = argPresent("--prune-dry-run")
     // The operator modes have no server yet, so they run their store work on the same queue the
-    // server would: one rule, no exception to remember.
-    let pruned = chatboxQueue.sync { store.prune(olderThanDays: pruneDays, dryRun: dryRun) }
+    // server would: one rule, no exception to remember. A dry run gets a read-only connection, so it
+    // cannot create, convert or migrate the file it is only reading; the store is built inside the
+    // closure because `prune` needs it for the length of the call and nothing beyond it does.
+    let pruned = chatboxQueue.sync {
+        Store(path: prunePath, migrating: !dryRun, readOnly: dryRun, queue: chatboxQueue)
+            .prune(olderThanDays: pruneDays, dryRun: dryRun)
+    }
     guard let result = pruned else {
         FileHandle.standardError.write("chatbox: the prune failed and was rolled back — nothing was changed\n".data(using: .utf8)!)
         exit(1)
@@ -3424,6 +3456,13 @@ if !tlsIdentityPath.isEmpty {
     }
     tlsIdentity = identity
 }
+
+// The store the *server* serves from. Created here - after every flag has been validated and after
+// the operator modes have run and exited - so a mistyped flag or a prune aimed at the wrong file
+// cannot leave a migrated database behind. It is created on the queue it will be used on, so its
+// `dispatchPrecondition` holds from the first statement of the schema migration to the last request
+// it serves.
+let store = chatboxQueue.sync { Store(path: dbPath, queue: chatboxQueue) }
 
 // The public URL is part of the configuration the board is built from, not a global it writes back
 // into: it is what every usage answer tells a caller to connect to.
