@@ -1589,7 +1589,10 @@ CNF
        -passout "file:$tlsdir/pw" >/dev/null 2>&1; then
     ok "the TLS fixture built a certificate and a PKCS#12 identity"
     tlsbase="https://127.0.0.1:$tlsport"
+    # A short idle deadline so the check below can prove it covers a connection that never even
+    # finishes the handshake — the case that used to hold a connection slot for ever.
     "$CHATBOX_BIN" --port "$tlsport" --db "$tlsdir/tls.sqlite" --token-file "$tlsdir/token" \
+      --idle-timeout 2 \
       --tls-identity "$tlsdir/id.p12" --tls-password-file "$tlsdir/pw" > "$tlsdir/server.log" 2>&1 &
     tlspid=$!
     tlsready=0
@@ -1617,6 +1620,18 @@ CNF
       # curl stops at the handshake with its own verification-failure code (60).
       equals "the certificate is verified rather than waved through" \
         "$(curl_code --max-time 5 "$tlsbase/health?token=$TOKEN")" "60:000"
+      # A connection that opens TCP and never speaks TLS is not `.ready`, so it is not a request
+      # either — but it is a socket the server is holding. The deadline has to cover it, or a silent
+      # peer occupies a connection slot for ever (`--max-connections` bounds the count, and this is
+      # what keeps a slot from being held by nothing at all).
+      ( sleep 8 | nc -w 6 127.0.0.1 "$tlsport" >/dev/null 2>&1 ) &
+      silent_tls=$!
+      sleep 4
+      contains "the idle deadline covers a connection that never finishes a handshake" \
+        "$(cat "$tlsdir/server.log")" "idle connection closed after 2s"
+      kill "$silent_tls" 2>/dev/null
+      wait "$silent_tls" 2>/dev/null
+
       # And plain HTTP does not reach a TLS listener, so the port cannot be downgraded.
       # 52 and 56 are the two shapes of "the server answered nothing HTTP-shaped";
       # which one appears depends on the TLS stack, so both are accepted.
@@ -2553,6 +2568,23 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
     snapdb() { # counts *and* the key columns: a rewrite in place must not slip past
       sqlite3 "$pdb" "select (select count(*) from messages)||'/'||(select count(*) from deliveries)||'/'||(select count(*) from threads)||'|'||(select coalesce(group_concat(repos),'') from agents)||'|'||(select coalesce(group_concat(repo),'') from threads)||'|'||(select coalesce(group_concat(repo),'') from messages);"
     }
+    # A dry run writes nothing at all — including the schema work every normal start does. The
+    # board is made "legacy" (the column a migration would add is dropped) so that a write would
+    # show up as a changed file rather than as a row nobody looks at.
+    legacy_pdb="$SCRATCH/legacy-${RUN}.sqlite"
+    cp "$pdb" "$legacy_pdb" >/dev/null 2>&1
+    sqlite3 "$legacy_pdb" "CREATE TABLE legacy_tokens AS SELECT id,hash,node,namespaces,note,created_at,last_used,revoked_at FROM tokens; DROP TABLE tokens; ALTER TABLE legacy_tokens RENAME TO tokens;" >/dev/null 2>&1
+    if [ -f "$legacy_pdb" ] && [ "$(sqlite3 "$legacy_pdb" "select count(*) from pragma_table_info('tokens') where name='expires_at';")" = "0" ]; then
+      legacy_before="$(cksum "$legacy_pdb")"
+      "$CHATBOX_BIN" --db "$legacy_pdb" --prune 365 --prune-dry-run >/dev/null 2>&1
+      equals "a dry run leaves the file byte-for-byte alone" "$(cksum "$legacy_pdb")" "$legacy_before"
+      "$CHATBOX_BIN" --db "$legacy_pdb" --prune 365 >/dev/null 2>&1
+      equals "while a real prune migrates the board it is about to change" \
+        "$(sqlite3 "$legacy_pdb" "select count(*) from pragma_table_info('tokens') where name='expires_at';")" "1"
+    else
+      no "the legacy board for the dry-run check was built" "the column could not be dropped"
+    fi
+
     # A key written under the old rules, so a migration running under the dry run would show up.
     sqlite3 "$pdb" "UPDATE agents SET repos='git@Example.Test:Acme/Thing.git' WHERE id='it-$RUN-pr-a';" >/dev/null 2>&1
     prunebefore="$(snapdb)"
@@ -3394,10 +3426,10 @@ equals "a second answer reaches the other two, not only the asker" \
 # three are configurable, reported by `GET /health`, and named when they bite.
 # ---------------------------------------------------------------------------
 if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
-  boport="${CHATBOX_BOUNDS_PORT:-8797}"
+  boport="${CHATBOX_BOUNDS_PORT:-9381}"
   bobase="http://127.0.0.1:$boport"
-  bobase2="http://127.0.0.1:${CHATBOX_BOUNDS2_PORT:-8798}"
-  boltb="${CHATBOX_BOUNDS2_PORT:-8798}"
+  bobase2="http://127.0.0.1:${CHATBOX_BOUNDS2_PORT:-9382}"
+  boltb="${CHATBOX_BOUNDS2_PORT:-9382}"
   bodb="$SCRATCH/bounds-${RUN}.sqlite"
   bodb2="$SCRATCH/bounds2-${RUN}.sqlite"
   botok="$SCRATCH/bounds-${RUN}.token"
@@ -3438,11 +3470,25 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
     contains "a long thread says how many of how many it shows" "$bofull" "3 of 5 message(s)"
     contains "and names what it left out" "$bofull" "2 older one(s) are not"
     equals "and lists exactly the bound" "$(printf '%s\n' "$bofull" | grep -c '^--- \[')" "3"
+    # *Which* three, and in what order: the newest are the ones a reader acts on, and they are
+    # shown oldest-first so the page reads like the conversation it is.
+    contains "the page starts with the third message" "$bofull" "b3-$RUN"
+    contains "and ends with the newest" "$bofull" "b5-$RUN"
+    lacks "and does not reach back past the bound" "$bofull" "b1-$RUN"
+    equals "in reading order" \
+      "$(printf '%s\n' "$bofull" | grep '^--- \[' | sed 's/^--- \[\([0-9]*\)\].*/\1/' | tr '\n' ' ')" \
+      "$(sqlite3 "$bodb" "select id from messages where thread_id=$botid order by id desc limit 3" | sort -n | tr '\n' ' ')"
+
+
     for i in 1 2 3 4 5; do
       bo register --data-urlencode "id=bo-agent-$i" --data-urlencode "node=n" >/dev/null
     done
     bopeers="$(bog peers)"
     contains "a registry longer than the bound says how many of how many" "$bopeers" "registered agents — 3 of 5"
+    bopeers_json="$(bog peers "json=1")"
+    contains "the peers json states what it shows" "$bopeers_json" '"shown": 3'
+    contains "and what it matched" "$bopeers_json" '"matching": 5'
+    contains "and carries the rows it does show" "$bopeers_json" '"agents"' 
     contains "and says the rest are registered too" "$bopeers" "2 more are registered than are shown"
     for i in 1 2 3 4 5; do
       bo token --data-urlencode "node=node-$i" >/dev/null
@@ -3529,8 +3575,31 @@ equals "an expiry of zero is refused rather than read as never" \
   "$(post /token --data-urlencode "node=node-expiry-4" --data-urlencode "expires=0")" \
   "error: expires must be a number of days between 1 and 36500 — got '0'"
 
+equals "an empty expires is refused rather than read as never" \
+  "$(post /token --data-urlencode "node=node-expiry-5" --data-urlencode "expires=")" \
+  "error: expires must be a number of days between 1 and 36500 — got ''"
+
+if [ -f "$CLI" ]; then
+  # The documented command, end to end: `chatbox token --node X --expires 30` must actually set an
+  # expiry, and a flag nobody knows must not be dropped on the floor (it once issued a permanent
+  # credential while the documentation promised a backstop).
+  cli28="$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+    sh "$CLI" token --node node-expiry-client --expires 30 2>&1)"
+  contains "the client can set an expiry" "$cli28" "expires: 20"
+  lacks "and does not leave it as never" "$cli28" "expires: never"
+  equals "an unknown flag is refused rather than ignored" \
+    "$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+        sh "$CLI" token --node node-expiry-typo --expirs 30 >/dev/null 2>&1; echo $?)" "2"
+fi
+
 if [ -n "$TOK28B" ] && [ -n "$CHATBOX_DB" ] && command -v sqlite3 >/dev/null 2>&1; then
-  contains "the listing reports the expiry date" "$(get /token)" "$(sqlite3 "$CHATBOX_DB" "select expires_at from tokens where id='$ID28B';")"
+  stored28="$(sqlite3 "$CHATBOX_DB" "select expires_at from tokens where id='$ID28B';")"
+  if [ -n "$stored28" ]; then
+    ok "the issued credential has a stored expiry date"
+  else
+    no "the issued credential has a stored expiry date" "the column is empty, so the check below cannot mean anything"
+  fi
+  contains "the listing reports the expiry date" "$(get /token)" "$stored28"
   # Backdated rather than waited for: the check is that the *server* refuses it, not that a clock
   # moved. The date is put in the past in the store, which is the same state a month would reach.
   sqlite3 "$CHATBOX_DB" "UPDATE tokens SET expires_at='2001-01-01T00:00:00Z' WHERE id='$ID28B';" >/dev/null 2>&1
@@ -3539,6 +3608,12 @@ if [ -n "$TOK28B" ] && [ -n "$CHATBOX_DB" ] && command -v sqlite3 >/dev/null 2>&
   expiredbody="$(curl -sS --max-time 20 "$URL/health?token=$TOK28B")"
   contains "and the refusal names the date it expired" "$expiredbody" "expired at 2001-01-01T00:00:00Z"
   contains "and the listing marks it expired, not active" "$(get /token)" "EXPIRED"
+  # An expiry the server cannot read is an expiry it does not trust: a value written by another
+  # tool — an offset instead of `Z` — would compare wrongly and keep a credential alive past its
+  # date, so it fails closed with the value named.
+  sqlite3 "$CHATBOX_DB" "UPDATE tokens SET expires_at='2026-09-15T07:00:00+07:00' WHERE id='$ID28B';" >/dev/null 2>&1
+  contains "an expiry in a shape the server cannot compare is refused, not trusted" \
+    "$(curl -sS --max-time 20 "$URL/health?token=$TOK28B")" "cannot be read"
   equals "while the credential with no expiry still works" \
     "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/health?token=$TOK28")" "200"
 else
@@ -3566,9 +3641,15 @@ fi
 scoped_post /register "$TOK27A" --data-urlencode "id=it-$RUN-scope-a" --data-urlencode "node=node-scope-a" >/dev/null
 scoped_post /register "$TOK27B" --data-urlencode "id=it-$RUN-scope-b" --data-urlencode "node=node-scope-b" >/dev/null
 scoped_post /register "$TOK27C" --data-urlencode "id=it-$RUN-scope-c" --data-urlencode "node=node-scope-c" >/dev/null
-# A second session on machine A that takes no part in the conversation: the rule is the machine,
-# not the session, and this is what pins that half of it.
-scoped_post /register "$TOK27A" --data-urlencode "id=it-$RUN-scope-a2" --data-urlencode "node=node-scope-a" >/dev/null
+# A *second credential for the same machine*: visibility belongs to the node, not to the
+# credential that happens to ask, and this is the check that pins that half of the rule.
+ok27a2="$(post /token --data-urlencode "node=node-scope-a" --data-urlencode "namespaces=*")"
+TOK27A2="$(field "$ok27a2" secret)"
+if [ -n "$TOK27A2" ]; then
+  ok "a second credential for the same machine was issued"
+else
+  no "a second credential for the same machine was issued" "$(snip "$ok27a2")"
+fi
 
 scope_send="$(scoped_post /message "$TOK27A" --data-urlencode "from=it-$RUN-scope-a" \
   --data-urlencode "to=it-$RUN-scope-b" --data-urlencode "subject=scoped $RUN" \
@@ -3585,8 +3666,22 @@ contains "a machine that sent in a thread reads it" \
   "$(scoped_get "/thread?id=$SCOPE_TID" "$TOK27A")" "between the two of us"
 contains "a machine that was sent the thread reads it" \
   "$(scoped_get "/thread?id=$SCOPE_TID" "$TOK27B")" "between the two of us"
-contains "and so does another session on a participating machine" \
-  "$(scoped_get "/thread?id=$SCOPE_TID" "$TOK27A")" "thread $SCOPE_TID"
+contains "and so does a second credential for a participating machine" \
+  "$(scoped_get "/thread?id=$SCOPE_TID" "$TOK27A2")" "between the two of us"
+# A reply is a join: without this, any credential could name a sequential thread id, post a line
+# into it and read the history it just joined.
+equals "a machine outside the conversation cannot reply into it" \
+  "$(scoped_status_post /message "$TOK27C" --data-urlencode "from=it-$RUN-scope-c" \
+      --data-urlencode "thread=$SCOPE_TID" --data-urlencode "body=let me in")" "403"
+contains "and the refusal says a reply is a conversation it must take part in" \
+  "$(scoped_post /message "$TOK27C" --data-urlencode "from=it-$RUN-scope-c" \
+      --data-urlencode "thread=$SCOPE_TID" --data-urlencode "body=let me in")" \
+  "may reply only to a conversation"
+equals "and it still cannot read the thread it tried to join" \
+  "$(scoped_get_status "/thread?id=$SCOPE_TID" "$TOK27C")" "403"
+contains "while a participant can still reply" \
+  "$(scoped_post /message "$TOK27B" --data-urlencode "from=it-$RUN-scope-b" \
+      --data-urlencode "thread=$SCOPE_TID" --data-urlencode "body=answer")" "ok posted"
 equals "a machine outside the conversation is refused" \
   "$(scoped_get_status "/thread?id=$SCOPE_TID" "$TOK27C")" "403"
 contains "and the refusal says what the boundary is" \
@@ -3595,10 +3690,38 @@ contains "and the refusal says what the boundary is" \
 lacks "an outside machine does not see the thread listed" "$(scoped_get /threads "$TOK27C")" "[$SCOPE_TID]"
 contains "a participating machine does see it listed" "$(scoped_get /threads "$TOK27A")" "[$SCOPE_TID]"
 # And the registry: its own machine plus correspondents, not the whole board.
+contains "the scoped registry answers at all" "$(scoped_get /peers "$TOK27C")" "registered agents"
 contains "the registry shows the machine's own session" "$(scoped_get /peers "$TOK27C")" "it-$RUN-scope-c"
 lacks "and not a machine it has never spoken to" "$(scoped_get /peers "$TOK27C")" "it-$RUN-scope-a"
 contains "a correspondent is visible" "$(scoped_get /peers "$TOK27A")" "it-$RUN-scope-b"
 lacks "but a stranger is not" "$(scoped_get /peers "$TOK27A")" "it-$RUN-scope-c"
+# A send is a question too: "is this id registered", "how long has it been quiet", "does anyone own
+# this repo". A scoped credential gets none of those answers — only that the recipient is not one of
+# its conversations, which is the same thing it can already see.
+ghost_probe="$(scoped_post /message "$TOK27C" --data-urlencode "from=it-$RUN-scope-c" \
+  --data-urlencode "to=it-$RUN-probe-nobody" --data-urlencode "body=are you there")"
+contains "a scoped send names the recipient it cannot vouch for" "$ghost_probe" \
+  "not visible to this credential"
+lacks "and does not say whether that id is registered" "$ghost_probe" "unregistered"
+lacks "and does not report how long it has been quiet" "$ghost_probe" "7d staleness window"
+owner_probe="$(scoped_post /message "$TOK27C" --data-urlencode "from=it-$RUN-scope-c" \
+  --data-urlencode "repo=example.test/$RUN/probe" --data-urlencode "body=who owns this")"
+lacks "and does not answer who owns a repo" "$owner_probe" "nobody has registered as an owner"
+contains "it says only what it can see" "$owner_probe" "no visible owner"
+
+# A delivery to an id that had not registered yet belongs to nobody: participation is fixed when the
+# mail is sent, so whoever registers that id afterwards cannot read the conversation it was named in
+# (the message is still waiting in its inbox — that is the durable-delivery promise, unaffected).
+ghost_thread="$(scoped_post /message "$TOK27A" --data-urlencode "from=it-$RUN-scope-a" \
+  --data-urlencode "to=it-$RUN-scope-ghost" --data-urlencode "body=private to the ghost")"
+GHOST_TID="$(field "$ghost_thread" thread)"
+scoped_post /register "$TOK27C" --data-urlencode "id=it-$RUN-scope-ghost" \
+  --data-urlencode "node=node-scope-c" >/dev/null
+equals "registering an id that was already named does not open the thread" \
+  "$(scoped_get_status "/thread?id=$GHOST_TID" "$TOK27C")" "403"
+contains "although the message is waiting for it" \
+  "$(scoped_get "/inbox?id=it-$RUN-scope-ghost" "$TOK27C")" "private to the ghost"
+
 # The bootstrap credential is the documented exception: the operator sees everything.
 contains "the bootstrap credential reads any thread" "$(get /thread "id=$SCOPE_TID")" "between the two of us"
 contains "and lists every thread" "$(get /threads)" "[$SCOPE_TID]"

@@ -72,7 +72,7 @@ chatbox — session chatbox client   (server: $URL)
   ack      --id <you> (--message <id> | --thread <id>)
   peers
   health
-  token    --node <mac> [--namespaces <ns,...>] [--note <text>]
+  token    --node <mac> [--namespaces <ns,...>] [--note <text>] [--expires <days>]
            (bootstrap credential only; the secret is shown once)
   tokens   list issued credentials (never shows secrets)
   revoke   --id <tk-id>       revoke one credential, effective immediately
@@ -539,6 +539,7 @@ cmd="${1:-help}"
 ID=""; NODE=""; AGENT=""; HARNESS=""; SESSION=""; IP=""; REPO=""; REPOS=""; NOTE=""; NAMESPACES=""; ONCE=""; HOOK=""; EXEC=""; NOACK=""
 REPO_DIR=""; FORCE=""
 FROM=""; TO=""; SUBJECT=""; BODY=""; THREAD=""; REPLYTO=""; MESSAGE=""; ALL=""; WAIT=""
+EXPIRES=""
 POS1=""
 
 while [ $# -gt 0 ]; do
@@ -576,10 +577,17 @@ while [ $# -gt 0 ]; do
     reply-to|reply_to) REPLYTO="$v" ;;
     message)  MESSAGE="$v" ;;
     wait)     WAIT="$v" ;;
+    expires)  EXPIRES="$v" ;;
     once)     ONCE=1 ;;
     hook)     HOOK=1 ;;
     exec)     EXEC="$v" ;;
     no-ack|noack) NOACK=1 ;;
+    *)
+      # A flag nobody knows must not be dropped on the floor: a documented-but-unimplemented
+      # `--expires 90` once issued a *permanent* credential without a word, which is exactly the
+      # failure the option exists to prevent.
+      echo "chatbox: unknown flag '--$k' — run 'chatbox help' for the flags this command takes" >&2
+      exit 2 ;;
   esac
 done
 
@@ -696,10 +704,22 @@ case "$cmd" in
   peers)
     read_framed "chatbox peers" /peers "" ;;
   token)
-    http_post /token \
-      --data-urlencode "node=$NODE" \
-      --data-urlencode "namespaces=$NAMESPACES" \
-      --data-urlencode "note=$NOTE" ;;
+    # `--expires <days>` is the optional backstop for the credential nobody remembers. It is sent
+    # only when it was asked for: an empty `expires=` is a request the server refuses rather than
+    # reads as "never", because a blank window is a mistake and every other parameter here is
+    # always sent.
+    if [ -n "$EXPIRES" ]; then
+      http_post /token \
+        --data-urlencode "node=$NODE" \
+        --data-urlencode "namespaces=$NAMESPACES" \
+        --data-urlencode "note=$NOTE" \
+        --data-urlencode "expires=$EXPIRES"
+    else
+      http_post /token \
+        --data-urlencode "node=$NODE" \
+        --data-urlencode "namespaces=$NAMESPACES" \
+        --data-urlencode "note=$NOTE"
+    fi ;;
   tokens)
     read_framed "chatbox tokens" /token "" ;;
   revoke)

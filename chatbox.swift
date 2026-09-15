@@ -356,17 +356,23 @@ struct Principal {
 
 final class Store: @unchecked Sendable {
     private var db: OpaquePointer?
+    /// The file this store was opened on, kept for the messages that have to name it.
+    private let path: String
 
-    init(path: String) {
+    init(path: String, migrating: Bool = true) {
+        self.path = path
         if sqlite3_open(path, &db) != SQLITE_OK {
             FileHandle.standardError.write("chatbox: cannot open db at \(path)\n".data(using: .utf8)!)
             exit(1)
         }
+        // `journal_mode=WAL` and `busy_timeout` are connection settings, not schema: they are set
+        // either way, because a read is what a dry run does with them.
         exec("PRAGMA journal_mode=WAL;")
         // Wait rather than fail when another process holds the write lock. Two servers on one
         // database is a supported shape (a restart overlaps the old one), and the alternative
         // is a write that reports failure and a caller that does not look.
         exec("PRAGMA busy_timeout=5000;")
+        if !migrating { return }
         exec("""
         CREATE TABLE IF NOT EXISTS agents (
           id TEXT PRIMARY KEY, node TEXT, agent TEXT, harness TEXT, session TEXT,
@@ -384,7 +390,7 @@ final class Store: @unchecked Sendable {
         """)
         exec("""
         CREATE TABLE IF NOT EXISTS deliveries (
-          message_id INTEGER, agent TEXT, created_at TEXT, acked_at TEXT,
+          message_id INTEGER, agent TEXT, created_at TEXT, acked_at TEXT, node TEXT,
           PRIMARY KEY (message_id, agent));
         """)
         exec("CREATE INDEX IF NOT EXISTS idx_del ON deliveries(agent);")
@@ -394,7 +400,15 @@ final class Store: @unchecked Sendable {
         exec("""
         CREATE TABLE IF NOT EXISTS tokens (
           id TEXT PRIMARY KEY, hash TEXT NOT NULL, node TEXT, namespaces TEXT,
-          note TEXT, created_at TEXT, last_used TEXT, revoked_at TEXT);
+          note TEXT, created_at TEXT, last_used TEXT, revoked_at TEXT, expires_at TEXT);
+        """)
+        // A delivery remembers the recipient's machine as it was when the message was sent. The
+        // backfill fills it in for rows written before the column existed — once, with the empty
+        // string for a recipient that had no machine, so a later registration cannot inherit it.
+        addColumn("deliveries", "node", "TEXT")
+        exec("""
+        UPDATE deliveries SET node = COALESCE((SELECT a.node FROM agents a WHERE a.id = deliveries.agent), '')
+         WHERE node IS NULL;
         """)
         // A credential may carry an expiry. A board that predates the column gets it here: the
         // alter is idempotent, so a restart neither fails nor rewrites anything.
@@ -483,8 +497,16 @@ final class Store: @unchecked Sendable {
     /// schema change SQLite does in place, and this is what makes an existing board gain the
     /// column on the next start without a migration step for the operator to remember.
     private func addColumn(_ table: String, _ column: String, _ decl: String) {
-        let have = rows("PRAGMA table_info(\(table))").compactMap { $0["name"] }
-        if !have.contains(column) { exec("ALTER TABLE \(table) ADD COLUMN \(column) \(decl);") }
+        if rows("PRAGMA table_info(\(table))").compactMap({ $0["name"] }).contains(column) { return }
+        exec("ALTER TABLE \(table) ADD COLUMN \(column) \(decl);")
+        // The alter is not retried: if it did not take — a read-only file, a lock held past the
+        // busy timeout — the board is now missing a column that authorization reads, and every
+        // scoped credential would fail with "unknown token" while the bootstrap credential kept
+        // working. A server that cannot migrate must not start.
+        if !rows("PRAGMA table_info(\(table))").compactMap({ $0["name"] }).contains(column) {
+            FileHandle.standardError.write("chatbox: cannot add \(table).\(column) to \(path) — refusing to serve a half-migrated board\n".data(using: .utf8)!)
+            exit(1)
+        }
     }
 
     func tokenByHash(_ hash: String) -> [String: String]? {
@@ -701,6 +723,17 @@ final class Store: @unchecked Sendable {
         """, [node, node, node, node, node])
     }
 
+    /// The ids a machine may be told about, as a set. Used where a *listing* is not the answer —
+    /// a send response naming its recipients — so the visibility rule stays in one place.
+    func visibleAgentIds(forNode node: String) -> Set<String> {
+        var out = Set<String>()
+        for r in rows("SELECT a.id FROM agents a WHERE \(visibleAgentsWhere)",
+                      [node, node, node, node, node]) where !(r["id"] ?? "").isEmpty {
+            out.insert(r["id"]!)
+        }
+        return out
+    }
+
     func agentCount(visibleTo node: String?) -> Int {
         guard let node = node else { return Int(scalar("SELECT COUNT(*) FROM agents")) ?? 0 }
         return Int(scalar("SELECT COUNT(*) FROM agents a WHERE \(visibleAgentsWhere)",
@@ -748,11 +781,15 @@ final class Store: @unchecked Sendable {
 
     /// The threads a node takes part in, as a SQL fragment: a session on it sent a message in the
     /// thread, or a session on it was sent one. The fragment binds the node twice, in that order.
+    /// The delivery row records the recipient's machine **at the moment the message was sent**, so
+    /// a session that registers later cannot inherit a conversation it was never part of — an
+    /// unregistered recipient is stored with an empty node and stays outside every machine's view
+    /// until somebody actually sends to it again.
     let nodeThreadsSQL = """
     SELECT m.thread_id FROM messages m
      WHERE m.sender IN (SELECT id FROM agents WHERE node = ?)
         OR m.id IN (SELECT d.message_id FROM deliveries d
-                     WHERE d.agent IN (SELECT id FROM agents WHERE node = ?))
+                     WHERE d.node = ?)
     """
 
     /// The `WHERE` clause that decides which agents a machine may see, shared by the listing and
@@ -773,7 +810,7 @@ final class Store: @unchecked Sendable {
          WHERE m.thread_id = ?
            AND (m.sender IN (SELECT id FROM agents WHERE node = ?)
                 OR m.id IN (SELECT d.message_id FROM deliveries d
-                             WHERE d.agent IN (SELECT id FROM agents WHERE node = ?)))
+                             WHERE d.node = ?))
          LIMIT 1
         """, [threadId, node, node]).isEmpty
     }
@@ -959,8 +996,19 @@ final class Chatbox: @unchecked Sendable {
         // An expiry is a backstop for the credential nobody remembers, so it is checked the same
         // way revocation is: on every request, with the date in the answer and no grace period.
         let expiresAt = row["expires_at"] ?? ""
-        if !expiresAt.isEmpty, expiresAt <= nowISO() {
-            return .denied(401, "unauthorized: this credential expired at \(expiresAt) — issue another\n")
+        if !expiresAt.isEmpty {
+            // The comparison is a string comparison, which is a time comparison only for the
+            // canonical 20-character shape this server writes. A value written by another tool —
+            // an offset instead of `Z`, the basic format, a date with no time — would compare
+            // wrongly, and the direction that matters is the one that keeps a credential alive
+            // past its date: an unreadable expiry is treated as expired.
+            let canonical = expiresAt.count == 20 && expiresAt.hasSuffix("Z")
+            if !canonical {
+                return .denied(401, "unauthorized: this credential's expiry ('\(oneLine(expiresAt))') cannot be read — issue another\n")
+            }
+            if expiresAt <= nowISO() {
+                return .denied(401, "unauthorized: this credential expired at \(expiresAt) — issue another\n")
+            }
         }
         let id = row["id"] ?? ""
         let now = nowISO()
@@ -1235,6 +1283,12 @@ final class Chatbox: @unchecked Sendable {
             guard let t = Int64(threadIn), t > 0 else {
                 return (400, "error: thread must be a positive integer, not '\(oneLine(threadIn))'\n")
             }
+            // A reply is a *join*. Without this, read scoping is decorative: a credential could
+            // name any sequential thread id, post a line into it, and read the whole history it
+            // just joined — and the refusal would still tell it who the participants are.
+            if !who.isBootstrap, !store.node(who.node, participatesIn: String(t)) {
+                return (403, "forbidden: this credential may reply only to a conversation its machine takes part in\n")
+            }
             threadId = t
             // a reply inherits the thread's repo so routing stays consistent
             if effRepo.isEmpty { effRepo = store.scalar("SELECT repo FROM threads WHERE id = ?", [String(t)]) }
@@ -1294,20 +1348,32 @@ final class Chatbox: @unchecked Sendable {
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), from])
 
         for r in recipients {
-            store.run("INSERT OR IGNORE INTO deliveries (message_id,agent,created_at) VALUES (?,?,?)",
-                      [String(msgId), r, nowISO()])
+            store.run("""
+            INSERT OR IGNORE INTO deliveries (message_id,agent,created_at,node) VALUES (?,?,?,?)
+            """, [String(msgId), r, nowISO(), store.nodeOf(r) ?? ""])
         }
         store.run("UPDATE threads SET last_at=? WHERE id=?", [nowISO(), String(threadId)])
 
         // A report sent to a machine that has gone away is still stored, but the
         // sender deserves to know nobody is likely to read it.
+        //
+        // Scoped credentials are the exception: "unregistered", "never registered" and an age are
+        // the registry view that `/peers` is scoped to hide, and a send is a way to ask about any
+        // id. A scoped sender is told the recipient is not one of its correspondents and nothing
+        // more — enough to know the message may go unread, not enough to enumerate the board.
+        let scopedSender = !who.isBootstrap
         let now = Date()
+        let visibleToSender = scopedSender ? store.visibleAgentIds(forNode: who.node) : []
         // A recipient nobody is listening for: gone quiet, or never registered at all.
-        let unseen = recipients.filter { isStale(store.lastSeen(of: $0), now: now) }
+        let unseen = recipients.filter {
+            scopedSender ? !visibleToSender.contains($0) : isStale(store.lastSeen(of: $0), now: now)
+        }
         func unseenLabel(_ id: String) -> String {
-            store.lastSeen(of: id).isEmpty ? "unregistered" : "stale"
+            scopedSender ? "not visible to this credential"
+                : (store.lastSeen(of: id).isEmpty ? "unregistered" : "stale")
         }
         func unseenReason(_ id: String) -> String {
+            if scopedSender { return "not a conversation this machine takes part in" }
             let seen = store.lastSeen(of: id)
             return seen.isEmpty ? "never registered" : ageDescription(seen, now: now)
         }
@@ -1319,17 +1385,30 @@ final class Chatbox: @unchecked Sendable {
         if recipients.isEmpty {
             note = effRepo.isEmpty
                 ? "\nnote: no recipient — pass repo=<key>, to=<agent>, or thread=<id>\n"
-                : "\nnote: nobody has registered as an owner of '\(effRepo)' yet; message stored in thread \(threadId)\n"
+                : (scopedSender
+                    ? "\nnote: no visible owner of '\(effRepo)' from this credential; message stored in thread \(threadId)\n"
+                    : "\nnote: nobody has registered as an owner of '\(effRepo)' yet; message stored in thread \(threadId)\n")
         }
         if !unseen.isEmpty {
             let who = unseen.map { "\($0) (\(unseenReason($0)))" }.joined(separator: ", ")
             // Only claim nobody will read it when nobody is left to.
             let everyone = unseen.count == recipients.count
-            note += "\nwarning: no sign of \(who) inside the \(humanSeconds(staleAfter)) staleness window"
-                + (everyone
-                    ? " — the message is stored, but nobody may read it\n"
-                    : " — the message is stored, but it may not reach "
-                      + (unseen.count == 1 ? "that session" : "those sessions") + "\n")
+            // A scoped sender gets the same warning without the board's own numbers: "no sign of X
+            // inside the 7d window" is a statement about the registry, which is what the scope
+            // exists to withhold.
+            if scopedSender {
+                note += "\nwarning: \(who)"
+                    + (everyone
+                        ? " — the message is stored, but nobody may read it\n"
+                        : " — the message is stored, but it may not reach "
+                          + (unseen.count == 1 ? "that session" : "those sessions") + "\n")
+            } else {
+                note += "\nwarning: no sign of \(who) inside the \(humanSeconds(staleAfter)) staleness window"
+                    + (everyone
+                        ? " — the message is stored, but nobody may read it\n"
+                        : " — the message is stored, but it may not reach "
+                          + (unseen.count == 1 ? "that session" : "those sessions") + "\n")
+            }
         }
         return (200, """
         ok posted
@@ -1506,7 +1585,7 @@ final class Chatbox: @unchecked Sendable {
         let matching = store.messageCount(thread: id)
         let rows = store.threadPage(id, limit: maxRows)
         guard !rows.isEmpty else { return (404, "no thread \(oneLine(id))\n") }
-        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
+        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "messages", matching: matching)) }
         let head = store.rows("SELECT repo, subject, created_at, created_by FROM threads WHERE id=?", [id]).first ?? [:]
         var out = "thread \(id)  repo: \((head["repo"] ?? "").isEmpty ? "-" : head["repo"]!)  subject: \(head["subject"] ?? "-")\n"
         out += "opened: \(head["created_at"] ?? "-") by \(head["created_by"] ?? "-")   "
@@ -1606,7 +1685,7 @@ final class Chatbox: @unchecked Sendable {
                 : (isStale(seen, now: now) ? "stale" : "active")
             rows[i]["age"] = ageDescription(seen, now: now)
         }
-        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
+        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "agents", matching: matchingAgents)) }
         var out = "registered agents — \(rows.count)\(matchingAgents > rows.count ? " of \(matchingAgents)" : "")\n"
         if matchingAgents > rows.count {
             out += "note: \(matchingAgents - rows.count) more are registered than are shown — raise --max-rows to see them\n"
@@ -1637,6 +1716,9 @@ final class Chatbox: @unchecked Sendable {
         guard !node.isEmpty else {
             return (400, "error: node required (which machine this credential is for)\n")
         }
+        guard validId(node) else {
+            return (400, "error: node must be a single line, without control characters\n")
+        }
         let namespacesRaw = req.p("namespaces").isEmpty ? req.p("namespace") : req.p("namespaces")
         var namespaces: [String] = []
         for one in namespacesRaw.split(separator: ",") {
@@ -1652,8 +1734,12 @@ final class Chatbox: @unchecked Sendable {
         // nobody remembers, not a new default.
         let expiresRaw = req.p("expires")
         var expiresAt = ""
-        if !expiresRaw.isEmpty {
-            guard let days = Int(expiresRaw), days > 0, days <= 36500 else {
+        if !expiresRaw.isEmpty || req.params["expires"] != nil {
+            // Digits only: `+30` and ` 30` parse as numbers in Swift, and a credential with an
+            // expiry nobody typed is worse than a refused request. A blank value is present, so it
+            // is a mistake rather than "never".
+            guard !expiresRaw.isEmpty, expiresRaw.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let days = Int(expiresRaw), days > 0, days <= 36500 else {
                 return (400, "error: expires must be a number of days between 1 and 36500 — got '\(oneLine(expiresRaw))'\n")
             }
             expiresAt = isoDaysAhead(days)
@@ -1695,7 +1781,7 @@ final class Chatbox: @unchecked Sendable {
         let matchingTokens = store.tokenCount()
         let rows = store.tokensListing(limit: maxRows)
         if rows.isEmpty { return (200, "no credentials issued\n") }
-        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
+        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "tokens", matching: matchingTokens)) }
         var out = "credentials — \(rows.count)\(matchingTokens > rows.count ? " of \(matchingTokens)" : "")\n"
         if matchingTokens > rows.count {
             out += "note: \(matchingTokens - rows.count) more are issued than are shown — raise --max-rows to see them\n"
@@ -1734,6 +1820,14 @@ final class Chatbox: @unchecked Sendable {
         Every request presenting it is rejected from now on. Other credentials and
         the bootstrap credential are untouched, and no restart is needed.
         """)
+    }
+
+    /// A bounded listing as an object: the rows plus how many of how many they are. The inbox has
+    /// answered this way since TRK-21, for the same reason — an array cannot say that it is a page,
+    /// and a consumer that cannot tell is a consumer that silently loses the rest.
+    private func jsonRows(_ rows: [[String: String]], key: String, matching: Int) -> String {
+        let inner = jsonArray(rows).trimmingCharacters(in: .whitespacesAndNewlines)
+        return "{\"shown\": \(rows.count), \"matching\": \(matching), \"\(key)\": \(inner)}\n"
     }
 
     private func jsonArray(_ rows: [[String: String]]) -> String {
@@ -1863,22 +1957,26 @@ final class Chatbox: @unchecked Sendable {
             return
         }
         liveConnections.insert(identity)
-        // A connection that never finishes a request is closed rather than held: the deadline
-        // starts when the socket is accepted, so a slow trickle is bounded exactly like silence.
-        let idle = DispatchWorkItem { [weak self] in
-            guard let self = self, self.liveConnections.contains(identity) else { return }
+        // A connection that never finishes a request is closed rather than held: the deadline runs
+        // from the moment the socket is accepted, so a peer that completes TCP and then says nothing
+        // — including one that never finishes a TLS handshake — is bounded exactly like a slow
+        // trickle, and cannot hold a connection slot for ever.
+        //
+        // The connection is captured *weakly*: a work item scheduled an hour out is retained until
+        // its deadline, and a strong reference would keep every finished connection object alive
+        // that long (and, before this, kept a failed handshake's socket open long enough for the
+        // peer to hang instead of being told no).
+        let idle = DispatchWorkItem { [weak self, weak conn] in
+            guard let self = self, let conn = conn, self.liveConnections.contains(identity) else { return }
             FileHandle.standardError.write("chatbox: idle connection closed after \(self.idleTimeout)s\n".data(using: .utf8)!)
             conn.cancel()
+        }
+        if idleTimeout > 0 {
+            queue.asyncAfter(deadline: .now() + .seconds(idleTimeout), execute: idle)
         }
         conn.stateUpdateHandler = { state in
             switch state {
             case .ready:
-                // Armed once the connection is *established*, not when the socket is accepted: a
-                // handshake in progress is not an idle request, and arming earlier made a peer
-                // that failed the handshake wait out the whole deadline instead of being told no.
-                if self.idleTimeout > 0 {
-                    self.queue.asyncAfter(deadline: .now() + .seconds(self.idleTimeout), execute: idle)
-                }
                 self.receive(conn, buffer: Data(), idle: idle)
             case .failed:
                 idle.cancel()
@@ -2350,7 +2448,10 @@ if !backupRaw.isEmpty {
     exit(0)
 }
 
-let store = Store(path: dbPath)
+// A dry run only reads. `Store` normally creates the tables, adds a column a board may be missing
+// and backfills one, all of which are writes: a run whose whole promise is "nothing was removed"
+// must not leave a changed file behind either.
+let store = Store(path: dbPath, migrating: !argPresent("--prune-dry-run"))
 let staleAfterRaw = argValue("--stale-after", "604800")
 let staleAfterValue = Int(staleAfterRaw) ?? 604800
 if staleAfterValue < 0 {
@@ -2532,7 +2633,8 @@ listener.stateUpdateHandler = { state in
         // Before anything reads a key: a board that has been running has keys written under the old
 // rules, and they have to mean the same thing as the new ones or mail goes missing.
 let migratedKeys = store.migrateRepoKeys()
-print("auth: \(token == nil ? "OPEN (no token)" : "token required")")
+let boardIsOpen = token == nil || token == "open"
+print("auth: \(boardIsOpen ? "OPEN (no token)" : "token required")")
 let idleBanner = idleTimeout == 0 ? "no idle deadline" : "\(idleTimeout)s idle deadline"
 print("bounds: \(maxRows) rows per listing, \(maxConnections) connections, \(idleBanner)")
         print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")

@@ -181,8 +181,10 @@ SHA-256, revocable with no restart, and optionally given an `expires=<days>` bac
 credential nobody remembers (off by default: an expiring credential stops a machine that is still
 working, so issue the replacement before it lapses). A scoped credential **reads only the
 conversations its machine takes part in** — `thread`, `threads` and `peers` answer for those and
-nothing else — because sessions on one machine share an OS user and a filesystem, so the machine is
-the boundary. The shared bootstrap token is the operator's full view and the documented exception.
+nothing else (and a reply is a join, so it is refused the same way) — because sessions on one machine
+share an OS user and a filesystem, so the machine is the boundary. `/health` stays board-wide because
+it reports counters, not content. The shared bootstrap token is the operator's full view and the
+documented exception.
 
 | Call | Purpose |
 |---|---|
@@ -215,7 +217,8 @@ and the answer reports what is stored rather than what was sent. The consequence
 cannot clear a field, and there is deliberately no way to blank one through the upsert.
 
 **The server has bounds.** `--max-body` caps one request; `--max-rows` (default 500) caps one listing
-— a thread, the registry, the credential list — and says how many of how many it is showing;
+— a thread, the registry, the credential list — and says how many of how many it is showing in both
+the text and the JSON form (`{"shown":…, "matching":…}`);
 `--max-connections` (default 256) refuses the connection past the ceiling with `503` instead of
 dropping it; and `--idle-timeout` (default 30 s, `0` disables) closes a connection that has not
 delivered a complete request in time. `GET /health` reports all of them. A held long poll is not
