@@ -22,7 +22,7 @@ compliant" and the target is 0/0 (tasks 0001–0005, 0015).
 | What | Result | Artefact |
 |---|---|---|
 | `tests/protocol.sh` against a disposable server (CI-equivalent env, `CHATBOX_MCP` set) | **864 passed, 0 failed**, 0 skipped except the documented `sqlite3`/`nc` guards when absent | `../tests/.scratch/manual33/out.txt` (local), CI run 34953230087 |
-| Mutation matrix (226 mutations, harness `tests/.scratch/mutate.sh`) | base GREEN, 226/226 cells red on the frozen revision, relative-path cell GREEN, **0 false passes** | `../tests/.scratch/matrix-trk17-run2.log`, `matrix-trk17-final2.log` |
+| Mutation matrix (226 mutations, harness `tests/.scratch/mutate.sh`) | base GREEN, **226/226 cells red** on the frozen revision, relative-path cell GREEN, **0 false passes** | `../tests/.scratch/matrix-trk17-run2.log` (33 cells), `matrix-trk17-final2.log` (the other 4, re-run after the local Xcode 27 SDK switch blocked them mid-run) |
 | CI | **success** on `971faae` | https://github.com/Pummelchen/AISessionServer/actions/runs/34953230087 |
 | CodeQL | **success** on `971faae`, 1 open alert (`swift/cleartext-transmission`, task 0014) | `baseline/codeql-alerts.txt` |
 
@@ -36,6 +36,8 @@ Baseline `skipped` count: the suite prints `skip` only when an optional tool is 
 `sqlite3`, `CHATBOX_BIN`, `CHATBOX_MCP`); with the CI-equivalent environment all of them run.
 **A skip is never allowed to hide an S0/S1 check** — see task 0010 for the shellcheck findings that
 could make a check vacuous.
+
+Note on the mid-run toolchain switch: at 16:15 on node1 the CommandLineTools/Xcode 27 SDK landed while the matrix was running, which made four cells fail to *build* (SDK 27 against the 6.3.3 compiler, then an unaccepted Xcode licence). The audit branch records the fix; the four cells were re-run under Swift 6.4 and are red. No cell was left unverified.
 
 ## Lint / analyzer / type checker (counts by rule)
 
