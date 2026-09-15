@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 76 | done: 13 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
+**Open: 75 | done: 14 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -54,7 +54,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0009](#0009) | S2 | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **START** | node1 | L0 shellcheck baseline |
 | [0010](#0010) | S2 | M4 | `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941` | Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329) | test | **START** | node1 | L0 shellcheck baseline |
 | [0014](#0014) | S2 | M1 | `chatbox.swift:2426` | CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change | unsafe | **START** | node1 | L0 |
-| [0049](#0049) | S2 | repo | `.github/workflows/codeql.yml:57` | CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned | test | **AUDIT** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0049](#0049) | S2 | repo | `.github/workflows/codeql.yml:57` | CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned | test | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0050](#0050) | S2 | repo | `aisessionserver-wiki/Deployment.md:92` | Local test runbook starts the disposable server on the suite's own staleness port | docs | **START** | node1 | phase-B/L7-ops |
 | [0051](#0051) | S2 | repo | `aisessionserver-wiki/Quick-Start.md:255` | Documented local test command silently skips checks and cannot print the promised result | docs | **START** | node1 | phase-B/L7-ops |
 | [0052](#0052) | S2 | M3 | `chatbox-cli.sh:150` | Client puts the credential in curl argv, exposing it to every local user via ps | unsafe | **START** | node1 | phase-B/L4-security |
@@ -712,14 +712,15 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 - **Severity / category / module:** S2 / test / repo
 - **Location:** `.github/workflows/codeql.yml:57`
 - **Title:** CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** The 'Build for extraction' step runs only 'xcrun swiftc -O chatbox.swift -o chatbox' (codeql.yml:57), while CI builds both binaries (ci.yml:39-40) and README.md states 'CodeQL analyses the same build'. Swift CodeQL is extraction-based, so code that is never compiled is never analysed.
 
 WHY IT MATTERS: The component that reads CHATBOX_TOKEN and constructs outbound HTTP requests has no static security analysis at all. Defects in it (such as the query-encoding corruption above) cannot be reported by the security gate the README advertises as covering the shipped binaries.
 
 CONFIDENCE: high
 - **Fix:** Build both Swift binaries in the CodeQL extraction step, so `chatbox-mcp.swift` is extracted and analysed rather than silently excluded.
-- **Evidence (after):** TEST (gate): the extraction step now compiles both binaries (`xcrun swiftc -O chatbox.swift -o chatbox` and `xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp`), which is what the Swift extractor observes, so the adapter is in the analysis database. Verification is a dispatched CodeQL run on the audit branch with this commit checked out; the first dispatch was made with the fix still uncommitted and therefore analysed the old workflow — discarded, not counted (a reminder that a dispatched workflow runs the branch, not the working tree).
+- **Evidence (after):** VERIFIED: CodeQL run 34992397530 on `ee242de` — **success**, and the run log's extraction step shows both builds ran (`xcrun swiftc -O chatbox.swift -o chatbox` and `xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp`), so the adapter is in the analysis database. The open-alert set is unchanged at 1 (`swift/cleartext-transmission`, the server listener, task #0014): the newly-scanned file adds no finding, and no previously reported alert disappeared. `actionlint` clean. The first dispatch, made before committing, analysed the old workflow and is not counted.
+TEST (gate): the extraction step now compiles both binaries (`xcrun swiftc -O chatbox.swift -o chatbox` and `xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp`), which is what the Swift extractor observes, so the adapter is in the analysis database. Verification is a dispatched CodeQL run on the audit branch with this commit checked out; the first dispatch was made with the fix still uncommitted and therefore analysed the old workflow — discarded, not counted (a reminder that a dispatched workflow runs the branch, not the working tree).
 AUDIT (gate): re-read cold. The change is the documented build command for the second binary, identical to what ci.yml runs (so the analysed binary is the shipped one), `actionlint` is clean, and the pin from #0006 is untouched. After the run: the alert count is compared against the baseline to confirm the newly-scanned file introduces no new finding and that no previously-reported alert disappeared.
 - **Notes:** Rejected alternatives: (a) a second CodeQL job per binary - two databases to merge, two runners, same coverage; (b) analysing only the adapter and not the server - the server is the larger surface; (c) relying on autobuild - there is no Package.swift, which is why build-mode is manual.
 
