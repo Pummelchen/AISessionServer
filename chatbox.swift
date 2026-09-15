@@ -423,13 +423,31 @@ struct Principal {
 
 // MARK: - SQLite store
 
+/// The one queue every store access runs on.
+///
+/// `Store` and `Chatbox` are `@unchecked Sendable` because their mutable state is confined to this
+/// queue rather than protected by a type the compiler can see: the HTTP layer is a set of
+/// Network.framework callbacks over a synchronous SQLite handle, and re-expressing that as an actor
+/// would push `await` through every route for no gain in safety. The confinement is therefore not
+/// left as a comment: `Store`'s SQL entry points assert it with
+/// `dispatchPrecondition(condition: .onQueue(queue))`, which traps in an optimised build too
+/// (measured: SIGTRAP under `-O`), so an access from the wrong context is a crash rather than a data
+/// race. The operator modes run their store work inside `chatboxQueue.sync` for the same reason, and
+/// the suite — a release build — exercises the whole API, so a new call site that forgets the queue
+/// crashes the tests instead of shipping.
+let chatboxQueue = DispatchQueue(label: "chatbox.queue")
+
 final class Store: @unchecked Sendable {
     private var db: OpaquePointer?
+    /// The queue this store may be touched on. See the note on `chatboxQueue`: every entry point
+    /// below asserts it.
+    let queue: DispatchQueue
     /// The file this store was opened on, kept for the messages that have to name it.
     private let path: String
 
-    init(path: String, migrating: Bool = true) {
+    init(path: String, migrating: Bool = true, queue: DispatchQueue) {
         self.path = path
+        self.queue = queue
         if sqlite3_open(path, &db) != SQLITE_OK {
             FileHandle.standardError.write("chatbox: cannot open db at \(path)\n".data(using: .utf8)!)
             exit(1)
@@ -493,10 +511,12 @@ final class Store: @unchecked Sendable {
     }
 
     func exec(_ sql: String) {
+        dispatchPrecondition(condition: .onQueue(queue))
         sqlite3_exec(db, sql, nil, nil, nil)
     }
 
     private func prepare(_ sql: String, _ binds: [String?]) -> OpaquePointer? {
+        dispatchPrecondition(condition: .onQueue(queue))
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else {
             FileHandle.standardError.write("chatbox: sql error: \(String(cString: sqlite3_errmsg(db)))\n".data(using: .utf8)!)
@@ -549,7 +569,10 @@ final class Store: @unchecked Sendable {
     /// an `INSERT … SELECT … WHERE` that matches nothing leaves it at the previous
     /// row's id, so a caller that needs to know whether the row was really stored has
     /// to ask this instead.
-    func changedRows() -> Int32 { sqlite3_changes(db) }
+    func changedRows() -> Int32 {
+        dispatchPrecondition(condition: .onQueue(queue))
+        return sqlite3_changes(db)
+    }
 
     /// Run a statement and report what the database did: the step's result code and the rows it
     /// changed. `run` plus `changedRows` cannot tell "the statement stored nothing" from "the
@@ -564,7 +587,10 @@ final class Store: @unchecked Sendable {
 
     /// The database's own description of the last failure. A caller that has to explain why a
     /// write did not happen should say what SQLite said rather than guess at it.
-    func lastError() -> String { String(cString: sqlite3_errmsg(db)) }
+    func lastError() -> String {
+        dispatchPrecondition(condition: .onQueue(queue))
+        return String(cString: sqlite3_errmsg(db))
+    }
 
     // MARK: credentials
 
@@ -1084,7 +1110,9 @@ final class Chatbox: @unchecked Sendable {
     /// board it has passed through and a board never forwards a message that already has one, so
     /// this bound exists only because the list arrives as untrusted input.
     let maxHops: Int
-    let queue = DispatchQueue(label: "chatbox.queue")
+    /// The queue this object's mutable state lives on — the same one the store uses. See
+    /// `chatboxQueue` for why `@unchecked Sendable` is acceptable here and what enforces it.
+    let queue: DispatchQueue
     /// Forwards run here, not on `queue`. A peer that is slow or gone must not hold up the board,
     /// and the sender is still owed the peer's answer — so the answer waits on this queue while
     /// every other request is served. Serial, so two forwards for the same repo reach the peer in
@@ -1096,7 +1124,8 @@ final class Chatbox: @unchecked Sendable {
 
     init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool, maxBody: Int,
          idleTimeout: Int, maxConnections: Int, maxRows: Int, serverID: String,
-         peerURL: String, peerToken: String, maxHops: Int, publicURL: String) {
+         peerURL: String, peerToken: String, maxHops: Int, publicURL: String,
+         queue: DispatchQueue) {
         self.store = store
         self.token = token
         self.staleAfter = staleAfter
@@ -1110,6 +1139,7 @@ final class Chatbox: @unchecked Sendable {
         self.peerToken = peerToken
         self.maxHops = maxHops
         self.publicURL = publicURL
+        self.queue = queue
         self.forwardSession = URLSession(configuration: .ephemeral,
                                          delegate: NoForwardRedirects(), delegateQueue: nil)
     }
@@ -1225,6 +1255,7 @@ final class Chatbox: @unchecked Sendable {
 
     /// Route a parsed request — including the one route that answers later.
     func dispatch(_ req: Request, conn: NWConnection) {
+        dispatchPrecondition(condition: .onQueue(queue))
         if req.chunked {
             finish(req, conn: conn, status: 400, body: "error: chunked bodies are not supported — send Content-Length\n")
             return
@@ -2560,6 +2591,7 @@ final class Chatbox: @unchecked Sendable {
     /// was answered inline or after a long-poll wait.
     func finish(_ req: Request, conn: NWConnection, status: Int, body: String,
                 headers: [String: String] = [:]) {
+        dispatchPrecondition(condition: .onQueue(queue))
         FileHandle.standardError.write("chatbox: \(req.method) \(req.path) -> \(status)\n".data(using: .utf8)!)
         respond(conn, status: status, body: body, headers: headers)
     }
@@ -2586,6 +2618,7 @@ final class Chatbox: @unchecked Sendable {
     }
 
     func serve(conn: NWConnection) {
+        dispatchPrecondition(condition: .onQueue(queue))
         let identity = ObjectIdentifier(conn)
         if liveConnections.count >= maxConnections {
             // Answer rather than drop: a peer that is told nothing cannot tell a busy server from
@@ -3112,7 +3145,9 @@ if !backupRaw.isEmpty {
 // A dry run only reads. `Store` normally creates the tables, adds a column a board may be missing
 // and backfills one, all of which are writes: a run whose whole promise is "nothing was removed"
 // must not leave a changed file behind either.
-let store = Store(path: dbPath, migrating: !argPresent("--prune-dry-run"))
+// The store is created on the queue it will be used on, so its `dispatchPrecondition` holds from the
+// first statement of the schema migration to the last request it serves.
+let store = chatboxQueue.sync { Store(path: dbPath, migrating: !argPresent("--prune-dry-run"), queue: chatboxQueue) }
 let staleAfterRaw = argValue("--stale-after", "604800")
 let staleAfterValue = Int(staleAfterRaw) ?? 604800
 if staleAfterValue < 0 {
@@ -3158,7 +3193,10 @@ if !pruneRaw.isEmpty {
         exit(2)
     }
     let dryRun = argPresent("--prune-dry-run")
-    guard let result = store.prune(olderThanDays: pruneDays, dryRun: dryRun) else {
+    // The operator modes have no server yet, so they run their store work on the same queue the
+    // server would: one rule, no exception to remember.
+    let pruned = chatboxQueue.sync { store.prune(olderThanDays: pruneDays, dryRun: dryRun) }
+    guard let result = pruned else {
         FileHandle.standardError.write("chatbox: the prune failed and was rolled back — nothing was changed\n".data(using: .utf8)!)
         exit(1)
     }
@@ -3354,7 +3392,7 @@ let server = Chatbox(store: store, token: token, staleAfter: staleAfter,
                      tlsEnabled: tlsIdentity != nil, maxBody: maxBody,
                      idleTimeout: idleTimeout, maxConnections: maxConnections, maxRows: maxRows,
                      serverID: serverID, peerURL: peerURL, peerToken: peerToken, maxHops: maxHops,
-                     publicURL: publicURL)
+                     publicURL: publicURL, queue: chatboxQueue)
 
 let params: NWParameters
 if let identity = tlsIdentity {
