@@ -1567,6 +1567,23 @@
       "commit": "7d28987",
       "notes": "Rejected alternatives: (a) delete the eleven stale cells - the properties they test still exist, and deleting them would have removed exactly the coverage the audit had just spent effort adding; (b) leave the anchor check advisory and print a warning - that is the bug, not the fix; (c) keep the harness in `tests/.scratch` and copy it into `AUDIT/` at the end of the audit - the matrix has to be runnable and reviewable while the audit is being reviewed, and a copy taken \"at the end\" is one more thing that can drift; (d) point the harness at a fresh `git clone` per run instead of freezing files - the freeze is what makes a multi-hour run measure a fixed revision, and a clone would not stop an edit to the working tree mid-run.",
       "blocked_reason": ""
+    },
+    {
+      "id": "0092",
+      "severity": "S2",
+      "project": "M5",
+      "file_line": ".github/workflows/ci.yml:45",
+      "category": "test",
+      "status": "START",
+      "host_used": "node1",
+      "discovered_by": "audit/0001 closure",
+      "title": "CI builds with -O only, so the audit build standard is not enforced and can regress silently",
+      "evidence_before": "The audit standard is `-swift-version 6 -strict-concurrency=complete -warnings-as-errors` for both Swift binaries (AUDIT/environment.md). `ci.yml` runs `xcrun swiftc -O chatbox.swift -o chatbox` and the same for `chatbox-mcp.swift` (lines 45-46) and nothing else builds them. Task #0001 is closed with a strict typecheck that *I* ran; a pull request that reintroduces any of the diagnostics recorded in `AUDIT/baseline/strict-concurrency.txt` - a non-Sendable capture, a shared mutable global, a new `@unchecked Sendable` - would build cleanly under `-O` and pass every job in CI, including the suite, which does not compile the sources. The standard is therefore enforced by hand, once, and the next commit can undo it without a red light.\n\nWHY IT MATTERS: the whole point of the standard is that the compiler checks the concurrency model. A build setting that lives only in an auditor's shell history is a setting the project does not have, and the failure it hides is exactly the class of bug this audit spent the most effort removing.\n\nCONFIDENCE: high",
+      "fix_summary": "Add a CI step that typechecks both binaries with the audit flags (and keep the documented `-O` build as the shipping build), so a regression fails a pull request instead of being noticed by whoever runs the command next; say in the workflow why the two steps exist.",
+      "evidence_after": "",
+      "commit": "",
+      "notes": "",
+      "blocked_reason": ""
     }
   ]
 }

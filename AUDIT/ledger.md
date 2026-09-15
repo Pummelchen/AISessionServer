@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 69 | done: 22 | blocked: 0 | total: 91** (S0 7, S1 31, S2 46, S3 7)
+**Open: 70 | done: 22 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -94,6 +94,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0086](#0086) | S2 | M4 | `tests/protocol.sh:3967` | fed_refuse decides "refused" with a fixed sleep and never checks the exit status | test | **START** | node1 | phase-B/L6-tests |
 | [0090](#0090) | S2 | M1 | `chatbox.swift:2279` | GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1] | bug | **START** | node1 | audit/0034 follow-up |
 | [0091](#0091) | S2 | M1 | `AUDIT/mutate.sh` | The mutation matrix silently skips cells whose anchor no longer matches the code, and cannot be reproduced from a clone | test | **DONE** | node1 | audit/0034 run |
+| [0092](#0092) | S2 | M5 | `.github/workflows/ci.yml:45` | CI builds with -O only, so the audit build standard is not enforced and can regress silently | test | **START** | node1 | audit/0001 closure |
 | [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
 | [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **START** | node1 | phase-A |
 | [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **START** | node1 | L0 secret-scan triage |
@@ -1270,6 +1271,19 @@ PHASE-D NOTE: the repair itself was done wrong once and caught: my first pass ed
 AUDIT (gate): re-read cold. The harness is the evidence generator for every other task, so its own honesty is a prerequisite: the four ways it could lie quietly (a stale fragment, a mutant that does not compile, a red base, an uncommitted matrix) are each now loud and non-zero. The frozen-revision mechanism is unchanged, the port range and lock behaviour are unchanged, and no cell was deleted to make the sweep clean.
 - **Commit:** `7d28987`
 - **Notes:** Rejected alternatives: (a) delete the eleven stale cells - the properties they test still exist, and deleting them would have removed exactly the coverage the audit had just spent effort adding; (b) leave the anchor check advisory and print a warning - that is the bug, not the fix; (c) keep the harness in `tests/.scratch` and copy it into `AUDIT/` at the end of the audit - the matrix has to be runnable and reviewable while the audit is being reviewed, and a copy taken "at the end" is one more thing that can drift; (d) point the harness at a fresh `git clone` per run instead of freezing files - the freeze is what makes a multi-hour run measure a fixed revision, and a clone would not stop an edit to the working tree mid-run.
+
+### 0092
+
+- **Severity / category / module:** S2 / test / M5
+- **Location:** `.github/workflows/ci.yml:45`
+- **Title:** CI builds with -O only, so the audit build standard is not enforced and can regress silently
+- **Status:** START
+- **Evidence (before):** The audit standard is `-swift-version 6 -strict-concurrency=complete -warnings-as-errors` for both Swift binaries (AUDIT/environment.md). `ci.yml` runs `xcrun swiftc -O chatbox.swift -o chatbox` and the same for `chatbox-mcp.swift` (lines 45-46) and nothing else builds them. Task #0001 is closed with a strict typecheck that *I* ran; a pull request that reintroduces any of the diagnostics recorded in `AUDIT/baseline/strict-concurrency.txt` - a non-Sendable capture, a shared mutable global, a new `@unchecked Sendable` - would build cleanly under `-O` and pass every job in CI, including the suite, which does not compile the sources. The standard is therefore enforced by hand, once, and the next commit can undo it without a red light.
+
+WHY IT MATTERS: the whole point of the standard is that the compiler checks the concurrency model. A build setting that lives only in an auditor's shell history is a setting the project does not have, and the failure it hides is exactly the class of bug this audit spent the most effort removing.
+
+CONFIDENCE: high
+- **Fix:** Add a CI step that typechecks both binaries with the audit flags (and keep the documented `-O` build as the shipping build), so a regression fails a pull request instead of being noticed by whoever runs the command next; say in the workflow why the two steps exist.
 
 ### 0011
 
