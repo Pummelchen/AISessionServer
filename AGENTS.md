@@ -106,10 +106,11 @@ language as **Shell**, not Swift, despite `chatbox.swift` being the bulk of the 
   `--tls-password-file`; clients name the CA with `CHATBOX_CACERT`, and there is
   deliberately no flag to skip verification. Naming a CA while the URL is plain
   `http://` is refused by the client rather than ignored.
-- **`chatbox-cli.sh` hardcodes a private tailnet address** as the fallback
-  `CHATBOX_URL` (`http://100.66.125.48:8787`, also in the header comment). It is an
-  internal endpoint rather than a secret, but it is committed in the clear and names
-  one specific machine.
+- **The client defaults to loopback** (`http://127.0.0.1:8787`). A macOS host on
+  Tailscale cannot hairpin to its own tailnet address, so a server on such a host is
+  reached at `127.0.0.1`; every other machine sets `CHATBOX_URL` in `~/.chatbox`.
+  Earlier revisions hardcoded one deployment's tailnet address as the fallback — do
+  not reintroduce a machine-specific default.
 - **`--token SECRET` on argv is visible in `ps`.** Prefer `--token-file`, `chmod 600`.
 - **Port collision between repositories:** the default `--port 8787` is also the
   Minecraft repository's engine API port — `Minecraft/site/Caddyfile` proxies
