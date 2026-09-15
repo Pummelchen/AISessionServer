@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 81 | done: 8 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
+**Open: 80 | done: 9 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -19,7 +19,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0023](#0023) | S0 | M1 | `chatbox.swift:2830` | --token "" silently starts a fully open board [also: An explicitly empty --token silently starts an open board (fails open, unlike --token-file); `--token ""` (an unset variable) starts an unauthenticated board; --token beats --token-file although the code says the file is preferred] | incomplete | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L4-security,L7-ops |
 | [0001](#0001) | S1 | M1 | `chatbox.swift (whole file)` | Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors) | unsafe | **START** | node1 | phase-A baseline |
 | [0002](#0002) | S1 | M1 | `chatbox.swift:1062,1070` | Static ISO8601DateFormatter instances are shared mutable state (not Sendable) | unsafe | **DONE** | node1 | phase-A baseline |
-| [0003](#0003) | S1 | M1 | `chatbox.swift:1238` | `Chatbox.publicURL` is a mutable static global | unsafe | **AUDIT** | node1 | phase-A baseline |
+| [0003](#0003) | S1 | M1 | `chatbox.swift:1238` | `Chatbox.publicURL` is a mutable static global | unsafe | **DONE** | node1 | phase-A baseline |
 | [0004](#0004) | S1 | M1 | `chatbox.swift:27,3215,3217,3221` | Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code | unsafe | **START** | node1 | phase-A baseline |
 | [0005](#0005) | S1 | M1 | `chatbox.swift:2464,1155-1180,1700-1745,1600-1660` | Non-Sendable captures and captured-var mutation across @Sendable closures (DispatchWorkItem, URLSession completion, waiters, event poll) | unsafe | **START** | node1 | phase-A baseline |
 | [0015](#0015) | S1 | M1 | `chatbox.swift:896,373` | `@unchecked Sendable` on Chatbox and Store suppresses all concurrency checking | unsafe | **START** | node1 | L2 |
@@ -269,12 +269,13 @@ AUDIT (gate): re-read cold. No `@unchecked Sendable`, no `nonisolated(unsafe)`, 
 - **Severity / category / module:** S1 / unsafe / M1
 - **Location:** `chatbox.swift:1238`
 - **Title:** `Chatbox.publicURL` is a mutable static global
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** chatbox.swift:1238:16: error: static property 'publicURL' is not concurrency-safe because it is nonisolated global shared mutable state.
 - **Fix:** Make the public URL instance configuration instead of a mutable static: a `let` set from an initialiser parameter, with the scheme computed before the object is built and the usage text reading the instance.
 - **Evidence (after):** TEST (gate): the strict-concurrency typecheck goes from 8 primary errors / 10 warnings to **7 / 10**, with `static property 'publicURL' is not concurrency-safe` gone (AUDIT/baseline/strict-concurrency-after-0003.txt); the documented build still compiles with 0 warnings. Runtime check added (section 40): the usage text served by `GET /` must name the port this board is actually serving — it used to start as the hardcoded 8787 default and was overwritten after the object was built, so any answer produced before that assignment advertised a port nobody was listening on. Suite base cell green at 905 passed / 0 failed, relative cell green, 0 false passes.
 PHASE-D NOTE (a defect in my own first attempt, caught by the base cell before any commit): the new check read `$PORT`, which the suite never defines; under `set -u` that aborted the whole run (base RED, 61 checks never reached). Fixed by deriving the port from `$URL` the way the suite already does elsewhere, and the cell was re-run green.
 AUDIT (gate): re-read cold. `publicURL` is now a `let` on the instance, passed through the initialiser from the startup configuration (scheme decided before the object is built); the two usage call sites read the instance; no static mutable state remains for this value and no `nonisolated(unsafe)`/`@unchecked Sendable` was added. No check weakened: section 40 is additive.
+- **Commit:** `2ff1916`
 - **Notes:** Rejected alternatives: (a) `nonisolated(unsafe) static var` or a `static let` assigned once - the first is the forbidden escape hatch and the second cannot be assigned after construction in Swift; (b) removing the URL from the usage text - it is the one place a caller learns where to connect.
 
 ### 0004
