@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 87 | done: 2 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
+**Open: 86 | done: 3 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -14,7 +14,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0018](#0018) | S0 | M3 | `chatbox-cli.sh:820` | watch acknowledges with all=1, losing messages it never delivered | bug | **START** | node1 | phase-B/M3-client |
 | [0019](#0019) | S0 | M2 | `chatbox-mcp.swift:49` | MCP adapter silently corrupts every argument containing '+' because the server decodes '+' as space [also: CHATBOX_URL with a trailing slash yields //path and 404s every tool call] | bug | **START** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0020](#0020) | S0 | M1 | `chatbox.swift:1550` | Delivery rows are written with an unchecked run(), so a failed delivery is announced as delivered and the message is unreachable | bug | **START** | node1 | phase-B/L1-architecture |
-| [0021](#0021) | S0 | M1 | `chatbox.swift:1826` | GET /ui builds 'path + ?token=' and always gets 401, so the read-only view shows an empty board [also: GET /ui concatenates window.location.search onto paths that already contain a query, so its own credential is swallowed and every fetch is unauthenticated] | bug | **AUDIT** | node1 | phase-B/L1-architecture,L2-server-http |
+| [0021](#0021) | S0 | M1 | `chatbox.swift:1826` | GET /ui builds 'path + ?token=' and always gets 401, so the read-only view shows an empty board [also: GET /ui concatenates window.location.search onto paths that already contain a query, so its own credential is swallowed and every fetch is unauthenticated] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-http |
 | [0022](#0022) | S0 | M1 | `chatbox.swift:2300` | Revocation is reported successful without checking whether the UPDATE ran [also: Credential issue and revoke ignore the write result and report success] | unsafe | **START** | node1 | phase-B/L2-server-core,L3-line-level |
 | [0023](#0023) | S0 | M1 | `chatbox.swift:2830` | --token "" silently starts a fully open board [also: An explicitly empty --token silently starts an open board (fails open, unlike --token-file); `--token ""` (an unset variable) starts an unauthenticated board; --token beats --token-file although the code says the file is preferred] | incomplete | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L4-security,L7-ops |
 | [0001](#0001) | S1 | M1 | `chatbox.swift (whole file)` | Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors) | unsafe | **START** | node1 | phase-A baseline |
@@ -173,7 +173,7 @@ CONFIDENCE: high
 - **Severity / category / module:** S0 / bug / M1
 - **Location:** `chatbox.swift:1826`
 - **Title:** GET /ui builds 'path + ?token=' and always gets 401, so the read-only view shows an empty board [also: GET /ui concatenates window.location.search onto paths that already contain a query, so its own credential is swallowed and every fetch is unauthenticated]
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** VERIFIED BY AUDITOR (reproduced): the page serves `const query = window.location.search;` and `fetch(path + query)` with `get('/threads?json=1')`; the URL it builds, `/threads?json=1?token=tok`, answers 401, while `/threads?json=1&token=tok` answers 200.
 
 1823 sets `const query = window.location.search` and 1826 fetches `path + query`, but the paths already carry a query (1831 '/thread?id=', 1834 '/threads?json=1'), so the page requests `/threads?json=1?token=...`. Ran the built server: that exact URL returned 401; `/threads?json=1&token=...` returned 200. refresh() then renders 'No conversations yet.' on a board with 110 threads. protocol.sh:3856-3873 only greps the HTML, never fetches the URLs it builds. | uiPage() serves `const query = window.location.search;` (1823) and `fetch(path + query)` (1826), called as get('/threads?json=1') (1834) and get('/thread?id=' + id) (1831). Opened the documented way, /ui?token=X, search is '?token=X', so the request becomes /threads?json=1?token=X: parse() splits at the first '?', giving params {json:'1?token=X'} and no token param, so authorize() answers 401. refresh() (1833-1852) swallows that failure (JSON.parse throws) and renders '<p class="empty">No conversations yet.</p>'.
@@ -184,6 +184,7 @@ CONFIDENCE: high
 - **Fix:** Add a pure withQuery(path, search) helper to the page and route every request through it, so a path that already carries a query gains '&' instead of a second '?'.
 - **Evidence (after):** TEST (gate). BEFORE: the pre-fix build's /ui serves no withQuery and its code builds `path + window.location.search`; for '/threads?json=1' with '?token=tok' that URL answers 401 (measured: `curl '/threads?json=1?token=tok'` -> 401, the correct `&token=` form -> 200). AFTER: the shipped function returns '/threads?json=1&token=tok' and that URL answers 200; suite 881 passed / 0 failed (3 new checks, section 36, which extracts withQuery from the served page, runs it under node against five path/search pairs, then calls the live server with the URL it builds); mutation 232-audit0021-uiquery red with exactly that one check failing, base green.
 AUDIT (gate): re-read cold. withQuery is pure and total (empty search returns the path unchanged, a path with no query gains '?', a path with one gains '&', a leading '?' is stripped once); every path the page requests now goes through it, so a future call site cannot reintroduce the join. No check weakened: section 36 is new. Baseline: suite 878 -> 881 passed; build and scanners unchanged.
+- **Commit:** `47f414f`
 - **Notes:** Rejected alternatives: (a) stripping the existing query from the paths ('/threads' + '?json=1&token=…') - works but silently drops json=1 if the parameter order ever changes; (b) putting the token in a cookie or header - the page is credential-free by design and the server accepts ?token= only; (c) testing the JS by source inspection - the shipped function is executed under node instead, so the check fails for the real reason.
 
 ### 0022
