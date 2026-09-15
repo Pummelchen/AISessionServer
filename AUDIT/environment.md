@@ -84,6 +84,24 @@ Rejected alternative, recorded because it is the tempting shortcut: pinning the 
 "do not lower compiler strictness", and because the same code must keep building on the CI image
 (`macos-latest`), which now ships 6.4.
 
+## What the standard's flags do, and do not, catch
+
+The flag set is the brief's, and it is worth stating plainly that it is not a complete data-race
+checker. Measured on swiftlang-6.4.0.34.1:
+
+- A non-Sendable capture in a `@Sendable` closure is a **hard error**
+  (`-swift-version 6 -strict-concurrency=complete -warnings-as-errors`, exit 1). That is the class of
+  defect tasks #0002-#0005 were about, and it is why the strict build is the yardstick for them.
+- A diagnostic Swift downgrades because the API it crosses is `@preconcurrency` stays a **warning even
+  with `-warnings-as-errors`** and does not fail the command. Measured with
+  `DispatchQueue.async { captured += 1 }`: exit 0 with one `[#SendableClosureCaptures]` warning.
+
+The repository has no such warning today (the strict build and the documented build are both 0
+diagnostics), but the flags alone would not stop one from landing. So the audit treats a *non-empty
+diagnostic list* as a failure even when the exit code is 0: the build output is read, not just the
+status. The CI step added for task #0092 enforces the exit code; reading the log is what covers the
+rest, and Phase E records the diagnostic count rather than only "green".
+
 ## The mutation matrix
 
 `AUDIT/mutate.sh` is the harness that proves the suite catches the bugs it claims to. It is committed,

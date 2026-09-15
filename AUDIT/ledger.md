@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 68 | done: 24 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
+**Open: 66 | done: 26 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -40,13 +40,13 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0038](#0038) | S1 | M1 | `chatbox.swift:2232` | A credential's secret is returned even when the token INSERT did not store it | bug | **START** | node1 | phase-B/L2-server-core |
 | [0039](#0039) | S1 | M1 | `chatbox.swift:2406` | Request log records no time, peer, principal or route context; credential issue/revoke unaudited [also: Request target control bytes are echoed into logs and the 404 body (log injection)] | bug | **START** | node1 | phase-B/L3-line-level,L7-ops |
 | [0040](#0040) | S1 | M1 | `chatbox.swift:2431` | Connections refused at the ceiling get no idle deadline and are not counted, so stalled TLS handshakes accumulate without bound | unsafe | **START** | node1 | phase-B/L2-server-http |
-| [0041](#0041) | S1 | M1 | `chatbox.swift:2810` | `--port` and `--stale-after` silently fall back to their defaults on an unparseable value [also: --port and --stale-after silently substitute the default for an unusable value] | logic | **AUDIT** | node1 | phase-B/L1-architecture,L3-line-level,L7-ops |
+| [0041](#0041) | S1 | M1 | `chatbox.swift:2810` | `--port` and `--stale-after` silently fall back to their defaults on an unparseable value [also: --port and --stale-after silently substitute the default for an unusable value] | logic | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L7-ops |
 | [0042](#0042) | S1 | M1 | `chatbox.swift:2939` | `--prune`/`--prune-dry-run` on a mistyped `--db` creates a new board and reports success [also: --prune opens (and creates) a database before validating it, so a wrong --db path yields success on a brand-new board; Operator modes: Store is opened before --prune validation, a mistyped --db creates a board and reports 'pruned: 0', and conflicting modes silently win; --prune-dry-run can create or rewrite the database it promises not to touch] | bug | **START** | node1 | phase-B/L1-architecture,L2-server-core,L3-line-level,L7-ops |
 | [0043](#0043) | S1 | M1 | `chatbox.swift:298` | Agent ids may contain ',', but recipients are stored comma-joined and re-split, so a reply can be delivered to an unintended session | bug | **START** | node1 | phase-B/L2-server-http |
 | [0044](#0044) | S1 | M1 | `chatbox.swift:3232` | No SIGTERM/SIGINT/SIGHUP handling: no drain, no WAL checkpoint, no log reopen | bug | **START** | node1 | phase-B/L7-ops |
 | [0045](#0045) | S1 | M1 | `chatbox.swift:484` | Store.rows treats every non-ROW step result as end-of-data, returning partial results as complete | incomplete | **START** | node1 | phase-B/L3-line-level |
 | [0046](#0046) | S1 | M1 | `chatbox.swift:827` | Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender) | perf | **START** | node1 | phase-B/L5-performance |
-| [0047](#0047) | S1 | M4 | `tests/protocol.sh:1505` | --port and --stale-after silently fall back to defaults on an unusable value; no check | test | **AUDIT** | node1 | phase-B/L6-tests |
+| [0047](#0047) | S1 | M4 | `tests/protocol.sh:1505` | --port and --stale-after silently fall back to defaults on an unusable value; no check | test | **DONE** | node1 | phase-B/L6-tests |
 | [0048](#0048) | S1 | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **START** | node1 | phase-B/L6-tests |
 | [0006](#0006) | S2 | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **DONE** | node1 | L0 |
 | [0007](#0007) | S2 | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **START** | node1 | L0 swiftlint baseline |
@@ -589,7 +589,7 @@ CONFIDENCE: medium
 - **Severity / category / module:** S1 / logic / M1
 - **Location:** `chatbox.swift:2810`
 - **Title:** `--port` and `--stale-after` silently fall back to their defaults on an unparseable value [also: --port and --stale-after silently substitute the default for an unusable value]
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** `let port = UInt16(argValue("--port", "8787")) ?? 8787` (2810) and `let staleAfterValue = Int(staleAfterRaw) ?? 604800` (2941) discard what the operator typed. `--port 9000o`, `--port 70000` and `--port ''` all bind 8787 with no message; `--stale-after 7d` becomes 604800. Every other bound is refused when it does not parse (--max-body 3007, --idle-timeout 3018, --max-connections 3026, --max-rows 3034, --max-hops 3123), and --stale-after is only tested for `< 0` (2942). | 2810 `UInt16(argValue("--port", "8787")) ?? 8787` and 2941 `Int(staleAfterRaw) ?? 604800` fall back to the default for an unparseable or out-of-range value. Ran `--port 99999 --stale-after abc`: the banner read 'chatbox listening on port 8787' and 'staleness ... 7d'. Every other bounded flag (--max-body 3002-3011, --idle-timeout, --max-connections, --max-rows, --max-hops, --prune) exits 2 on a bad value.
 
 WHY IT MATTERS: The server that starts is not the one on the command line: clients are pointed at a port nothing listens on while an unintended port is open, and a typo in the presence window silently reverts it to seven days, so gone sessions are reported active. | A configured-looking server listens somewhere the operator did not ask for, and a client or script pointed at the requested port fails with no server-side signal. It contradicts the file's own rule that a value nobody asked for must stop the server.
@@ -599,6 +599,7 @@ CONFIDENCE: high
 - **Evidence (after):** TEST (gate): after the fix, `--port 9000o`, `--port 70000`, `--port 0`, `--port abc` and `--port ''` each exit 2 with `chatbox: --port must be between 1 and 65535 — got '<value>'`; `--stale-after abc`, `--stale-after 7d` and `--stale-after -1` each exit 2 with `chatbox: --stale-after must be 0 (off) or a positive number of seconds — got '<value>'`; and `--stale-after 6` still starts a board whose `/health` answers 200. Section 42 of the suite pins nine checks: four refusals for the port, three for the window, the existing negative-window refusal, and the usable-window board (so the section cannot pass by refusing everything). Base cell GREEN at 940 passed / 0 failed; mutant `246-audit0041-portfallback` (the pre-fix one-liner restored) is red on exactly the four port checks, mutant `247-audit0041-windowfallback` (`?? 604800`) is red on the two window checks a default would swallow (`-1` is still caught by the negative guard), and the repaired `57-negallowed` cell (the guard removed) is red on four; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.
 PHASE-D NOTE (deliberate non-reproduction): the pre-fix behaviour was **not** re-measured live in Phase C, and that is a decision rather than an omission. The failure mode of the pre-fix binary is to fall back to **8787**, the documented default and the port the production board serves on this host, so running `--port 9000o` against the old build would have tried to bind a live service's port. The pre-fix expression is captured in `AUDIT/baseline/` and in the mutation cell, and the suite's port checks run in `--prune-dry-run` mode for the same reason: the flag is parsed before the mode branch, so the refusal is the same code path, but operator mode exits without listening and the check can never be the thing that binds 8787.
 AUDIT (gate): re-read cold. Both guards sit with the other bounded-flag guards and run before the store is opened, so an operator mode invocation refuses a bad value too. The healthy path is unchanged (the default `--port 8787` and `--stale-after 604800` still parse), and no other flag's behaviour moved. The new section is skipped cleanly when `CHATBOX_BIN` is absent, so a checkout without a built binary still runs the rest of the suite.
+- **Commit:** `edab77f`
 - **Notes:** Rejected alternatives: (a) clamp an out-of-range port to 65535 - a typo would silently become a different port, which is the same defect with a tighter story; (b) allow `--port 0` because the kernel picks a free port - nobody can name the port afterwards, so every client the operator configured is pointed at nothing; (c) keep defaulting `--stale-after` and only warn - a warning on stderr does not stop a monit unit from running with a presence window nobody asked for, and it contradicts the other six bounded flags; (d) accept `7d` and other suffixes - inventing a duration syntax for one flag, when the file's rule is seconds everywhere, would be a second thing to get wrong.
 
 ### 0042
@@ -671,7 +672,7 @@ CONFIDENCE: high
 - **Severity / category / module:** S1 / test / M4
 - **Location:** `tests/protocol.sh:1505`
 - **Title:** --port and --stale-after silently fall back to defaults on an unusable value; no check
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** The only invalid-window check is line 1505 (--stale-after -1). chatbox.swift:2810 'let port = UInt16(argValue("--port", "8787")) ?? 8787' and :2941 'let staleAfterValue = Int(staleAfterRaw) ?? 604800' mean --port abc, --port 99999 and --stale-after abc all start successfully on the default; checkArguments (2600) only requires that a value token follows the flag, never that the value is usable.
 
 WHY IT MATTERS: A typo'd port silently binds 8787 (with --port 0, an unknown ephemeral port) and a typo'd staleness window silently becomes seven days, so presence reporting behaves unlike what the operator asked for while the CLI reports success.
@@ -679,6 +680,7 @@ WHY IT MATTERS: A typo'd port silently binds 8787 (with --port 0, an unknown eph
 CONFIDENCE: high
 - **Fix:** Closed with #0041: section 42 of the suite adds the missing startup refusals (`--port 9000o`, `70000`, `0`, `''`; `--stale-after abc`, `7d`), keeps the existing negative-window check, and adds a usable-window control so the section cannot pass by refusing every value.
 - **Evidence (after):** TEST (gate): the nine checks above. The four port checks run in `--prune-dry-run` mode so that a build with the default restored cannot bind 8787 during the check (see #0041's Phase-D note); the window checks start a real server and are bounded by a liveness wait, so a build that wrongly accepted the value fails rather than hanging. Mutants `246`, `247` and the repaired `57-negallowed` are red; base GREEN at 940/0; relative cell GREEN; 0 false passes.
+- **Commit:** `edab77f`
 - **Notes:** The code half is #0041. This task existed because the suite had no check for the fallbacks at all, which is why the defect shipped; keeping them as one commit keeps the check with the behaviour it pins.
 
 ### 0048
