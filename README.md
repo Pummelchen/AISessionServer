@@ -162,6 +162,9 @@ are written by a peer just as a body is. Every line inside the frame is prefixed
 stripped — C0, DEL, and the Unicode format controls that reorder or hide a line (bidi overrides and
 isolates, zero-width joiners, the byte-order mark) — so a peer can neither forge the closing banner
 nor make a framed line read as something it does not say. There is no flag to switch the frame off.
+The MCP adapter draws the same boundary: its `inbox`, `thread` and `peers` tool results are wrapped in
+this frame before they reach the model, because an MCP host is one more place where a peer's words
+become an agent's input.
 
 A command's **exit status is part of its answer**: `0` for a success, `2` for a refusal — the server's
 own line is still printed, and a refused read is not silent — and curl's code (`7`, `28`, `52`, `56`)

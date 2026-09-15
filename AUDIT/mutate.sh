@@ -1051,6 +1051,31 @@ m('247-audit0041-windowfallback',
 # pre-fix branch: print and fall through to the next poll immediately.
 # AUDIT #0026: a notification must not be answered. This is the pre-fix gate: every message is
 # treated as a request, so `reply`/`fail` emit a frame keyed to a null id.
+# AUDIT #0025: an MCP read must wear the untrusted frame. This is the pre-fix result body: the
+# server's text verbatim.
+m('250-audit0025-unframed',
+  r'''    let text = framed ? (ok ? untrustedFrame(body) : indentLines(body)) : body''',
+  r'''    let text = body''', target='mcp')
+
+# AUDIT #0025: the frame is only half the defence - the sanitizer is what stops a peer reordering a
+# framed line with a bidi control.
+m('251-audit0025-nosanitize',
+  r'''func sanitize(_ text: String) -> String {
+    var out = ""
+    out.reserveCapacity(text.count)
+    for scalar in text.unicodeScalars {
+        let v = scalar.value
+        if v <= 0x08 || (v >= 0x0B && v <= 0x1F) || v == 0x7F { continue }
+        if (v >= 0x200B && v <= 0x200F) || (v >= 0x202A && v <= 0x202E) { continue }
+        if (v >= 0x2066 && v <= 0x2069) || v == 0xFEFF { continue }
+        out.unicodeScalars.append(scalar)
+    }
+    return out
+}''',
+  r'''func sanitize(_ text: String) -> String {
+    return text
+}''', target='mcp')
+
 m('249-audit0026-notifyreply',
   r'''    let isNotification = id == nil''',
   r'''    let isNotification = false''', target='mcp')
