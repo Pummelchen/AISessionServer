@@ -4383,6 +4383,47 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 36. GET /ui reuses the caller's credential in the URLs it builds
+# The page is opened as /ui?token=… and reuses window.location.search on every request it makes. Two
+# of those paths already carry a query ('/threads?json=1', '/thread?id=N'), so a naive join produced
+# '/threads?json=1?token=…' — which the server reads as one `json` value and no token, i.e. 401 — and
+# the read-only view rendered an empty board on every token-protected server. The join is a pure
+# function so it can be tested directly, and the URL it builds is then used against the live server.
+# ---------------------------------------------------------------------------
+if command -v node >/dev/null 2>&1; then
+  ui_fn="$SCRATCH/ui-fn-${RUN}.js"
+  curl -sS --max-time 10 "$(url_for /ui)" \
+    | sed -n '/const withQuery = /,/search.slice(1) : search);/p' > "$ui_fn"
+  if [ -s "$ui_fn" ]; then
+    ui_js_out="$(node -e "
+      $(cat "$ui_fn")
+      const cases = [
+        ['/threads?json=1', '?token=tok', '/threads?json=1&token=tok'],
+        ['/thread?id=3', '?token=tok', '/thread?id=3&token=tok'],
+        ['/threads?json=1', '', '/threads?json=1'],
+        ['/peers', '?token=tok', '/peers?token=tok']
+      ];
+      let bad = 0;
+      for (const c of cases) {
+        const got = withQuery(c[0], c[1]);
+        if (got !== c[2]) { console.log('want ' + c[2] + ' got ' + got); bad++; }
+      }
+      console.log(bad === 0 ? 'ok' : 'bad');
+    " 2>&1)"
+    contains "the page joins the credential onto a path that already has a query" "$ui_js_out" "ok"
+    ui_built="$(node -e "$(cat "$ui_fn"); console.log(withQuery('/threads?json=1', '?token=$TOKEN'));" 2>/dev/null)"
+    equals "and the URL the shipped page builds is accepted by the server" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$URL$ui_built")" "200"
+    lacks "and the page no longer builds the two-'?' form it used to" \
+      "$(curl -sS --max-time 10 "$(url_for /ui)")" "fetch(path + query)"
+  else
+    no "the page serves its query-joining function" "no withQuery in the served page"
+  fi
+else
+  printf '  skip  the page query join (needs node)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

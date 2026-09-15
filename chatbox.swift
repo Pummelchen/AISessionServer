@@ -1821,9 +1821,16 @@ final class Chatbox: @unchecked Sendable {
         // The page was opened with the credential in the query string, and it reuses it: the server
         // decides what that credential may read, so this page needs no rules of its own.
         const query = window.location.search;
+        // A path that already carries a query gains '&', never a second '?': the server reads
+        // everything after the first '?' as the query string, so '/threads?json=1' + '?token=…'
+        // arrives as one `json` value and no token at all — every request this page made was
+        // unauthenticated, and a token-protected board showed an empty view.
+        const withQuery = (path, search) =>
+          !search ? path
+                  : path + (path.includes('?') ? '&' : '?') + (search.startsWith('?') ? search.slice(1) : search);
         const status = (text) => { document.getElementById('thread').innerHTML = '<p class="empty"></p>'; };
         const get = async (path) => {
-          const res = await fetch(path + query);
+          const res = await fetch(withQuery(path, query));
           return res.ok ? await res.text() : 'error: ' + (await res.text()).trim();
         };
         const showThread = async (id, link) => {
