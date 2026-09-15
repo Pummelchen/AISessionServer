@@ -4678,6 +4678,56 @@ case "$(get /)" in
 esac
 
 # ---------------------------------------------------------------------------
+# 41. /health fails closed when the store cannot be read
+# A probe that keys on the status code has to be able to see a board that cannot serve a request.
+# `health()` built its answer from `store.scalar(...)`, which logs the SQLite error and returns "";
+# a failed count therefore arrived as an empty string, "agents: " was printed into an otherwise
+# cheerful `ok chatbox up`, and the answer was 200. A monitor would report a board with no readable
+# store as healthy — the one thing a health check exists to prevent. The store is made unreadable
+# underneath a running board (its schema is dropped), which is deterministic and does not depend on
+# the open path: a `--db` that is not a database at all is already refused at startup.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  hport="${CHATBOX_HEALTH_PORT:-8796}"
+  hbase="http://127.0.0.1:$hport"
+  hdb="$SCRATCH/health-${RUN}.sqlite"
+  htok="$SCRATCH/health-${RUN}.token"
+  rm -f "$hdb" "$hdb-wal" "$hdb-shm"
+  printf '%s\n' "$TOKEN" > "$htok"
+  chmod 600 "$htok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$hport" --db "$hdb" --token-file "$htok" > "$SCRATCH/health-${RUN}.log" 2>&1 &
+  hpid=$!
+  hready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS "$hbase/health?token=$TOKEN" >/dev/null 2>&1; then hready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$hready" = 1 ]; then
+    equals "a board with a readable store answers 200" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' "$hbase/health?token=$TOKEN")" "200"
+    # The schema the board is serving is removed under it: every count now fails, and `/peers`,
+    # `/threads` and `/message` cannot answer either. The status code is the signal.
+    sqlite3 "$hdb" "DROP TABLE agents; DROP TABLE threads; DROP TABLE messages;" 2>/dev/null
+    equals "a board whose store cannot be read answers 503, not 200" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' "$hbase/health?token=$TOKEN")" "503"
+    contains "and the answer names the store's own error" \
+      "$(curl -sS "$hbase/health?token=$TOKEN")" "no such table"
+    lacks "and does not claim the board is up" \
+      "$(curl -sS "$hbase/health?token=$TOKEN")" "ok chatbox up"
+    # A store failure is not an authentication failure: without a credential the route is still 401,
+    # so the 503 is about the board rather than about the request that asked.
+    equals "while an unauthenticated probe is still refused" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' "$hbase/health")" "401"
+  else
+    no "the health fixture server started" "no answer on $hbase"
+  fi
+  kill "$hpid" 2>/dev/null
+  wait "$hpid" 2>/dev/null
+else
+  printf '  skip  the health failure mode (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

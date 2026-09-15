@@ -565,6 +565,14 @@ final class Store: @unchecked Sendable {
         rows(sql, binds).first?.values.first ?? ""
     }
 
+    /// A count, or nil when the store could not answer. `scalar` returns "" both for a statement that
+    /// failed to prepare and for one that returned no row; `COUNT(*)` always returns a row, so an empty
+    /// or non-numeric answer means the store could not be read. Reporting that as 0 would turn
+    /// "unknown" into a measurement, which is the opposite of what a health check is for.
+    func countOrNil(_ sql: String) -> Int? {
+        Int(scalar(sql))
+    }
+
     /// Rows changed by the most recent `run`. `last_insert_rowid` cannot answer this:
     /// an `INSERT … SELECT … WHERE` that matches nothing leaves it at the previous
     /// row's id, so a caller that needs to know whether the row was really stored has
@@ -1305,7 +1313,7 @@ final class Chatbox: @unchecked Sendable {
     func handle(_ req: Request, _ who: Principal) -> Reply {
         switch (req.method, req.path) {
         case ("GET", "/"), ("GET", "/help"): return Reply(200, usage(publicURL))
-        case ("GET", "/health"): return Reply(200, health())
+        case ("GET", "/health"): return health()
         case ("POST", "/register"): return reply(register(req, who))
         case ("POST", "/message"), ("POST", "/say"): return message(req, who)
         case ("GET", "/inbox"): return inbox(req, who)
@@ -1364,17 +1372,25 @@ final class Chatbox: @unchecked Sendable {
         """
     }
 
-    func health() -> String {
-        let a = store.scalar("SELECT COUNT(*) FROM agents")
-        let t = store.scalar("SELECT COUNT(*) FROM threads")
-        let m = store.scalar("SELECT COUNT(*) FROM messages")
+    /// A probe that keys on the status code has to be able to see a store it cannot read. A failed
+    /// count is not zero — it is unknown — and a board that answers 200 with empty counters while no
+    /// route can serve a request is precisely the failure a health check exists to report. `scalar`
+    /// logs the SQLite error and answers ""; here that emptiness is the signal.
+    func health() -> Reply {
+        guard let a = store.countOrNil("SELECT COUNT(*) FROM agents"),
+              let t = store.countOrNil("SELECT COUNT(*) FROM threads"),
+              let m = store.countOrNil("SELECT COUNT(*) FROM messages") else {
+            return Reply(503, "error: the store could not be read — the counters are unknown, not zero\n"
+                + "sqlite: \(store.lastError())\n"
+                + "board: \(serverID)\nnow: \(nowISO())\n")
+        }
         let presence = staleAfter == 0 ? "off" : "stale after \(humanSeconds(staleAfter))"
         let transport = tlsEnabled ? "tls" : "plain http"
         let idle = idleTimeout == 0 ? "no idle deadline" : "\(idleTimeout)s idle deadline"
         // The board's own name is reported whether or not it forwards: it is the name a peer shows
         // in `(via …)` on a forwarded message, and an operator comparing two boards needs it.
         let peer = peerURL.isEmpty ? "none" : peerURL
-        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nconnections: up to \(maxConnections), \(idle)\npeer: \(peer) (this board is \(serverID), accepts up to \(maxHops) hops)\nnow: \(nowISO())\n"
+        return Reply(200, "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nconnections: up to \(maxConnections), \(idle)\npeer: \(peer) (this board is \(serverID), accepts up to \(maxHops) hops)\nnow: \(nowISO())\n")
     }
 
     func register(_ req: Request, _ who: Principal) -> (Int, String) {

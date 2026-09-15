@@ -991,6 +991,16 @@ m('242-audit0033-doubledbye',
   r'''            conn.send(content: Data("event: bye\\ndata: {\"reason\":\"deadline\"}\\n\\n".utf8),
                       completion: .contentProcessed { _ in conn.cancel() })''')
 
+# AUDIT #0029: an unreadable store must not be rounded down to zero. This is the pre-fix reading of a
+# failed count - the empty string became 0, and /health answered 200 with empty counters.
+m('243-audit0029-healthzero',
+  r'''    func countOrNil(_ sql: String) -> Int? {
+        Int(scalar(sql))
+    }''',
+  r'''    func countOrNil(_ sql: String) -> Int? {
+        Int(scalar(sql)) ?? 0
+    }''')
+
 cli = open(os.path.join(fr, 'chatbox-cli.sh')).read()
 mcp = open(os.path.join(fr, 'chatbox-mcp.swift')).read()
 bad = []
