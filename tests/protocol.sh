@@ -3887,9 +3887,22 @@ if command -v curl >/dev/null 2>&1; then
 
   # The stream has a deadline, says why it ended, and ends when it says it will.
   ev_t0=$(date +%s)
-  curl -sS -N --max-time 12 "$(url_for /events "max=2")" > "$SCRATCH/events-bye-${RUN}.body" 2>/dev/null
+  ev_bye_file="$SCRATCH/events-bye-${RUN}.body"
+  curl -sS -N --max-time 12 "$(url_for /events "max=2")" > "$ev_bye_file" 2>/dev/null
   ev_t1=$(date +%s)
-  contains "the stream ends with a bye at its deadline" "$(cat "$SCRATCH/events-bye-${RUN}.body")" "event: bye"
+  ev_bye="$(cat "$ev_bye_file")"
+  contains "the stream ends with a bye at its deadline" "$ev_bye" "event: bye"
+  # ... as a *frame*, not as a substring. The frame used to be a hand-written literal with doubled
+  # backslashes, so Swift sent `event: bye\ndata: {...}\n\n` as one line: the text `event: bye` is
+  # still in there, which is all the check above looks for, but an SSE client discarded the
+  # unterminated event at EOF. The shape of the frame, and the byte that dispatches it, are what is
+  # asserted now.
+  equals "and the bye is one complete SSE event rather than one long line" \
+    "$(printf '%s' "$ev_bye" | sed -n '/^event: bye$/,$p')" \
+    "event: bye
+data: {\"reason\":\"deadline\"}"
+  equals "and the blank line that dispatches it is on the wire" \
+    "$(tail -c 2 "$ev_bye_file" | od -An -tx1 | tr -d ' \n')" "0a0a"
   if [ "$((ev_t1 - ev_t0))" -ge 1 ] && [ "$((ev_t1 - ev_t0))" -le 6 ]; then
     ok "and it ends when it said it would"
   else

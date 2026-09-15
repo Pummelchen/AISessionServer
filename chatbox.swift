@@ -2062,10 +2062,13 @@ final class Chatbox: @unchecked Sendable {
         if case .failed = conn.state { return }
         let now = Date()
         if now >= deadline {
-            // Sent with a completion, so the end of the stream is delivered rather than raced by
-            // the cancel.
-            conn.send(content: Data("event: bye\\ndata: {\"reason\":\"deadline\"}\\n\\n".utf8),
-                      completion: .contentProcessed { _ in conn.cancel() })
+            // Sent through the same helper as every other frame, with the cancel in its completion so
+            // the end of the stream is delivered rather than raced by the cancel. The hand-written
+            // literal this used to be had doubled backslashes: Swift collapsed each `\\n` to a
+            // backslash and an `n`, so the whole frame arrived as one line with no blank-line
+            // terminator, and an SSE client — which discards an incomplete event at EOF — never saw
+            // the bye the README promises.
+            sendEvent(conn, name: "bye", data: "{\"reason\":\"deadline\"}") { conn.cancel() }
             return
         }
         let current = boardState()
@@ -2105,8 +2108,10 @@ final class Chatbox: @unchecked Sendable {
         "{\"agents\":\(state.agents),\"threads\":\(state.threads),\"messages\":\(state.messages),\"at\":\"\(nowISO())\"}"
     }
 
-    private func sendEvent(_ conn: NWConnection, name: String, data: String) {
-        conn.send(content: Data("event: \(name)\ndata: \(data)\n\n".utf8), completion: .contentProcessed { _ in })
+    private func sendEvent(_ conn: NWConnection, name: String, data: String,
+                           then done: @escaping @Sendable () -> Void = {}) {
+        conn.send(content: Data("event: \(name)\ndata: \(data)\n\n".utf8),
+                  completion: .contentProcessed { _ in done() })
     }
 
     // ---------- long-poll inbox ----------
