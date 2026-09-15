@@ -3208,6 +3208,47 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 26. A repo with several owners — who answered? (TRK-14)
+# A report sent to a repo key reaches every owner of it. The question this pins is the one after
+# that: when one of them answers, who sees the answer, and can a reader tell who gave it? The thread
+# view is the answer — every message names its sender — and a reply goes to the thread's
+# participants, which is every owner who was sent the original, minus whoever is speaking now. An
+# owner who has not answered yet is therefore in the conversation, not missing from it; whether it
+# is *listening* is a separate question, and that is what /peers reports.
+# ---------------------------------------------------------------------------
+REPO_MO="example.test/$RUN/multi"
+MO1="it-$RUN-mo-1"; MO2="it-$RUN-mo-2"; MO3="it-$RUN-mo-3"
+for mo_id in "$MO1" "$MO2" "$MO3"; do
+  post /register --data-urlencode "id=$mo_id" --data-urlencode "node=node-mo" \
+    --data-urlencode "agent=dsh" --data-urlencode "repos=$REPO_MO" >/dev/null
+done
+equals "the multi-owner fixture registered three owners" \
+  "$(printf '%s\n' "$(get /peers)" | grep -c "example.test/$RUN/multi")" "3"
+
+mo_send="$(post /message --data-urlencode "from=$MO1" --data-urlencode "repo=$REPO_MO" \
+  --data-urlencode "subject=multi-owner $RUN" --data-urlencode "body=who answers $RUN?")"
+mo_thread="$(field "$mo_send" thread)"
+equals "a repo with three owners reaches the other two" "$(field "$mo_send" delivered_to)" "$MO2, $MO3"
+contains "the second owner holds the report" "$(get /inbox "id=$MO2")" "who answers $RUN?"
+contains "and so does the third" "$(get /inbox "id=$MO3")" "who answers $RUN?"
+
+mo_reply="$(post /message --data-urlencode "from=$MO3" --data-urlencode "thread=$mo_thread" \
+  --data-urlencode "body=the third owner answered $RUN")"
+equals "an answer reaches the thread's other participants" "$(field "$mo_reply" delivered_to)" "$MO1, $MO2"
+
+mo_view="$(get /thread "id=$mo_thread")"
+contains "the thread shows the question" "$mo_view" "who answers $RUN?"
+contains "and the answer" "$mo_view" "the third owner answered $RUN"
+contains "and names the owner who asked" "$mo_view" "$MO1"
+contains "and the owner who answered" "$mo_view" "$MO3"
+contains "and the owner who has not answered yet" "$mo_view" "$MO2"
+
+mo_reply2="$(post /message --data-urlencode "from=$MO2" --data-urlencode "thread=$mo_thread" \
+  --data-urlencode "body=the second owner answered too $RUN")"
+equals "a second answer reaches the other two, not only the asker" \
+  "$(field "$mo_reply2" delivered_to)" "$MO1, $MO3"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
