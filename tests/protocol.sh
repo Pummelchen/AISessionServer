@@ -3194,6 +3194,55 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
       --data-urlencode "id=$btid" "http://127.0.0.1:$bport/token/revoke")"
     contains "and the revocation works once the store is willing" "$brev2" "ok revoked"
 
+    # An acknowledgement is a read cursor, and the route is the one answer a caller can check. The
+    # three ack UPDATEs were run with `store.run` (which returns -1 on failure) and then reported
+    # `sqlite3_changes()` regardless. A store that refused the UPDATE was answered `ok acked 0` under
+    # HTTP 200 — a success, and a count indistinguishable from "there was nothing left to ack" — while
+    # the mail stayed unread. `sqlite3_changes()` is not even a documented value to read after a
+    # failed statement (measured on this machine: an aborted UPDATE leaves it at 0, discarding the
+    # preceding statement's count), which is the reason the code must not read it at all.
+    bk register --data-urlencode "id=it-$RUN-bk-ack" --data-urlencode "node=node-bk" >/dev/null
+    backsent="$(bk message --data-urlencode "from=it-$RUN-bk-a" --data-urlencode "to=it-$RUN-bk-ack" \
+      --data-urlencode "body=ack-$RUN")"
+    backmid="$(field "$backsent" message)"
+    if [ -n "$backmid" ]; then
+      ok "the ack fixture has an unread delivery to acknowledge"
+    else
+      no "the ack fixture has an unread delivery to acknowledge" "$(snip "$backsent")"
+    fi
+    sqlite3 "$bdb" "CREATE TRIGGER IF NOT EXISTS block_ack_update BEFORE UPDATE ON deliveries BEGIN SELECT RAISE(ABORT,'blocked by the suite'); END;" >/dev/null 2>&1
+    backstatus="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST \
+      --data-urlencode "token=$TOKEN" --data-urlencode "id=it-$RUN-bk-ack" \
+      --data-urlencode "message=$backmid" "http://127.0.0.1:$bport/ack")"
+    equals "an acknowledgement the store refuses is a 500" "$backstatus" "500"
+    backrefused="$(curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=it-$RUN-bk-ack" --data-urlencode "message=$backmid" "http://127.0.0.1:$bport/ack")"
+    lacks "and is not reported as a successful acknowledgement" "$backrefused" "ok acked"
+    contains "and it says nothing was acknowledged" "$backrefused" "nothing was acknowledged"
+    equals "and the mail it could not stamp is still unread" \
+      "$(sqlite3 "$bdb" "select count(*) from deliveries where agent='it-$RUN-bk-ack' and (acked_at is null or acked_at='');")" "1"
+    # All three forms go through the same statement result, so all three have to fail the same way:
+    # a fix that guarded only the form this check happens to use would still answer `ok acked 0`
+    # about the other two, and `--all` is the form the wake loop's fallback and `ack --all` use.
+    backtid="$(field "$backsent" thread)"
+    equals "the all=1 form is refused too" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST \
+         --data-urlencode "token=$TOKEN" --data-urlencode "id=it-$RUN-bk-ack" \
+         --data-urlencode "all=1" "http://127.0.0.1:$bport/ack")" "500"
+    equals "and the thread form is refused too" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST \
+         --data-urlencode "token=$TOKEN" --data-urlencode "id=it-$RUN-bk-ack" \
+         --data-urlencode "thread=$backtid" "http://127.0.0.1:$bport/ack")" "500"
+    equals "and none of the three stamped anything" \
+      "$(sqlite3 "$bdb" "select count(*) from deliveries where agent='it-$RUN-bk-ack' and (acked_at is null or acked_at='');")" "1"
+    sqlite3 "$bdb" "DROP TRIGGER IF EXISTS block_ack_update;" >/dev/null 2>&1
+    backok="$(curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=it-$RUN-bk-ack" --data-urlencode "message=$backmid" "http://127.0.0.1:$bport/ack")"
+    contains "and the acknowledgement lands once the store is willing" "$backok" "ok acked 1 for it-$RUN-bk-ack"
+    backagain="$(curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=it-$RUN-bk-ack" --data-urlencode "message=$backmid" "http://127.0.0.1:$bport/ack")"
+    contains "and acking it twice reports the work the second call really did" "$backagain" "ok acked 0 for it-$RUN-bk-ack"
+
     # The send path is one write. A delivery the store refuses used to be ignored: the message was
     # stored, the sender was told `delivered_to`, and no delivery row existed — unreachable mail that
     # `--prune` deliberately never removes, announced as a delivery. A registration whose INSERT was

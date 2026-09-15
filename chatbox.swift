@@ -2322,26 +2322,35 @@ final class Chatbox: @unchecked Sendable {
         // the same thing twice reports the work the second call really did (none), and the first
         // ack time is not moved by the second — a read cursor records when the mail was read.
         var n = 0
+        var rc: Int32 = SQLITE_DONE
         if !req.p("message").isEmpty {
-            store.run("""
+            let r = store.runReporting("""
             UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=? AND (acked_at IS NULL OR acked_at='')
             """, [nowISO(), id, req.p("message")])
-            n = Int(store.changedRows())
+            rc = r.rc; n = Int(r.changes)
         } else if !req.p("all").isEmpty {
-            store.run("""
+            let r = store.runReporting("""
             UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at='')
             """, [nowISO(), id])
-            n = Int(store.changedRows())
+            rc = r.rc; n = Int(r.changes)
         } else if !req.p("thread").isEmpty {
             // One statement for the whole thread rather than one per message: the count is then
             // what the ack changed, and a long thread is not a long list of statements.
-            store.run("""
+            let r = store.runReporting("""
             UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at='')
               AND message_id IN (SELECT id FROM messages WHERE thread_id=?)
             """, [nowISO(), id, req.p("thread")])
-            n = Int(store.changedRows())
+            rc = r.rc; n = Int(r.changes)
         } else {
             return (400, "error: pass message=<id>, thread=<id> or all=1\n")
+        }
+        // The statement's own result code decides whether anything happened. `changedRows()` is
+        // `sqlite3_changes()`, which a *failed* statement does not reset: reading it after a
+        // failure reported the preceding `UPDATE agents SET last_seen` — one row — as an
+        // acknowledgement, so a caller was told `ok acked 1` about mail that is still unread.
+        // A count of zero on a statement that ran is honest and is reported as zero.
+        guard rc == SQLITE_DONE else {
+            return (500, "error: the acknowledgement could not be stored — nothing was acknowledged\n")
         }
         return (200, "ok acked \(n) for \(id)\n")
     }

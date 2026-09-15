@@ -637,14 +637,17 @@ m('139-trk25-plainopen', '''    let target = pending ? path : "file:\\(uriPath(p
   '''    let target = path''')
 
 # TRK-20: the number an ack reports is the rows it stamped.
-m('140-ackcountconst', '''            n = Int(store.changedRows())''', '''            n = 1''', count=3)
-m('141-ackthreadcount', '''            UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at=\'\')
+m('140-ackcountconst', '''            rc = r.rc; n = Int(r.changes)''', '''            rc = r.rc; n = 1''', count=3)
+m('141-ackthreadcount', '''            let r = store.runReporting("""
+            UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at=\'\')
               AND message_id IN (SELECT id FROM messages WHERE thread_id=?)
             """, [nowISO(), id, req.p("thread")])
-            n = Int(store.changedRows())''',
-  '''            UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at=\'\')
+            rc = r.rc; n = Int(r.changes)''',
+  '''            let r = store.runReporting("""
+            UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at=\'\')
               AND message_id IN (SELECT id FROM messages WHERE thread_id=?)
             """, [nowISO(), id, req.p("thread")])
+            rc = r.rc
             n = store.thread(req.p("thread")).count''')
 
 # TRK-21: a capped inbox says how many of how many it is showing, in both forms.
@@ -1000,6 +1003,29 @@ m('243-audit0029-healthzero',
   r'''    func countOrNil(_ sql: String) -> Int? {
         Int(scalar(sql)) ?? 0
     }''')
+
+# AUDIT #0036: an ack the store refused must not be answered. This is the pre-fix message-form branch:
+# `run` (whose -1 was ignored) followed by `changedRows()`.
+m('244-audit0036-ackunchecked',
+  r'''            let r = store.runReporting("""
+            UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=? AND (acked_at IS NULL OR acked_at='')
+            """, [nowISO(), id, req.p("message")])
+            rc = r.rc; n = Int(r.changes)''',
+  r'''            store.run("""
+            UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=? AND (acked_at IS NULL OR acked_at='')
+            """, [nowISO(), id, req.p("message")])
+            n = Int(store.changedRows())''')
+
+# AUDIT #0036: the same defect at the guard, for all three forms at once. A check that only covered
+# one branch would let a guard applied to that branch alone pass while the other two still answered
+# `ok acked 0` about mail they never stamped.
+m('245-audit0036-noguard',
+  r'''        guard rc == SQLITE_DONE else {
+            return (500, "error: the acknowledgement could not be stored — nothing was acknowledged\n")
+        }
+''',
+  r'''        _ = rc
+''')
 
 cli = open(os.path.join(fr, 'chatbox-cli.sh')).read()
 mcp = open(os.path.join(fr, 'chatbox-mcp.swift')).read()
