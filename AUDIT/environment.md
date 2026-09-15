@@ -54,6 +54,7 @@ node1 (already installed before this audit, verified by `command -v`), except wh
 | CodeQL | GitHub Actions `codeql.yml` (Swift, build-mode manual) | GitHub-hosted | CI | primary SAST |
 | Docker | 29.8.0 (build 88096ef005) | Docker Desktop (pre-existing) | node1 | disposable Linux toolchains (unused so far: no Linux work) |
 | llvm-cov | Homebrew LLVM 23.1.1 | `brew install llvm` (pre-existing) | node1 | Swift coverage |
+| actionlint | 1.7.12 | `brew install actionlint` (installed during the audit) | node1 | GitHub Actions workflow linter |
 | sqlite3 | macOS built-in | — | node1, node2 | schema/row inspection in the suite and audit |
 | curl, nc, openssl | macOS/Homebrew | — | node1, node2 | protocol tests, fixtures |
 
@@ -61,7 +62,7 @@ Re-install everything on a fresh Mac (documented in one line, per §1):
 
 ```sh
 xcode-select --install                                   # Swift 6.4 + SDK
-brew install swiftlint shellcheck gitleaks semgrep dash llvm
+brew install swiftlint shellcheck gitleaks semgrep dash llvm actionlint
 ```
 
 `swift-format` needs no install: it ships with the 6.4 CommandLineTools (`xcrun swift-format`).

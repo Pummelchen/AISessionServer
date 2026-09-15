@@ -48,7 +48,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0046](#0046) | S1 | M1 | `chatbox.swift:827` | Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender) | perf | **START** | node1 | phase-B/L5-performance |
 | [0047](#0047) | S1 | M4 | `tests/protocol.sh:1505` | --port and --stale-after silently fall back to defaults on an unusable value; no check | test | **START** | node1 | phase-B/L6-tests |
 | [0048](#0048) | S1 | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **START** | node1 | phase-B/L6-tests |
-| [0006](#0006) | S2 | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **START** | node1 | L0 |
+| [0006](#0006) | S2 | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **AUDIT** | node1 | L0 |
 | [0007](#0007) | S2 | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **START** | node1 | L0 swiftlint baseline |
 | [0008](#0008) | S2 | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **START** | node1 | L0 shellcheck baseline |
 | [0009](#0009) | S2 | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **START** | node1 | L0 shellcheck baseline |
@@ -651,9 +651,12 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / deps / M5
 - **Location:** `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60`
 - **Title:** CI actions are pinned to mutable tags, not commit SHAs
-- **Status:** START
+- **Status:** AUDIT
 - **Evidence (before):** uses: actions/checkout@v7, github/codeql-action/init@v4, github/codeql-action/analyze@v4
-- **Fix:** Pin each action to a full commit SHA with the tag in a comment; record the update procedure.
+- **Fix:** Pin every `uses:` to the commit SHA its release tag points at, keep the release in a trailing comment, and document the update procedure in the files themselves.
+- **Evidence (after):** TEST (gate): `actionlint` (1.7.12, installed for this) reports the two workflows clean; every pinned SHA was resolved from the tag through the GitHub API and dereferenced when the tag object was annotated — actions/checkout v7 -> 3d3c42e5aac5ba805825da76410c181273ba90b1 (also tagged v7.0.1), github/codeql-action v4 -> b96794f015dfd88f77b49b1c93e0fa7110f94c63 (also tagged v4.38.0) — and both workflows were then DISPATCHED onto the audit branch to prove the pins resolve and run: CI run 34989797751 **success** on c12e615, CodeQL run 34989800698 **success** on the same commit — so all three pinned SHAs (checkout, init, analyze) resolve and run. Pushing to `audit/2026-09-15` does not trigger the push/PR filters, which is why the dispatch path is the verification rather than a normal run.
+AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with the exact update command (`gh api repos/<owner>/<repo>/git/ref/tags/<tag> --jq .object.sha`, dereference when it is a tag object). The release is named in the trailing comment (v7.0.1 / v4.38.0) so a reader can see how old the pin is. No check weakened: nothing else in either workflow changed.
+- **Notes:** Rejected alternatives: (a) keep the moving major tag and add a Dependabot config - a bot updates on its own schedule and a repointed tag can be exploited before that; (b) pin to a fork or vendor the actions - unnecessary supply-chain surface for two well-known publishers; (c) do nothing because the workflow only reads the repository - the runner holds `GITHUB_TOKEN`, and `contents: read` limits but does not eliminate what a compromised action can do with the job's context.
 
 ### 0007
 
@@ -1281,4 +1284,5 @@ CONFIDENCE: high
 |---|---|---|---|
 | 2026-09-15 | `brew install dash` | second POSIX shell for `-n` checks (the suite targets `sh`; bash-3.2-in-POSIX-mode is the primary) | `brew uninstall dash-shell` |
 | 2026-09-15 | `git checkout -b audit/2026-09-15` (from `971faae`) | the brief requires all audit work on `audit/<date>`, never on main | `git branch -D audit/2026-09-15` while main is untouched |
+| 2026-09-15 | `brew install actionlint` | GitHub Actions workflow linter, used by task #0006 and Phase E | `brew uninstall actionlint` |
 

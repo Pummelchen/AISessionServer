@@ -11,6 +11,10 @@
 # build command. Swift extraction is macOS-only.
 name: CodeQL
 
+# Same pinning rule as ci.yml: a commit SHA with the release in the comment, never a moving tag. The
+# extraction step builds the same sources CI builds — both Swift binaries — so a finding in either is
+# reportable.
+
 on:
   push:
     branches: [main]
@@ -41,10 +45,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           languages: swift
           # No Package.swift here by design, so autobuild has nothing to find.
@@ -57,6 +61,6 @@ jobs:
         run: xcrun swiftc -O chatbox.swift -o chatbox
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           category: "/language:swift"

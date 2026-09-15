@@ -6,6 +6,12 @@
 # chatbox.swift lands against tests/protocol.sh.
 name: CI
 
+# Actions are pinned to a commit SHA, never to a moving tag: a tag can be repointed at any time by
+# whoever controls the action, and this workflow runs on a runner that holds the repository's token.
+# The release the SHA was taken from is in the trailing comment. To update one:
+#   gh api repos/actions/checkout/git/ref/tags/v7 --jq .object.sha   # (dereference if it is a tag object)
+# then replace the SHA and the comment together, and let the workflow run once before merging.
+
 on:
   push:
     branches: [main]
@@ -28,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Toolchain
         run: xcrun swiftc --version
