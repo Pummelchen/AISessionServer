@@ -12,6 +12,9 @@
 //        [--stale-after SECONDS]   (default 604800 = 7 days; 0 disables)
 //        With no token at all the board is OPEN to anyone who can reach the port.
 //
+// Federation, one hop, optional: --peer URL --peer-token SECRET [--server-id NAME] [--max-hops N]
+// forwards a message for a repo no session here claims to the peer board.
+//
 // Operator modes, which run and exit rather than listen:
 //   ./chatbox --db <path> --prune <days> [--prune-dry-run]
 //   ./chatbox --db <path> --backup <copy>       (copies a live board and verifies the copy)
@@ -148,7 +151,15 @@ func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
 }
 
 private func hasControlByte(_ s: String) -> Bool {
-    for scalar in s.unicodeScalars where scalar.value < 0x20 || scalar.value == 0x7F { return true }
+    // `CharacterSet.controlCharacters` is Cc *and* Cf, so this covers the C1 block and the Unicode
+    // *format* characters as well as the ASCII controls: the bidi overrides and isolates, the
+    // zero-width joiners, the BOM. Format characters are invisible and change no letter, so an id or
+    // a repo key containing one is a different key that looks identical — and the client deletes
+    // them from what it prints (TRK-29), so an echo of one is a lie either way.
+    for scalar in s.unicodeScalars
+    where scalar.value < 0x20 || scalar.value == 0x7F || CharacterSet.controlCharacters.contains(scalar) {
+        return true
+    }
     return false
 }
 
@@ -289,6 +300,18 @@ private func validId(_ id: String) -> Bool {
     return !hasControlByte(id)
 }
 
+/// A board id travels in a hop list, is read back through the same trimming every parameter gets,
+/// and is echoed into a thread as `(via …)`. So it is a name and nothing else: no whitespace *at all*
+/// (including the Unicode separators `CharacterSet.whitespaces` does not cover, which every parameter
+/// reader trims away — a board id that arrives empty is a message that looks like it came from a
+/// sender, and that is the one case a board forwards), no control or format characters, and no comma,
+/// which would split one board into two entries of the list.
+private func validBoardID(_ s: String) -> Bool {
+    if s.isEmpty || s.contains(",") { return false }
+    for scalar in s.unicodeScalars where scalar.properties.isWhitespace { return false }
+    return !hasControlByte(s)
+}
+
 /// Echoing a rejected value back is useful; echoing its line breaks is not, because
 /// the message is printed by clients and read by whatever is driving them.
 private func oneLine(_ s: String) -> String {
@@ -386,7 +409,8 @@ final class Store: @unchecked Sendable {
         exec("""
         CREATE TABLE IF NOT EXISTS messages (
           id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id INTEGER, created_at TEXT,
-          sender TEXT, repo TEXT, subject TEXT, body TEXT, reply_to INTEGER, recipients TEXT);
+          sender TEXT, repo TEXT, subject TEXT, body TEXT, reply_to INTEGER, recipients TEXT,
+          origin TEXT);
         """)
         exec("""
         CREATE TABLE IF NOT EXISTS deliveries (
@@ -402,6 +426,11 @@ final class Store: @unchecked Sendable {
           id TEXT PRIMARY KEY, hash TEXT NOT NULL, node TEXT, namespaces TEXT,
           note TEXT, created_at TEXT, last_used TEXT, revoked_at TEXT, expires_at TEXT);
         """)
+        // Where a message came from, when the request named a relayer: the first entry of its hop
+        // list. NULL for every message this board accepted from a sender. It is a *claim* — the
+        // same standing as `from`, recorded as told, not verified — and what the server actually
+        // guarantees about a hop list is the negative: a message carrying one is never passed on.
+        addColumn("messages", "origin", "TEXT")
         // A delivery remembers the recipient's machine as it was when the message was sent. The
         // backfill fills it in for rows written before the column existed — once, with the empty
         // string for a recipient that had no machine, so a later registration cannot inherit it.
@@ -763,7 +792,7 @@ final class Store: @unchecked Sendable {
     func deliveries(forAgent agent: String, includeAcked: Bool) -> [[String: String]] {
         let sql = """
         SELECT m.id AS id, m.thread_id AS thread, m.created_at AS at, m.sender AS sender,
-               m.repo AS repo, m.subject AS subject, m.body AS body,
+               m.repo AS repo, m.subject AS subject, m.body AS body, m.origin AS origin,
                d.acked_at AS acked
         FROM deliveries d JOIN messages m ON m.id = d.message_id
         WHERE d.agent = ? \(includeAcked ? "" : "AND (d.acked_at IS NULL OR d.acked_at = '')")
@@ -827,7 +856,7 @@ final class Store: @unchecked Sendable {
 
     func thread(_ id: String) -> [[String: String]] {
         rows("""
-        SELECT id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients
+        SELECT id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients, origin
         FROM messages WHERE thread_id = ? ORDER BY id ASC
         """, [id])
     }
@@ -838,7 +867,7 @@ final class Store: @unchecked Sendable {
     func threadPage(_ id: String, limit: Int) -> [[String: String]] {
         rows("""
         SELECT * FROM (
-          SELECT id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients
+          SELECT id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients, origin
           FROM messages WHERE thread_id = ? ORDER BY id DESC LIMIT \(limit)
         ) ORDER BY id ASC
         """, [id])
@@ -891,6 +920,63 @@ private func parseForm(_ s: String) -> [String: String] {
     return out
 }
 
+/// Form encoding of one field, for the body of a forward. `URLComponents`' query items leave `+`
+/// alone, and the receiver decodes `+` as a space — which is what form encoding says it should do —
+/// so a message containing `+` sent that way would arrive with a space in it. Everything outside
+/// the unreserved set is escaped here instead.
+private func formEncode(_ s: String) -> String {
+    var out = ""
+    for byte in Array(s.utf8) {
+        switch byte {
+        case 0x41...0x5A, 0x61...0x7A, 0x30...0x39, 0x2D, 0x2E, 0x5F, 0x7E:
+            out.append(Character(UnicodeScalar(byte)))
+        default:
+            out += String(format: "%%%02X", byte)
+        }
+    }
+    return out
+}
+
+/// Swallows redirects for the forward session. `URLSession` follows them by default, so a peer
+/// behind an http→https redirect would answer this board's `POST` with a `GET` somewhere else, and a
+/// final 2xx is what this board reports as `forwarded_to … (ok)` — a silent loss announced as a
+/// delivery. With the redirect refused, the 3xx comes back as the answer it is.
+final class NoForwardRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
+/// A message that is stored here and still has to be told to the peer, because the repo it names
+/// has no owner on this board. Built by `message` — which is the only place that knows the send was
+/// accepted — and carried out by `forwardMessage` off the serial queue.
+struct ForwardPlan {
+    var from: String
+    var repo: String
+    var subject: String
+    var body: String
+    /// The row this message got here, so the log line names something an operator can look up.
+    var msgID: Int64
+}
+
+/// One route's answer. `forward` is set only by `POST /message`, and only when the message was
+/// stored here *and* a peer still has to be told about it. The answer is owed either way; it is
+/// just sent after the peer has answered rather than while it is being asked.
+struct Reply {
+    var status: Int
+    var body: String
+    var forward: ForwardPlan?
+
+    init(_ status: Int, _ body: String, forward: ForwardPlan? = nil) {
+        self.status = status
+        self.body = body
+        self.forward = forward
+    }
+}
+
 // MARK: - Server
 
 final class Chatbox: @unchecked Sendable {
@@ -919,10 +1005,30 @@ final class Chatbox: @unchecked Sendable {
     /// The most rows one listing may return — thread messages, the registry, the credential list.
     /// The inbox has its own window because it is a mail queue rather than a listing.
     let maxRows: Int
+    /// This board's name. It goes into the hop list of every message this board forwards, so the
+    /// peer can tell a message it accepted from a sender from one that has already been relayed.
+    let serverID: String
+    /// The one peer this board forwards to, as a base URL with no trailing slash, and the credential
+    /// it presents there. Empty when federation is off, which is the default.
+    let peerURL: String
+    let peerToken: String
+    /// The longest hop list this board will accept. A forward always carries exactly one id per
+    /// board it has passed through and a board never forwards a message that already has one, so
+    /// this bound exists only because the list arrives as untrusted input.
+    let maxHops: Int
     let queue = DispatchQueue(label: "chatbox.queue")
+    /// Forwards run here, not on `queue`. A peer that is slow or gone must not hold up the board,
+    /// and the sender is still owed the peer's answer — so the answer waits on this queue while
+    /// every other request is served. Serial, so two forwards for the same repo reach the peer in
+    /// the order the sends were handled.
+    let forwardQueue = DispatchQueue(label: "chatbox.forward")
+    /// The session a forward goes out on: a redirect is refused rather than followed, so the answer
+    /// this board reports is the peer's own.
+    private let forwardSession: URLSession
 
     init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool, maxBody: Int,
-         idleTimeout: Int, maxConnections: Int, maxRows: Int) {
+         idleTimeout: Int, maxConnections: Int, maxRows: Int, serverID: String,
+         peerURL: String, peerToken: String, maxHops: Int) {
         self.store = store
         self.token = token
         self.staleAfter = staleAfter
@@ -931,6 +1037,12 @@ final class Chatbox: @unchecked Sendable {
         self.idleTimeout = idleTimeout
         self.maxConnections = maxConnections
         self.maxRows = maxRows
+        self.serverID = serverID
+        self.peerURL = peerURL
+        self.peerToken = peerToken
+        self.maxHops = maxHops
+        self.forwardSession = URLSession(configuration: .ephemeral,
+                                         delegate: NoForwardRedirects(), delegateQueue: nil)
     }
 
     /// Connections that have been accepted and not yet finished. Kept as identities rather than a
@@ -1082,25 +1194,44 @@ final class Chatbox: @unchecked Sendable {
             respond(conn, status: 200, body: uiPage(), contentType: "text/html; charset=utf-8")
             return
         }
-        let (status, body) = handle(req, who)
-        finish(req, conn: conn, status: status, body: body)
+        let answer = handle(req, who)
+        if let plan = answer.forward {
+            // The message is stored, and a peer still has to be told. The forward runs off the
+            // serial queue so a peer that is slow, unreachable, or this board itself cannot hold up
+            // every other request, and the sender is answered with what actually happened rather
+            // than a guess. The connection stays open until then, exactly as the long-poll path
+            // keeps one — the accept deadline was cancelled when the request arrived.
+            let base = answer.body
+            forwardQueue.async {
+                let note = self.forwardMessage(plan)
+                self.queue.async {
+                    self.finish(req, conn: conn, status: answer.status, body: base + note)
+                }
+            }
+            return
+        }
+        finish(req, conn: conn, status: answer.status, body: answer.body)
     }
 
-    func handle(_ req: Request, _ who: Principal) -> (Int, String) {
+    /// The plain `(status, body)` a handler returns, as a `Reply`. Only `message` ever sets
+    /// `forward`, and every other route goes through here so the routing table stays one shape.
+    private func reply(_ out: (Int, String)) -> Reply { Reply(out.0, out.1) }
+
+    func handle(_ req: Request, _ who: Principal) -> Reply {
         switch (req.method, req.path) {
-        case ("GET", "/"), ("GET", "/help"): return (200, usage(Self.publicURL))
-        case ("GET", "/health"): return (200, health())
-        case ("POST", "/register"): return register(req, who)
+        case ("GET", "/"), ("GET", "/help"): return Reply(200, usage(Self.publicURL))
+        case ("GET", "/health"): return Reply(200, health())
+        case ("POST", "/register"): return reply(register(req, who))
         case ("POST", "/message"), ("POST", "/say"): return message(req, who)
-        case ("GET", "/inbox"): return inbox(req, who)
-        case ("GET", "/thread"): return showThread(req, who)
-        case ("GET", "/threads"): return listThreads(req, who)
-        case ("POST", "/ack"): return ack(req, who)
-        case ("GET", "/peers"): return peers(req, who)
-        case ("POST", "/token"): return createToken(req, who)
-        case ("GET", "/token"): return listTokens(req, who)
-        case ("POST", "/token/revoke"): return revokeToken(req, who)
-        default: return (404, "not found: \(req.method) \(req.path)\n\n" + usage(Self.publicURL))
+        case ("GET", "/inbox"): return reply(inbox(req, who))
+        case ("GET", "/thread"): return reply(showThread(req, who))
+        case ("GET", "/threads"): return reply(listThreads(req, who))
+        case ("POST", "/ack"): return reply(ack(req, who))
+        case ("GET", "/peers"): return reply(peers(req, who))
+        case ("POST", "/token"): return reply(createToken(req, who))
+        case ("GET", "/token"): return reply(listTokens(req, who))
+        case ("POST", "/token/revoke"): return reply(revokeToken(req, who))
+        default: return Reply(404, "not found: \(req.method) \(req.path)\n\n" + usage(Self.publicURL))
         }
     }
 
@@ -1131,6 +1262,15 @@ final class Chatbox: @unchecked Sendable {
         and may only claim repos inside its namespaces. It can still send to any
         repo, which is the point: "whoever owns <repo>, I have a bug to discuss".
 
+        Federation — one hop, when started with --peer <url> [--peer-token <secret>]:
+          A message for a repo nobody on this board claims is forwarded to the peer, which
+          stores it under a thread of its own; the response says forwarded_to: or why not.
+          A forwarded request carries &hop=<board[,board...]>, and a board never forwards a
+          message that already has one, so a loop cannot form. --server-id names this board,
+          and --max-hops (default 4) bounds the hop list an incoming forward may carry.
+          The peer credential should be the peer's bootstrap credential: a scoped one may
+          forward only its own machine's sessions, and its refusal is reported.
+
         Bodies accept JSON or form-encoding, or plain text: curl -d 'text' '\(url)/say?from=x&repo=y'
         Add &json=1 to any GET for structured output. Auth: ?token=<secret> (or Authorization: Bearer).
         """
@@ -1143,7 +1283,10 @@ final class Chatbox: @unchecked Sendable {
         let presence = staleAfter == 0 ? "off" : "stale after \(humanSeconds(staleAfter))"
         let transport = tlsEnabled ? "tls" : "plain http"
         let idle = idleTimeout == 0 ? "no idle deadline" : "\(idleTimeout)s idle deadline"
-        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nconnections: up to \(maxConnections), \(idle)\nnow: \(nowISO())\n"
+        // The board's own name is reported whether or not it forwards: it is the name a peer shows
+        // in `(via …)` on a forwarded message, and an operator comparing two boards needs it.
+        let peer = peerURL.isEmpty ? "none" : peerURL
+        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nconnections: up to \(maxConnections), \(idle)\npeer: \(peer) (this board is \(serverID), accepts up to \(maxHops) hops)\nnow: \(nowISO())\n"
     }
 
     func register(_ req: Request, _ who: Principal) -> (Int, String) {
@@ -1252,11 +1395,11 @@ final class Chatbox: @unchecked Sendable {
         """)
     }
 
-    func message(_ req: Request, _ who: Principal) -> (Int, String) {
+    func message(_ req: Request, _ who: Principal) -> Reply {
         let from = req.p("from").isEmpty ? req.p("id") : req.p("from")
-        guard !from.isEmpty else { return (400, "error: from required\n") }
-        guard validId(from) else { return (400, "error: from must be a single line, without control characters\n") }
-        if let rejection = mayAct(as: from, who) { return rejection }
+        guard !from.isEmpty else { return Reply(400, "error: from required\n") }
+        guard validId(from) else { return Reply(400, "error: from must be a single line, without control characters\n") }
+        if let rejection = mayAct(as: from, who) { return Reply(rejection.0, rejection.1) }
         var body = req.p("body")
         if body.isEmpty { body = req.p("text") }
         if body.isEmpty { body = req.p("message") }
@@ -1264,20 +1407,51 @@ final class Chatbox: @unchecked Sendable {
         let repo = req.p("repo")
         let threadIn = req.p("thread")
         let toExplicit = req.p("to")
-        guard !body.isEmpty || !subject.isEmpty else { return (400, "error: body (or text) required\n") }
+        // The boards this message has already passed through, oldest first. It is empty when the
+        // message came from a sender here, and that is the only case this board ever forwards.
+        // A hop list is untrusted input: an id that is not a one-line id is refused, an empty entry
+        // is refused (a list is `a,b`, never `a,`), and so is a list longer than --max-hops.
+        //
+        // An absent parameter and an empty one both mean "no boards", which is why the split only
+        // runs when there is something to split — and why it keeps empty entries: `split` drops
+        // them by default, so `a,` would have arrived as the one-board list `a` and the rule below
+        // could never fire. Measured: it did not, until this said so.
+        var hops: [String] = []
+        // Read raw, not through `p()`. That trims `.whitespacesAndNewlines`, so a board id made of a
+        // character `.whitespaces` leaves alone (U+2028, U+2029) would arrive here as an empty
+        // parameter: this board would see "no hops", treat a relayed message as one it accepted from
+        // a sender, and pass it on. Measured: a U+2028 `--server-id` relayed a message across three
+        // boards, and two mutually-peered boards looped without bound.
+        let hopRaw = req.params["hop"] ?? ""
+        if !hopRaw.isEmpty {
+            for one in hopRaw.split(separator: ",", omittingEmptySubsequences: false) {
+                let hop = one.trimmingCharacters(in: .whitespaces)
+                guard !hop.isEmpty else {
+                    return Reply(400, "error: hop names boards, one per entry — an empty entry is not a board\n")
+                }
+                guard validBoardID(hop) else {
+                    return Reply(400, "error: hop must name boards — a board id is one line, with no whitespace, control or format characters\n")
+                }
+                hops.append(hop)
+            }
+        }
+        guard hops.count <= maxHops else {
+            return Reply(400, "error: hop names \(hops.count) boards — the limit here is \(maxHops)\n")
+        }
+        guard !body.isEmpty || !subject.isEmpty else { return Reply(400, "error: body (or text) required\n") }
         // Register has always refused a malformed key; the send path did not, so a key
         // could be stored on a thread and then echoed back by every later reply.
         var canonicalRepo = ""
         if !repo.isEmpty {
             guard let key = canonicalRepoKey(repo) else {
-                return (400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
+                return Reply(400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
             }
             canonicalRepo = key
         }
         for one in toExplicit.split(separator: ",") {
             let t = one.trimmingCharacters(in: .whitespaces)
             if t.isEmpty { continue }
-            guard validId(t) else { return (400, "error: to must name ids that are single lines, without control characters\n") }
+            guard validId(t) else { return Reply(400, "error: to must name ids that are single lines, without control characters\n") }
         }
 
         // `reply_to` is informational, but it is stored in an integer column: a value
@@ -1288,7 +1462,7 @@ final class Chatbox: @unchecked Sendable {
         var replyTo: Int64 = 0
         if !replyToIn.isEmpty {
             guard let r = Int64(replyToIn), r >= 0 else {
-                return (400, "error: reply_to must be a message id, not '\(oneLine(replyToIn))'\n")
+                return Reply(400, "error: reply_to must be a message id, not '\(oneLine(replyToIn))'\n")
             }
             replyTo = r
         }
@@ -1307,13 +1481,13 @@ final class Chatbox: @unchecked Sendable {
                                  [effRepo, subject, nowISO(), from, nowISO()])
         } else {
             guard let t = Int64(threadIn), t > 0 else {
-                return (400, "error: thread must be a positive integer, not '\(oneLine(threadIn))'\n")
+                return Reply(400, "error: thread must be a positive integer, not '\(oneLine(threadIn))'\n")
             }
             // A reply is a *join*. Without this, read scoping is decorative: a credential could
             // name any sequential thread id, post a line into it, and read the whole history it
             // just joined — and the refusal would still tell it who the participants are.
             if !who.isBootstrap, !store.node(who.node, participatesIn: String(t)) {
-                return (403, "forbidden: this credential may reply only to a conversation its machine takes part in\n")
+                return Reply(403, "forbidden: this credential may reply only to a conversation its machine takes part in\n")
             }
             threadId = t
             // a reply inherits the thread's repo so routing stays consistent
@@ -1322,7 +1496,7 @@ final class Chatbox: @unchecked Sendable {
             // way to echo that key back: it is dropped rather than repeated.
             if !effRepo.isEmpty { effRepo = canonicalRepoKey(effRepo) ?? "" }
         }
-        guard threadId > 0 else { return (500, "error: could not open thread\n") }
+        guard threadId > 0 else { return Reply(500, "error: could not open thread\n") }
 
         // resolve recipients: explicit, else thread participants plus the repo's owners
         var recipients: [String] = []
@@ -1353,9 +1527,9 @@ final class Chatbox: @unchecked Sendable {
         // nobody can reach. A reply into a thread that is not there stores nothing at
         // all — no message, no delivery, and not even the sender's liveness stamp.
         let attempt = store.runReporting("""
-        INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,reply_to,recipients)
-        SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM threads WHERE id=?)
-        """, [String(threadId), nowISO(), from, effRepo, subject, body, replyTo == 0 ? nil : String(replyTo), recipients.joined(separator: ","), String(threadId)])
+        INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,reply_to,recipients,origin)
+        SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM threads WHERE id=?)
+        """, [String(threadId), nowISO(), from, effRepo, subject, body, replyTo == 0 ? nil : String(replyTo), recipients.joined(separator: ","), hops.first, String(threadId)])
         let msgId = attempt.id
         if attempt.changes == 0 {
             // Nothing was stored, and there are two reasons for that. A statement that *failed* —
@@ -1365,9 +1539,9 @@ final class Chatbox: @unchecked Sendable {
             // gone, which is the case answering 404 protects.
             if attempt.rc != SQLITE_DONE {
                 FileHandle.standardError.write("chatbox: the message insert failed: \(store.lastError())\n".data(using: .utf8)!)
-                return (500, "error: the message could not be stored — nothing was written\n")
+                return Reply(500, "error: the message could not be stored — nothing was written\n")
             }
-            return (404, "error: no thread \(threadId) — send without thread= to open one\n")
+            return Reply(404, "error: no thread \(threadId) — send without thread= to open one\n")
         }
 
         // keep the sender's liveness fresh, once the message is known to be stored
@@ -1407,6 +1581,30 @@ final class Chatbox: @unchecked Sendable {
             unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r
         }.joined(separator: ", ")
 
+        // TRK-17: one hop to the configured peer, for a message this board accepted from a sender
+        // and cannot route — the repo has no owner here, which is the case the note below already
+        // describes as "nobody has registered as an owner". Decided *after* the local store
+        // committed, so a peer that is down cannot cost the local board its own copy.
+        //
+        // A message that arrived from another board is stored and not passed on. That is what makes
+        // a loop impossible rather than merely unlikely: a board forwards only what it accepted
+        // from a sender, so a forwarded message can never be forwarded again, here or anywhere else.
+        //
+        // Two things are deliberately not forwarded. A message addressed with `to=` is local
+        // routing, and a reply names a conversation the peer does not have — forwarding it would
+        // open a fresh thread there for every follow-up and split the conversation in two silently.
+        var forwardNote = ""
+        var plan: ForwardPlan? = nil
+        if !peerURL.isEmpty, !effRepo.isEmpty, threadIn.isEmpty, toExplicit.isEmpty,
+           store.owners(ofRepo: effRepo).isEmpty {
+            if hops.isEmpty {
+                plan = ForwardPlan(from: from, repo: effRepo, subject: subject, body: body,
+                                   msgID: msgId)
+            } else {
+                forwardNote = "forward: not sent — this message came from another board (\(hops.joined(separator: ",")))\n"
+            }
+        }
+
         var note = ""
         if recipients.isEmpty {
             note = effRepo.isEmpty
@@ -1436,15 +1634,15 @@ final class Chatbox: @unchecked Sendable {
                           + (unseen.count == 1 ? "that session" : "those sessions") + "\n")
             }
         }
-        return (200, """
+        return Reply(200, """
         ok posted
         message: \(msgId)
         thread: \(threadId)
         repo: \(effRepo.isEmpty ? "-" : effRepo)
         delivered_to: \(recipients.isEmpty ? "(nobody)" : deliveredTo)
         at: \(nowISO())
-        \(note)
-        """)
+        \(note)\(forwardNote)
+        """, forward: plan)
     }
 
     func inbox(_ req: Request, _ who: Principal) -> (Int, String) {
@@ -1486,13 +1684,99 @@ final class Chatbox: @unchecked Sendable {
         for r in rows {
             let unread = (r["acked"] ?? "").isEmpty
             out += "\n[\(r["id"] ?? "")]\(unread ? " UNREAD" : " read  ") thread \(r["thread"] ?? "")  \(r["at"] ?? "")\n"
-            out += "  from: \(r["sender"] ?? "")   repo: \((r["repo"] ?? "").isEmpty ? "-" : r["repo"]!)\n"
+            // A forwarded message is marked here as well as in the thread view: the inbox is the
+            // path a session actually reads, and "from: mac3-dsh" alone cannot tell a report from
+            // the board next door apart from one written here.
+            let via = (r["origin"] ?? "").isEmpty ? "" : " (via \(r["origin"]!))"
+            out += "  from: \(r["sender"] ?? "")\(via)   repo: \((r["repo"] ?? "").isEmpty ? "-" : r["repo"]!)\n"
             if !(r["subject"] ?? "").isEmpty { out += "  subject: \(r["subject"]!)\n" }
             let b = r["body"] ?? ""
             out += "  body: \(b.count > 1200 ? String(b.prefix(1200)) + " …[truncated]" : b)\n"
         }
         out += "\nread a thread: GET /thread?id=<thread>   ·   mark read: POST /ack?id=\(id)&message=<id>\n"
         return out
+    }
+
+    /// Tell the peer about one message. It is attributed to the original sender and carries this
+    /// board's id as its hop list, so the peer stores it as a message that has already been through
+    /// a board — and therefore never passes it on.
+    ///
+    /// The answer the sender gets is the peer's own: a board that is open, or that holds a bootstrap
+    /// credential for the peer, accepts it; a peer whose credential is *scoped* refuses it with 403,
+    /// because a scoped credential may only act as its own machine's sessions. That refusal is
+    /// reported rather than hidden — a peer relationship is one operator trusting another, which is
+    /// what a bootstrap credential already means.
+    ///
+    /// The fields travel as a form-encoded body rather than in the query string, because a body is
+    /// where a message belongs and a long one does not have to fit in a URL. Form encoding still
+    /// inflates the reserved characters — `&` and `=` and anything outside `[A-Za-z0-9-._~]` become
+    /// three bytes each — so a message near the peer's own `--max-body` can still be refused there.
+    /// That refusal is reported, like every other one.
+    ///
+    /// The outcome goes to the log as well as to the sender. The response is read once, by whoever
+    /// sent the report; the log is what an operator reads days later, when the question is "did that
+    /// ever reach the other board" — and "there is nothing in the log" is not an answer.
+    private func forwardMessage(_ plan: ForwardPlan) -> String {
+        let note = performForward(plan)
+        let why = note.split(separator: "\n").first.map(String.init) ?? note
+        let line = note.hasPrefix("forwarded_to:")
+            ? "chatbox: message \(plan.msgID) forwarded to \(peerURL)\n"
+            : "chatbox: message \(plan.msgID) could not be forwarded to \(peerURL): \(why)\n"
+        FileHandle.standardError.write(line.data(using: .utf8)!)
+        return note
+    }
+
+    /// The request itself, so that the reporting above is in exactly one place and a test can pin
+    /// the log line without pinning the wording of every failure.
+    private func performForward(_ plan: ForwardPlan) -> String {
+        guard var comps = URLComponents(string: peerURL + "/message") else {
+            return "forward failed: \(peerURL) is not a usable URL\nthe message is stored here\n"
+        }
+        comps.query = nil
+        guard let url = comps.url else {
+            return "forward failed: \(peerURL) is not a usable URL\nthe message is stored here\n"
+        }
+        let fields = [("from", plan.from), ("repo", plan.repo), ("subject", plan.subject),
+                      ("body", plan.body), ("hop", serverID)]
+        let encoded = fields.map { "\(formEncode($0.0))=\(formEncode($0.1))" }.joined(separator: "&")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        req.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        if !peerToken.isEmpty { req.setValue("Bearer \(peerToken)", forHTTPHeaderField: "Authorization") }
+        req.httpBody = Data(encoded.utf8)
+        let sem = DispatchSemaphore(value: 0)
+        var status = 0
+        var answer = ""
+        var redirectedTo = ""
+        let task = forwardSession.dataTask(with: req) { data, response, error in
+            if let http = response as? HTTPURLResponse {
+                status = http.statusCode
+                redirectedTo = http.value(forHTTPHeaderField: "Location") ?? ""
+            }
+            if let data = data, let text = String(data: data, encoding: .utf8) { answer = text }
+            if let error = error { answer = "error: \(error.localizedDescription)" }
+            sem.signal()
+        }
+        task.resume()
+        if sem.wait(timeout: .now() + 12) == .timedOut {
+            task.cancel()
+            return "forward failed: \(peerURL) did not answer within 10s\nthe message is stored here; the peer can be retried by hand\n"
+        }
+        // A redirect is not a delivery, and this board does not follow one: a peer that moved is
+        // named rather than guessed at, because the alternative is a 2xx somewhere else reported as
+        // "forwarded".
+        if status >= 300 && status < 400 {
+            let landed = redirectedTo.isEmpty ? "an address it did not name" : oneLine(redirectedTo)
+            return "forward failed: \(peerURL) answered \(status) — it redirected to \(landed); point --peer at the board itself\nthe message is stored here; the peer can be retried by hand\n"
+        }
+        if status >= 200 && status < 300 { return "forwarded_to: \(peerURL) (ok)\n" }
+        let why = answer.split(separator: "\n").first.map(String.init) ?? "no answer"
+        // A transport failure has no status to report, and printing "0" for one would read like a
+        // response code. The peer's first line is text this board did not write and it ends up in a
+        // response a client prints, so it goes through the same one-line treatment as every echo.
+        let said = status == 0 ? "— " : "answered \(status) — "
+        return "forward failed: \(peerURL) \(said)\(oneLine(why))\nthe message is stored here; the peer can be retried by hand\n"
     }
 
     // ---------- read-only web view ----------
@@ -1792,7 +2076,8 @@ final class Chatbox: @unchecked Sendable {
                 + " — raise --max-rows to read further back\n"
         }
         for r in rows {
-            out += "\n--- [\(r["id"] ?? "")] \(r["created_at"] ?? "")  \(r["sender"] ?? "") → \((r["recipients"] ?? "").isEmpty ? "(nobody)" : r["recipients"]!)\n"
+            let via = (r["origin"] ?? "").isEmpty ? "" : "  (via \(r["origin"]!))"
+            out += "\n--- [\(r["id"] ?? "")] \(r["created_at"] ?? "")  \(r["sender"] ?? "") → \((r["recipients"] ?? "").isEmpty ? "(nobody)" : r["recipients"]!)\(via)\n"
             if !(r["subject"] ?? "").isEmpty, r["id"] == rows.first?["id"] { out += "subject: \(r["subject"]!)\n" }
             if let rt = r["reply_to"], !rt.isEmpty, rt != "0" { out += "(reply to \(rt))\n" }
             out += "\(r["body"] ?? "")\n"
@@ -2305,7 +2590,8 @@ final class Chatbox: @unchecked Sendable {
 let valueFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--stale-after",
                               "--max-body", "--tls-identity", "--tls-password-file", "--prune",
                               "--backup", "--verify-backup", "--idle-timeout", "--max-connections",
-                              "--max-rows"]
+                              "--max-rows", "--server-id", "--peer", "--peer-token",
+                              "--max-hops"]
 /// Flags that are their own value. A boolean flag at the end of the line is complete, and one
 /// that is handed a value is a mistake worth naming.
 let boolFlags: Set<String> = ["--prune-dry-run"]
@@ -2751,6 +3037,95 @@ if maxRowsValue < 1 || maxRowsValue > 1000000 {
 }
 let maxRows = maxRowsValue
 
+// Federation (TRK-17): one hop to one peer. `--server-id` is the name this board stamps into every
+// hop list it writes and the default is the machine's own name, so a board that never federates
+// still has an identity to report. A peer URL that cannot be used, or a peer credential with
+// nowhere to go, is a configuration that promises forwarding and does none — refused at startup,
+// like the bounds above, rather than discovered when a report goes missing.
+let serverIDRaw = argValue("--server-id", Host.current().name ?? "chatbox")
+let serverID = serverIDRaw
+// The machine's own name is held to the same rule as a given one, and it is refused rather than
+// repaired: a board id that is silently altered is one the operator did not choose, and the error
+// names the flag that fixes it. There is no trimming here on purpose — a leading or trailing space
+// is exactly the shape that would arrive empty on the peer.
+if !validBoardID(serverID) {
+    FileHandle.standardError.write("chatbox: --server-id must be a name with no whitespace, control or format characters and no comma — got '\(oneLine(serverIDRaw))'\n".data(using: .utf8)!)
+    exit(2)
+}
+let peerRaw = argValue("--peer", "")
+var peerURL = ""
+if !peerRaw.isEmpty {
+    guard var comps = URLComponents(string: peerRaw),
+          let scheme = comps.scheme?.lowercased(), scheme == "http" || scheme == "https",
+          let host = comps.host, !host.isEmpty else {
+        FileHandle.standardError.write("chatbox: --peer must be an http(s) URL naming a board — got '\(oneLine(peerRaw))'\n".data(using: .utf8)!)
+        exit(2)
+    }
+    // A peer is a board, not a request: a query or a fragment cannot mean anything here, and
+    // keeping one would put it in the middle of every forwarded URL rather than at the end.
+    if comps.query != nil || comps.fragment != nil {
+        FileHandle.standardError.write("chatbox: --peer names a board, not a request — drop the query or fragment from '\(oneLine(peerRaw))'\n".data(using: .utf8)!)
+        exit(2)
+    }
+    // Credentials in the URL are refused because the peer URL is *echoed*: /health prints it for
+    // any credential to read, and so does every answer that names the peer. `--peer-token` exists
+    // for the secret, and it is not printed.
+    if comps.user != nil || comps.password != nil {
+        FileHandle.standardError.write("chatbox: --peer must not carry credentials — they would be printed by /health; use --peer-token\n".data(using: .utf8)!)
+        exit(2)
+    }
+    if let peerPort = comps.port, peerPort < 1 || peerPort > 65535 {
+        FileHandle.standardError.write("chatbox: --peer must name a port between 1 and 65535 — got '\(peerPort)'\n".data(using: .utf8)!)
+        exit(2)
+    }
+    // Stored without a trailing slash, so appending "/message" cannot double it.
+    while comps.path.hasSuffix("/") { comps.path.removeLast() }
+    guard let normalized = comps.string else {
+        FileHandle.standardError.write("chatbox: --peer is not a usable URL — got '\(oneLine(peerRaw))'\n".data(using: .utf8)!)
+        exit(2)
+    }
+    peerURL = normalized
+}
+if argPresent("--peer") && peerURL.isEmpty {
+    FileHandle.standardError.write("chatbox: --peer needs a board URL — refusing to start with a peer that names nothing\n".data(using: .utf8)!)
+    exit(2)
+}
+let peerToken = argValue("--peer-token", "")
+if peerURL.isEmpty && !peerToken.isEmpty {
+    FileHandle.standardError.write("chatbox: --peer-token means nothing without --peer\n".data(using: .utf8)!)
+    exit(2)
+}
+// A token with a line break in it was silently dropped by the HTTP layer, so the forward went out
+// unauthenticated and was answered 401 — a misconfiguration reported as a peer problem. Refused
+// where the operator can see it instead.
+if !peerToken.isEmpty && hasControlByte(peerToken) {
+    FileHandle.standardError.write("chatbox: --peer-token must be one line, without control characters\n".data(using: .utf8)!)
+    exit(2)
+}
+// A peer that is this board cannot be forwarded to: the request would arrive here while this board
+// waits for its own answer, and the message would be stored a second time. Detected by port *and* a
+// local address, so two boards on different machines that both use 8787 are not confused for one.
+if !peerURL.isEmpty, let peerComps = URLComponents(string: peerURL) {
+    let peerPort = peerComps.port ?? ((peerComps.scheme ?? "") == "https" ? 443 : 80)
+    var selfHosts: Set<String> = ["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]
+    if let own = Host.current().name?.lowercased() {
+        selfHosts.insert(own)
+        if let short = own.split(separator: ".").first { selfHosts.insert(String(short)) }
+    }
+    for address in Host.current().addresses { selfHosts.insert(address.lowercased()) }
+    if peerPort == Int(port), selfHosts.contains((peerComps.host ?? "").lowercased()) {
+        FileHandle.standardError.write("chatbox: --peer names this board (port \(port)) — a forward would be a duplicate, not a delivery\n".data(using: .utf8)!)
+        exit(2)
+    }
+}
+let maxHopsRaw = argValue("--max-hops", "4")
+let maxHopsValue = Int(maxHopsRaw) ?? 0
+if maxHopsValue < 1 || maxHopsValue > 64 {
+    FileHandle.standardError.write("chatbox: --max-hops must be between 1 and 64 — got '\(maxHopsRaw)'\n".data(using: .utf8)!)
+    exit(2)
+}
+let maxHops = maxHopsValue
+
 // TLS is opt-in, because turning it on changes the URL every client has to use.
 // Everything about it fails closed: a password without an identity, an unreadable
 // password file, an identity that will not open — each one stops the server rather
@@ -2797,7 +3172,8 @@ if !tlsIdentityPath.isEmpty {
 
 let server = Chatbox(store: store, token: token, staleAfter: staleAfter,
                      tlsEnabled: tlsIdentity != nil, maxBody: maxBody,
-                     idleTimeout: idleTimeout, maxConnections: maxConnections, maxRows: maxRows)
+                     idleTimeout: idleTimeout, maxConnections: maxConnections, maxRows: maxRows,
+                     serverID: serverID, peerURL: peerURL, peerToken: peerToken, maxHops: maxHops)
 let scheme = tlsIdentity == nil ? "http" : "https"
 Chatbox.publicURL = "\(scheme)://\(Host.current().name ?? "localhost"):\(port)"
 
@@ -2836,6 +3212,7 @@ let boardIsOpen = token == nil || token == "open"
 print("auth: \(boardIsOpen ? "OPEN (no token)" : "token required")")
 let idleBanner = idleTimeout == 0 ? "no idle deadline" : "\(idleTimeout)s idle deadline"
 print("bounds: \(maxRows) rows per listing, \(maxConnections) connections, \(idleBanner)")
+print("federation: \(peerURL.isEmpty ? "off — this board is '\(serverID)' and forwards nothing" : "forwarding to \(peerURL) as '\(serverID)', at most \(maxHops) hops accepted")")
         print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")
         print("transport: \(tlsIdentity == nil ? "plain HTTP — the token crosses the network in the clear" : "TLS")")
         print("max request: \(maxBody) bytes")
