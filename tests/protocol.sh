@@ -3546,6 +3546,65 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 29. A credential reads its own conversations (TRK-27)
+# A scoped credential is bound to one machine, and sessions on one machine share an OS user and a
+# filesystem — so the machine is the confidentiality boundary. Before this, a credential could read
+# every thread and the whole registry: the allowlist protected *claims*, not anything else, and a
+# compromised machine exposed the entire board's history. Now `thread`, `threads` and `peers` answer
+# only for the conversations that machine takes part in, and the bootstrap credential stays the
+# operator's full view — the documented exception, because whoever holds it holds the database.
+# ---------------------------------------------------------------------------
+ok27a="$(post /token --data-urlencode "node=node-scope-a" --data-urlencode "namespaces=*")"
+ok27b="$(post /token --data-urlencode "node=node-scope-b" --data-urlencode "namespaces=*")"
+ok27c="$(post /token --data-urlencode "node=node-scope-c" --data-urlencode "namespaces=*")"
+TOK27A="$(field "$ok27a" secret)"; TOK27B="$(field "$ok27b" secret)"; TOK27C="$(field "$ok27c" secret)"
+if [ -n "$TOK27A" ] && [ -n "$TOK27B" ] && [ -n "$TOK27C" ]; then
+  ok "three machine credentials were issued"
+else
+  no "three machine credentials were issued" "A=[$TOK27A] B=[$TOK27B] C=[$TOK27C]"
+fi
+scoped_post /register "$TOK27A" --data-urlencode "id=it-$RUN-scope-a" --data-urlencode "node=node-scope-a" >/dev/null
+scoped_post /register "$TOK27B" --data-urlencode "id=it-$RUN-scope-b" --data-urlencode "node=node-scope-b" >/dev/null
+scoped_post /register "$TOK27C" --data-urlencode "id=it-$RUN-scope-c" --data-urlencode "node=node-scope-c" >/dev/null
+# A second session on machine A that takes no part in the conversation: the rule is the machine,
+# not the session, and this is what pins that half of it.
+scoped_post /register "$TOK27A" --data-urlencode "id=it-$RUN-scope-a2" --data-urlencode "node=node-scope-a" >/dev/null
+
+scope_send="$(scoped_post /message "$TOK27A" --data-urlencode "from=it-$RUN-scope-a" \
+  --data-urlencode "to=it-$RUN-scope-b" --data-urlencode "subject=scoped $RUN" \
+  --data-urlencode "body=between the two of us")"
+SCOPE_TID="$(field "$scope_send" thread)"
+if [ -n "$SCOPE_TID" ]; then
+  ok "the scoped fixture opened a thread"
+else
+  no "the scoped fixture opened a thread" "$(snip "$scope_send")"
+fi
+
+# The two machines in the conversation read it; the third does not.
+contains "a machine that sent in a thread reads it" \
+  "$(scoped_get "/thread?id=$SCOPE_TID" "$TOK27A")" "between the two of us"
+contains "a machine that was sent the thread reads it" \
+  "$(scoped_get "/thread?id=$SCOPE_TID" "$TOK27B")" "between the two of us"
+contains "and so does another session on a participating machine" \
+  "$(scoped_get "/thread?id=$SCOPE_TID" "$TOK27A")" "thread $SCOPE_TID"
+equals "a machine outside the conversation is refused" \
+  "$(scoped_get_status "/thread?id=$SCOPE_TID" "$TOK27C")" "403"
+contains "and the refusal says what the boundary is" \
+  "$(scoped_get "/thread?id=$SCOPE_TID" "$TOK27C")" "conversations its machine takes part in"
+# The same for the listing: C's board is empty, A's is not.
+lacks "an outside machine does not see the thread listed" "$(scoped_get /threads "$TOK27C")" "[$SCOPE_TID]"
+contains "a participating machine does see it listed" "$(scoped_get /threads "$TOK27A")" "[$SCOPE_TID]"
+# And the registry: its own machine plus correspondents, not the whole board.
+contains "the registry shows the machine's own session" "$(scoped_get /peers "$TOK27C")" "it-$RUN-scope-c"
+lacks "and not a machine it has never spoken to" "$(scoped_get /peers "$TOK27C")" "it-$RUN-scope-a"
+contains "a correspondent is visible" "$(scoped_get /peers "$TOK27A")" "it-$RUN-scope-b"
+lacks "but a stranger is not" "$(scoped_get /peers "$TOK27A")" "it-$RUN-scope-c"
+# The bootstrap credential is the documented exception: the operator sees everything.
+contains "the bootstrap credential reads any thread" "$(get /thread "id=$SCOPE_TID")" "between the two of us"
+contains "and lists every thread" "$(get /threads)" "[$SCOPE_TID]"
+contains "and sees the whole registry" "$(get /peers)" "it-$RUN-scope-c"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

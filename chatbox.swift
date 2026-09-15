@@ -684,16 +684,28 @@ final class Store: @unchecked Sendable {
         }.map { $0["id"] ?? "" }.filter { !$0.isEmpty }
     }
 
-    /// The registry, bounded: a listing that returns everything is a response with no bound at
-    /// all, and the caller states the limit when it bites.
-    func agentsListing(limit: Int) -> [[String: String]] {
-        rows("""
-        SELECT id, node, agent, harness, session, ip, repos, note, registered_at, last_seen
-        FROM agents ORDER BY id LIMIT \(limit)
-        """)
+    /// The registry, bounded and — for a scoped credential — scoped: its own machine's sessions,
+    /// plus every session it has a conversation with, and nothing else. `visibleTo` is nil for the
+    /// bootstrap credential, which sees the whole board.
+    func agentsListing(limit: Int, visibleTo node: String?) -> [[String: String]] {
+        let columns = """
+        a.id, a.node, a.agent, a.harness, a.session, a.ip, a.repos, a.note, a.registered_at, a.last_seen
+        """
+        guard let node = node else {
+            return rows("SELECT \(columns) FROM agents a ORDER BY a.id LIMIT \(limit)")
+        }
+        return rows("""
+        SELECT \(columns) FROM agents a
+         WHERE \(visibleAgentsWhere)
+         ORDER BY a.id LIMIT \(limit)
+        """, [node, node, node, node, node])
     }
 
-    func agentCount() -> Int { Int(scalar("SELECT COUNT(*) FROM agents")) ?? 0 }
+    func agentCount(visibleTo node: String?) -> Int {
+        guard let node = node else { return Int(scalar("SELECT COUNT(*) FROM agents")) ?? 0 }
+        return Int(scalar("SELECT COUNT(*) FROM agents a WHERE \(visibleAgentsWhere)",
+                          [node, node, node, node, node])) ?? 0
+    }
 
     /// Cheap "is there anything unread?" for the long-poll path — one indexed
     /// lookup instead of the full inbox join, which is what makes a waiter cheap
@@ -724,6 +736,46 @@ final class Store: @unchecked Sendable {
         SELECT COUNT(*) FROM deliveries d JOIN messages m ON m.id = d.message_id
         WHERE d.agent = ? \(includeAcked ? "" : "AND (d.acked_at IS NULL OR d.acked_at = '')")
         """, [agent])) ?? 0
+    }
+
+    // ---------- who may read what ----------
+    //
+    // A scoped credential is bound to one machine, and sessions on one machine share an OS user and
+    // a filesystem — so the machine, not the session, is the confidentiality boundary. A credential
+    // may read the conversations **its machine takes part in** and nothing else. The shared
+    // bootstrap credential is the documented exception: whoever holds it holds the database anyway,
+    // and an operator needs the whole board.
+
+    /// The threads a node takes part in, as a SQL fragment: a session on it sent a message in the
+    /// thread, or a session on it was sent one. The fragment binds the node twice, in that order.
+    let nodeThreadsSQL = """
+    SELECT m.thread_id FROM messages m
+     WHERE m.sender IN (SELECT id FROM agents WHERE node = ?)
+        OR m.id IN (SELECT d.message_id FROM deliveries d
+                     WHERE d.agent IN (SELECT id FROM agents WHERE node = ?))
+    """
+
+    /// The `WHERE` clause that decides which agents a machine may see, shared by the listing and
+    /// the count so the two cannot disagree. Binds the node five times.
+    var visibleAgentsWhere: String {
+        """
+        a.node = ?
+           OR a.id IN (SELECT m.sender FROM messages m WHERE m.thread_id IN (\(nodeThreadsSQL)))
+           OR a.id IN (SELECT d.agent FROM deliveries d WHERE d.message_id IN
+                         (SELECT m.id FROM messages m WHERE m.thread_id IN (\(nodeThreadsSQL))))
+        """
+    }
+
+    /// Whether a machine takes part in one conversation.
+    func node(_ node: String, participatesIn threadId: String) -> Bool {
+        !rows("""
+        SELECT 1 FROM messages m
+         WHERE m.thread_id = ?
+           AND (m.sender IN (SELECT id FROM agents WHERE node = ?)
+                OR m.id IN (SELECT d.message_id FROM deliveries d
+                             WHERE d.agent IN (SELECT id FROM agents WHERE node = ?)))
+         LIMIT 1
+        """, [threadId, node, node]).isEmpty
     }
 
     func thread(_ id: String) -> [[String: String]] {
@@ -968,10 +1020,10 @@ final class Chatbox: @unchecked Sendable {
         case ("POST", "/register"): return register(req, who)
         case ("POST", "/message"), ("POST", "/say"): return message(req, who)
         case ("GET", "/inbox"): return inbox(req, who)
-        case ("GET", "/thread"): return showThread(req)
-        case ("GET", "/threads"): return listThreads(req)
+        case ("GET", "/thread"): return showThread(req, who)
+        case ("GET", "/threads"): return listThreads(req, who)
         case ("POST", "/ack"): return ack(req, who)
-        case ("GET", "/peers"): return peers(req)
+        case ("GET", "/peers"): return peers(req, who)
         case ("POST", "/token"): return createToken(req, who)
         case ("GET", "/token"): return listTokens(req, who)
         case ("POST", "/token/revoke"): return revokeToken(req, who)
@@ -1440,9 +1492,14 @@ final class Chatbox: @unchecked Sendable {
         }
     }
 
-    func showThread(_ req: Request) -> (Int, String) {
+    func showThread(_ req: Request, _ who: Principal) -> (Int, String) {
         let id = req.p("id").isEmpty ? req.p("thread") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id (thread) required\n") }
+        // Scoped before it is looked up, so a credential cannot tell a thread it may not read from
+        // one that does not exist — both are "not yours to read".
+        if !who.isBootstrap, !store.node(who.node, participatesIn: id) {
+            return (403, "forbidden: this credential may read only conversations its machine takes part in\n")
+        }
         // A conversation has no natural bound, so this answer is bounded instead: the newest
         // `--max-rows` messages, with the number left out stated. Silence about the rest would be
         // the same dishonesty as a silently truncated inbox.
@@ -1467,7 +1524,7 @@ final class Chatbox: @unchecked Sendable {
         return (200, out)
     }
 
-    func listThreads(_ req: Request) -> (Int, String) {
+    func listThreads(_ req: Request, _ who: Principal) -> (Int, String) {
         let repoRaw = req.p("repo")
         var repo = ""
         if !repoRaw.isEmpty {
@@ -1476,7 +1533,15 @@ final class Chatbox: @unchecked Sendable {
         }
         var sql = "SELECT t.id, t.repo, t.subject, t.created_at, t.last_at, (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n FROM threads t"
         var binds: [String?] = []
-        if !repo.isEmpty { sql += " WHERE t.repo = ?"; binds.append(repo) }
+        var conditions: [String] = []
+        if !repo.isEmpty { conditions.append("t.repo = ?"); binds.append(repo) }
+        if !who.isBootstrap {
+            // Only the conversations this machine takes part in. The bootstrap credential lists
+            // everything, which is what makes it the operator's view.
+            conditions.append("t.id IN (\(store.nodeThreadsSQL))")
+            binds.append(who.node); binds.append(who.node)
+        }
+        if !conditions.isEmpty { sql += " WHERE " + conditions.joined(separator: " AND ") }
         sql += " ORDER BY t.last_at DESC LIMIT 100"
         let rows = store.rows(sql, binds)
         if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }
@@ -1528,9 +1593,12 @@ final class Chatbox: @unchecked Sendable {
         return (200, "ok acked \(n) for \(id)\n")
     }
 
-    func peers(_ req: Request) -> (Int, String) {
-        let matchingAgents = store.agentCount()
-        var rows = store.agentsListing(limit: maxRows)
+    func peers(_ req: Request, _ who: Principal) -> (Int, String) {
+        // A scoped credential sees its own machine and its correspondents; the bootstrap credential
+        // sees the whole registry.
+        let scope = who.isBootstrap ? nil : who.node
+        let matchingAgents = store.agentCount(visibleTo: scope)
+        var rows = store.agentsListing(limit: maxRows, visibleTo: scope)
         let now = Date()
         for i in rows.indices {
             let seen = rows[i]["last_seen"] ?? ""

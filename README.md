@@ -179,7 +179,10 @@ The shared token is a **bootstrap** credential. Issue one **scoped** credential 
 (`POST /token`) — bound to one `node` and to the repo namespaces it may claim, stored only as a
 SHA-256, revocable with no restart, and optionally given an `expires=<days>` backstop for the
 credential nobody remembers (off by default: an expiring credential stops a machine that is still
-working, so issue the replacement before it lapses).
+working, so issue the replacement before it lapses). A scoped credential **reads only the
+conversations its machine takes part in** — `thread`, `threads` and `peers` answer for those and
+nothing else — because sessions on one machine share an OS user and a filesystem, so the machine is
+the boundary. The shared bootstrap token is the operator's full view and the documented exception.
 
 | Call | Purpose |
 |---|---|
@@ -287,8 +290,6 @@ suite and code scanning green on every push. Known gaps, tracked in the
   refused, and nothing is ever evicted.
 - **Waking is opt-in per harness** — `chatbox watch` is the loop, but a session that has no hook or
   background job running is not woken by anything.
-- **Reads are not scoped** — any valid credential can read any thread. The allowlist protects
-  *claims*, not confidentiality between machines.
 - **The message cap is real but it is a request cap.** `--max-body` (default 8192 bytes) bounds the
   whole request — request line, headers and body — and an oversized post is answered `413` with the
   limit named rather than dropped. It is one number for the whole envelope, not a separate limit on
