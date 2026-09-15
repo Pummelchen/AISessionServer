@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 70 | done: 21 | blocked: 0 | total: 91** (S0 7, S1 31, S2 46, S3 7)
+**Open: 69 | done: 22 | blocked: 0 | total: 91** (S0 7, S1 31, S2 46, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -17,7 +17,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0021](#0021) | S0 | M1 | `chatbox.swift:1826` | GET /ui builds 'path + ?token=' and always gets 401, so the read-only view shows an empty board [also: GET /ui concatenates window.location.search onto paths that already contain a query, so its own credential is swallowed and every fetch is unauthenticated] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-http |
 | [0022](#0022) | S0 | M1 | `chatbox.swift:2300` | Revocation is reported successful without checking whether the UPDATE ran [also: Credential issue and revoke ignore the write result and report success] | unsafe | **DONE** | node1 | phase-B/L2-server-core,L3-line-level |
 | [0023](#0023) | S0 | M1 | `chatbox.swift:2830` | --token "" silently starts a fully open board [also: An explicitly empty --token silently starts an open board (fails open, unlike --token-file); `--token ""` (an unset variable) starts an unauthenticated board; --token beats --token-file although the code says the file is preferred] | incomplete | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L4-security,L7-ops |
-| [0001](#0001) | S1 | M1 | `chatbox.swift (whole file)` | Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors) | unsafe | **START** | node1 | phase-A baseline |
+| [0001](#0001) | S1 | M1 | `chatbox.swift (whole file)` | Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors) | unsafe | **DONE** | node1 | phase-A baseline |
 | [0002](#0002) | S1 | M1 | `chatbox.swift:1062,1070` | Static ISO8601DateFormatter instances are shared mutable state (not Sendable) | unsafe | **DONE** | node1 | phase-A baseline |
 | [0003](#0003) | S1 | M1 | `chatbox.swift:1238` | `Chatbox.publicURL` is a mutable static global | unsafe | **DONE** | node1 | phase-A baseline |
 | [0004](#0004) | S1 | M1 | `chatbox.swift:27,3215,3217,3221` | Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code | unsafe | **DONE** | node1 | phase-A baseline |
@@ -248,10 +248,13 @@ AUDIT (gate): change re-read cold against the finding; the two guards sit before
 - **Severity / category / module:** S1 / unsafe / M1
 - **Location:** `chatbox.swift (whole file)`
 - **Title:** Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors)
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** AUDIT/baseline/strict-concurrency.txt: rc=1, 10 primary errors + 10 primary warnings (22/20 including continuation lines). Kinds: 3x non-Sendable static ISO8601DateFormatter/publicURL, 4x main-actor-isolated top-level lets (TRANSIENT, tlsIdentity, peerURL) referenced from nonisolated code, 2x DispatchWorkItem capture, 18x captured-var mutation / non-Sendable capture in @Sendable closures.
-- **Fix:** Umbrella task. Sub-tasks 0002-0005 carry the actual diffs; this closes when `xcrun swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors` is clean for chatbox.swift and chatbox-mcp.swift and the documented build/README state the same flags.
-- **Notes:** Existing `@unchecked Sendable` on Chatbox/Store is the reason the checker is silent today; the brief forbids adding it as a fix. The serial-queue invariant is real, so the fix is to express it (see 0005), not to annotate it away.
+- **Fix:** Closed by the four strict-concurrency fixes plus the queue invariant: #0002 (Sendable timestamp format style), #0003 (`publicURL` configuration), #0004 (TRANSIENT top-level configuration referenced from nonisolated code), #0005 (non-Sendable captures and captured-var mutation across `@Sendable` closures) and #0015 (one shared serial queue with `dispatchPrecondition(.onQueue:)` enforcing the invariant the two remaining `@unchecked Sendable` classes rely on).
+- **Evidence (after):** TEST (gate): on the audit branch, `xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox.swift` exits 0 with no diagnostics, and the same command on `chatbox-mcp.swift` exits 0 with no diagnostics - the baseline's 10 primary errors and 10 primary warnings are gone (`AUDIT/baseline/strict-concurrency.txt` is the before). The documented build (`xcrun swiftc -O <file> -o <binary>`, no extra flags) also emits zero warnings for both binaries, which is the baseline's other yardstick. Nothing was silenced to get there: the only `@unchecked Sendable` annotations are the two that predate the audit, and their invariant is now enforced at runtime rather than asserted in a comment (#0015); there is no new `try!`, no `# type: ignore` and no lowered strictness setting anywhere in the diff. The quality gate is a runnable command, which is what makes the claim checkable rather than a promise.
+AUDIT (gate): re-read cold, and the one thing this closure does *not* claim is that CI would notice a regression. `ci.yml` still builds with `-O` alone, so the strict command above is run by the auditor and by nobody else - recorded as task #0092 rather than pretended away.
+- **Commit:** `6b9a55c`
+- **Notes:** This was the umbrella task for the standard itself; the sub-findings are the four resolved tasks it names, each with its own before/after check and mutation cell. Rejected alternative: keeping #0001 open until CI enforced the standard - that would make one task cover two different pieces of work (a code fix that is done and a workflow change that is not), so the workflow change is its own numbered finding.
 
 ### 0002
 
