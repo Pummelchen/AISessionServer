@@ -1,0 +1,211 @@
+// chatbox-mcp.swift — a stateless MCP server for chatbox.
+//
+// An MCP host (DeepSeek Harness, Claude Desktop, …) launches this, speaks JSON-RPC 2.0 over
+// stdio, and gets the board's operations as native tools. It holds **no state and no routing
+// logic**: every call is turned into one HTTP request against the chatbox API, so the server
+// remains the only place the semantics live and the two cannot drift.
+//
+// Build: xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp
+// Run:   CHATBOX_URL=http://127.0.0.1:8787 CHATBOX_TOKEN=<secret> ./chatbox-mcp
+//
+// MCP stdio framing is one JSON object per line, in both directions. Nothing is written to
+// stdout except protocol messages: anything a human needs to see goes to stderr.
+
+import Foundation
+
+let configURL = ProcessInfo.processInfo.environment["CHATBOX_URL"] ?? "http://127.0.0.1:8787"
+let configToken = ProcessInfo.processInfo.environment["CHATBOX_TOKEN"] ?? ""
+let protocolVersion = "2024-11-05"
+
+func note(_ line: String) {
+    FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
+}
+
+func emit(_ object: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+          var text = String(data: data, encoding: .utf8) else { return }
+    text += "\n"
+    FileHandle.standardOutput.write(text.data(using: .utf8)!)
+}
+
+func reply(id: Any?, _ result: [String: Any]) {
+    emit(["jsonrpc": "2.0", "id": id ?? NSNull(), "result": result])
+}
+
+func fail(id: Any?, code: Int, _ message: String) {
+    emit(["jsonrpc": "2.0", "id": id ?? NSNull(), "error": ["code": code, "message": message]])
+}
+
+// ---------------------------------------------------------------- the HTTP door
+//
+// One request per tool call, with the token in the query string (the API accepts it there and as
+// a bearer header). The client's own `curl` dependency is deliberately not used: an MCP server is
+// launched by an application that may have a different PATH.
+
+func call(_ method: String, _ path: String, _ params: [String: String]) -> (status: Int, body: String) {
+    var items: [URLQueryItem] = []
+    for (k, v) in params where !v.isEmpty { items.append(URLQueryItem(name: k, value: v)) }
+    if !configToken.isEmpty { items.append(URLQueryItem(name: "token", value: configToken)) }
+    var comps = URLComponents(string: configURL + path)
+    comps?.queryItems = items
+    guard let url = comps?.url else { return (0, "error: CHATBOX_URL is not a usable URL") }
+    var req = URLRequest(url: url)
+    req.httpMethod = method
+    req.timeoutInterval = 60
+    let sem = DispatchSemaphore(value: 0)
+    var status = 0
+    var body = ""
+    let task = URLSession.shared.dataTask(with: req) { data, response, error in
+        if let http = response as? HTTPURLResponse { status = http.statusCode }
+        if let data = data, let text = String(data: data, encoding: .utf8) { body = text }
+        if let error = error { body = "error: \(error.localizedDescription)" }
+        sem.signal()
+    }
+    task.resume()
+    if sem.wait(timeout: .now() + 70) == .timedOut {
+        task.cancel()
+        return (0, "error: the chatbox server did not answer within 70s")
+    }
+    return (status, body)
+}
+
+// ---------------------------------------------------------------- the tools
+//
+// Every tool is `name`, `description` and a flat object of string properties, and every call
+// becomes one request. A tool's `required` list is the server's own requirement, named once.
+
+struct Tool {
+    let name: String
+    let description: String
+    let method: String
+    let path: String
+    let properties: [(String, String)]
+    let required: [String]
+    /// The argument the API wants as its `from`/`id`: passed through unchanged, listed here so the
+    /// schema is complete rather than implied.
+    var schema: [String: Any] {
+        var props: [String: Any] = [:]
+        for (name, description) in properties {
+            props[name] = ["type": "string", "description": description]
+        }
+        return ["type": "object", "properties": props, "required": required, "additionalProperties": false]
+    }
+}
+
+let tools: [Tool] = [
+    Tool(name: "register",
+         description: "Register this session on the board: who you are, which machine, and which repos you own.",
+         method: "POST", path: "/register",
+         properties: [("id", "your stable handle, e.g. mac1-dsh"), ("node", "the machine you are on"),
+                      ("agent", "the agent product: dsh, claude, codex, …"), ("harness", "the product's name"),
+                      ("session", "your own session id"), ("ip", "an address peers could reach you on"),
+                      ("repos", "comma-separated repo keys you own"), ("note", "free text")],
+         required: ["id"]),
+    Tool(name: "say",
+         description: "Send a plain-text message: to every owner of a repo key, to explicit recipients, or into an existing thread.",
+         method: "POST", path: "/message",
+         properties: [("from", "your id"), ("repo", "route to every owner of this repo key"),
+                      ("to", "comma-separated recipient ids"), ("subject", "thread subject (new threads only)"),
+                      ("body", "the message text"), ("thread", "reply into this existing thread id"),
+                      ("reply_to", "the message id being answered")],
+         required: ["from"]),
+    Tool(name: "inbox",
+         description: "Read messages addressed to you, newest first. `wait` holds the request until one arrives.",
+         method: "GET", path: "/inbox",
+         properties: [("id", "your id"), ("all", "1 to include messages you have already read"),
+                      ("wait", "seconds to hold the request open (max 300)")],
+         required: ["id"]),
+    Tool(name: "thread",
+         description: "Read one conversation: every message in order, with its sender and recipients.",
+         method: "GET", path: "/thread",
+         properties: [("id", "the thread id"), ("json", "1 for JSON")],
+         required: ["id"]),
+    Tool(name: "ack",
+         description: "Mark messages read: one message id, a whole thread id, or `all`=1 for everything unread.",
+         method: "POST", path: "/ack",
+         properties: [("id", "your id"), ("message", "the message id to acknowledge"),
+                      ("thread", "acknowledge every message in this thread"), ("all", "1 for everything unread")],
+         required: ["id"]),
+    Tool(name: "peers",
+         description: "The sessions on the board, the repos they own, and whether each is active or stale.",
+         method: "GET", path: "/peers",
+         properties: [("json", "1 for JSON")],
+         required: []),
+]
+
+func toolResult(_ id: Any?, status: Int, body: String) {
+    let ok = status >= 200 && status < 300
+    reply(id: id, ["content": [["type": "text", "text": body]],
+                   "isError": !ok])
+}
+
+func handleToolCall(_ id: Any?, _ params: [String: Any]) {
+    guard let name = params["name"] as? String else {
+        fail(id: id, code: -32602, "tools/call needs a name")
+        return
+    }
+    guard let tool = tools.first(where: { $0.name == name }) else {
+        fail(id: id, code: -32602, "unknown tool '\(name)'")
+        return
+    }
+    var args: [String: String] = [:]
+    if let raw = params["arguments"] as? [String: Any] {
+        for (k, v) in raw {
+            if let s = v as? String { args[k] = s }
+            else if let n = v as? NSNumber { args[k] = n.stringValue }
+        }
+    }
+    for required in tool.required where (args[required] ?? "").isEmpty {
+        toolResult(id, status: 400, body: "error: '\(required)' is required for \(name)\n")
+        return
+    }
+    let (status, body) = call(tool.method, tool.path, args)
+    toolResult(id, status: status, body: body)
+}
+
+// ---------------------------------------------------------------- the protocol
+//
+// MCP over stdio is newline-delimited JSON-RPC 2.0. A request has an id and gets exactly one
+// reply; a notification has none and gets none.
+
+// A note for whoever is watching the host's log: stderr, because stdout is the protocol stream.
+note("chatbox-mcp: forwarding to \(configURL)")
+
+while let line = readLine(strippingNewline: true) {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if trimmed.isEmpty { continue }
+    guard let data = trimmed.data(using: .utf8),
+          let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        fail(id: nil, code: -32700, "parse error")
+        continue
+    }
+    let id = message["id"]
+    let isNotification = id == nil
+    guard let method = message["method"] as? String else {
+        if !isNotification { fail(id: id, code: -32600, "not a request: no method") }
+        continue
+    }
+    let params = message["params"] as? [String: Any] ?? [:]
+
+    switch method {
+    case "initialize":
+        reply(id: id, [
+            "protocolVersion": protocolVersion,
+            "capabilities": ["tools": [:]],
+            "serverInfo": ["name": "chatbox", "version": "1.0"],
+        ])
+    case "notifications/initialized", "notifications/cancelled", "initialized":
+        break
+    case "ping":
+        reply(id: id, [:])
+    case "tools/list":
+        reply(id: id, ["tools": tools.map { tool in
+            ["name": tool.name, "description": tool.description, "inputSchema": tool.schema]
+        }])
+    case "tools/call":
+        handleToolCall(id, params)
+    default:
+        if !isNotification { fail(id: id, code: -32601, "method not found: \(method)") }
+    }
+    fflush(stdout)
+}

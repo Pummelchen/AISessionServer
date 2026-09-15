@@ -3789,6 +3789,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 31. The MCP adapter (TRK-15)
+# An MCP host launches `chatbox-mcp`, speaks newline-delimited JSON-RPC to it on stdin/stdout, and
+# gets the board's operations as native tools. The adapter holds no state and no routing logic: it
+# turns each call into one HTTP request, so the server stays the only place the semantics live. The
+# checks below are protocol-level — initialize, the tool list, a real call, a refusal, and the two
+# JSON-RPC errors — plus the property that matters for a stdio server: nothing but protocol messages
+# on stdout.
+# ---------------------------------------------------------------------------
+mcp_bin="${CHATBOX_MCP:-$(dirname "${CHATBOX_BIN:-/nonexistent}")/chatbox-mcp}"
+if [ -x "$mcp_bin" ]; then
+  mcp_session() { # the JSON-RPC lines on stdin -> stdout
+    CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" "$mcp_bin" 2>/dev/null
+  }
+  mcp_say() { # one request line -> the reply
+    printf '%s\n' "$1" | mcp_session
+  }
+  mcp_init="$(mcp_say '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}')"
+  contains "the adapter answers initialize" "$mcp_init" '"protocolVersion":"2024-11-05"' 
+  contains "and names itself" "$mcp_init" '"name":"chatbox"'
+  mcp_list="$(mcp_say '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
+  for mcp_tool in register say inbox thread ack peers; do
+    contains "the adapter exposes $mcp_tool" "$mcp_list" "\"name\":\"$mcp_tool\""
+  done
+  mcp_call="$(mcp_say '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"peers","arguments":{}}}')"
+  contains "a tool call reaches the board" "$mcp_call" "registered agents"
+  contains "and comes back as a result rather than an error" "$mcp_call" '"isError":false'
+  # An argument the server requires, refused before the request is made — and named.
+  mcp_missing="$(mcp_say '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"say","arguments":{}}}')"
+  contains "a missing argument is refused by the adapter" "$mcp_missing" "is required for say"
+  # A refusal from the board is the tool's answer, marked as an error so the model sees why.
+  mcp_refused="$(mcp_say '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"thread","arguments":{"id":"999999999"}}}')"
+  contains "a refusal from the board is marked as an error" "$mcp_refused" '"isError":true'
+  contains "and carries the board's own words" "$mcp_refused" "no thread 999999999"
+  contains "an unknown tool is a JSON-RPC error" \
+    "$(mcp_say '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"nope","arguments":{}}}')" \
+    '"code":-32602'
+  contains "and so is an unknown method" \
+    "$(mcp_say '{"jsonrpc":"2.0","id":7,"method":"bogus/method"}')" '"code":-32601'
+  # A stdio server that prints anything but protocol corrupts the stream the host is parsing.
+  mcp_noise="$(mcp_say '{"jsonrpc":"2.0","id":8,"method":"ping"}' | grep -vc '"jsonrpc"')"
+  equals "every line the adapter prints is a protocol message" "${mcp_noise:-0}" "0"
+  # Each line of a session is answered once, in order: the host matches replies by id.
+  mcp_pair="$(printf '%s\n%s\n' '{"jsonrpc":"2.0","id":10,"method":"ping"}' \
+    '{"jsonrpc":"2.0","id":11,"method":"ping"}' | mcp_session | grep -c '"id":1[01]')"
+  equals "two requests get two replies" "$mcp_pair" "2"
+else
+  printf '  skip  the MCP adapter (needs chatbox-mcp next to CHATBOX_BIN, or CHATBOX_MCP)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

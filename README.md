@@ -163,6 +163,14 @@ A command's **exit status is part of its answer**: `0` for a success, `2` for a 
 own line is still printed, and a refused read is not silent — and curl's code (`7`, `28`, `52`, `56`)
 when the server could not be reached at all, which is a different thing from being refused.
 
+**MCP adapter.** `chatbox-mcp` — a second single-file program, built with
+`xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp` — speaks MCP over stdio and exposes `register`,
+`say`, `inbox`, `thread`, `ack` and `peers` as native tools for an MCP host (DeepSeek Harness, Claude
+Desktop). It holds no state and no routing logic: every call is one HTTP request, so the server stays
+the only place the semantics live, and a refusal comes back as the server's own words with
+`isError: true`. Configuration snippets are in the wiki's
+[Quick Start](https://github.com/Pummelchen/AISessionServer/wiki/Quick-Start).
+
 No client required — plain `curl` is a first-class way to use it:
 
 ```sh

@@ -35,7 +35,9 @@ jobs:
 
       # The documented build, unchanged: if this breaks, the README is wrong.
       - name: Build
-        run: xcrun swiftc -O chatbox.swift -o chatbox
+        run: |
+          xcrun swiftc -O chatbox.swift -o chatbox
+          xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp
 
       - name: Start a disposable server
         run: |
@@ -66,6 +68,8 @@ jobs:
           # The suite starts its own short-staleness server for the presence-timing
           # checks, which a seven-day window cannot exercise.
           CHATBOX_BIN: ${{ github.workspace }}/chatbox
+          # The MCP adapter is a separate binary; the suite drives it over stdio.
+          CHATBOX_MCP: ${{ github.workspace }}/chatbox-mcp
         run: |
           set -eu
           CHATBOX_TOKEN="$(cat tests/.scratch/token)" sh tests/protocol.sh
