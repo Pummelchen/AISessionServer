@@ -544,18 +544,27 @@ final class Store: @unchecked Sendable {
         """, [hash]).first
     }
 
+    /// Add a credential, and report what the store did. A route that prints a secret it did not
+    /// store has handed the operator a credential that can never authenticate, with nothing in the
+    /// answer to say so.
+    @discardableResult
     func addToken(id: String, hash: String, node: String, namespaces: String, note: String,
-                  at: String, expiresAt: String) {
-        run("INSERT INTO tokens (id,hash,node,namespaces,note,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
-            [id, hash, node, namespaces, note, at, expiresAt.isEmpty ? nil : expiresAt])
+                  at: String, expiresAt: String) -> (rc: Int32, changes: Int32) {
+        let r = runReporting("INSERT INTO tokens (id,hash,node,namespaces,note,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
+                             [id, hash, node, namespaces, note, at, expiresAt.isEmpty ? nil : expiresAt])
+        return (r.rc, r.changes)
     }
 
     func tokenExists(_ id: String) -> Bool {
         !rows("SELECT 1 FROM tokens WHERE id = ? LIMIT 1", [id]).isEmpty
     }
 
-    func revokeToken(_ id: String, at: String) {
-        run("UPDATE tokens SET revoked_at=? WHERE id=? AND (revoked_at IS NULL OR revoked_at='')", [at, id])
+    /// Revoke one credential, and report what the store did: the route must not answer "rejected from
+    /// now on" about an UPDATE that never ran, which is a security control reported as present.
+    @discardableResult
+    func revokeToken(_ id: String, at: String) -> (rc: Int32, changes: Int32) {
+        let r = runReporting("UPDATE tokens SET revoked_at=? WHERE id=? AND (revoked_at IS NULL OR revoked_at='')", [at, id])
+        return (r.rc, r.changes)
     }
 
     func touchToken(_ id: String, at: String) {
@@ -2236,9 +2245,15 @@ final class Chatbox: @unchecked Sendable {
         }
         let secret = randomHex(24)
         let id = "tk-" + randomHex(6)
-        store.addToken(id: id, hash: sha256Hex(secret), node: node,
-                       namespaces: namespaces.joined(separator: ","), note: req.p("note"),
-                       at: nowISO(), expiresAt: expiresAt)
+        let stored = store.addToken(id: id, hash: sha256Hex(secret), node: node,
+                                    namespaces: namespaces.joined(separator: ","), note: req.p("note"),
+                                    at: nowISO(), expiresAt: expiresAt)
+        // Nothing is printed before the row exists: only one copy of the secret is ever shown, and a
+        // credential that was not stored cannot authenticate.
+        guard stored.rc == SQLITE_DONE, stored.changes == 1 else {
+            FileHandle.standardError.write("chatbox: the credential insert failed: \(store.lastError())\n".data(using: .utf8)!)
+            return (500, "error: the credential was not stored — nothing was issued (\(oneLine(store.lastError())))\n")
+        }
         // CodeQL flags this response as cleartext transmission of sensitive data,
         // and without TLS it is right: the secret travels in the body. Loopback never
         // leaves the machine and a TLS listener is encrypted, so the warning is for
@@ -2304,7 +2319,16 @@ final class Chatbox: @unchecked Sendable {
         if !already.isEmpty {
             return (200, "ok \(id) was already revoked at \(already)\n")
         }
-        store.revokeToken(id, at: nowISO())
+        let revoked = store.revokeToken(id, at: nowISO())
+        if revoked.rc == SQLITE_DONE && revoked.changes == 0 {
+            // Revoked between the check above and this statement: a success, not a failure.
+            let when = store.scalar("SELECT revoked_at FROM tokens WHERE id = ?", [id])
+            if !when.isEmpty { return (200, "ok \(id) was already revoked at \(when)\n") }
+        }
+        guard revoked.rc == SQLITE_DONE, revoked.changes == 1 else {
+            FileHandle.standardError.write("chatbox: the revoke of \(id) did not run: \(store.lastError())\n".data(using: .utf8)!)
+            return (500, "error: the revocation did not run — \(oneLine(id)) is still valid (\(oneLine(store.lastError())))\n")
+        }
         return (200, """
         ok revoked \(id)
         Every request presenting it is rejected from now on. Other credentials and

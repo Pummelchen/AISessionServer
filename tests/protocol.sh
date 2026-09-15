@@ -3159,6 +3159,35 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
       --data-urlencode "body=stored after the trigger went")"
     contains "and a reply stores again once the store is willing" "$bafter_block" "ok posted"
 
+    # A credential write that did not happen must not be reported as one: an operator told "revoked"
+    # about a token that is still live has lost a security control, and a secret printed for a
+    # credential that was never stored can never authenticate. Triggers make both refusals
+    # deterministic, and the same board proves the writes work again once the store is willing.
+    sqlite3 "$bdb" "CREATE TRIGGER IF NOT EXISTS block_token_insert BEFORE INSERT ON tokens BEGIN SELECT RAISE(ABORT,'blocked by the suite'); END;" >/dev/null 2>&1
+    btstatus="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST \
+      --data-urlencode "token=$TOKEN" --data-urlencode "node=node-blocked" "http://127.0.0.1:$bport/token")"
+    equals "an issuance the store refuses is a 500" "$btstatus" "500"
+    btrefused="$(curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "node=node-blocked" "http://127.0.0.1:$bport/token")"
+    contains "and it says nothing was issued" "$btrefused" "not stored"
+    lacks "and no secret is printed for a credential that was not stored" "$btrefused" "secret:"
+    sqlite3 "$bdb" "DROP TRIGGER IF EXISTS block_token_insert;" >/dev/null 2>&1
+    btgood="$(curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "node=node-blocked" "http://127.0.0.1:$bport/token")"
+    contains "and a credential is issued once the store is willing" "$btgood" "ok credential issued"
+    btid="$(field "$btgood" id)"
+    sqlite3 "$bdb" "CREATE TRIGGER IF NOT EXISTS block_token_update BEFORE UPDATE ON tokens BEGIN SELECT RAISE(ABORT,'blocked by the suite'); END;" >/dev/null 2>&1
+    brev="$(curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=$btid" "http://127.0.0.1:$bport/token/revoke")"
+    contains "a revocation the store refuses is not reported as one" "$brev" "did not run"
+    lacks "and never claims the credential was revoked" "$brev" "ok revoked"
+    equals "and the credential is still live in the store" \
+      "$(sqlite3 "$bdb" "select count(*) from tokens where id='$btid' and (revoked_at is null or revoked_at='');")" "1"
+    sqlite3 "$bdb" "DROP TRIGGER IF EXISTS block_token_update;" >/dev/null 2>&1
+    brev2="$(curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=$btid" "http://127.0.0.1:$bport/token/revoke")"
+    contains "and the revocation works once the store is willing" "$brev2" "ok revoked"
+
     # A structurally valid copy that is simply older: only the comparison can see it, so both
     # halves are asserted — accepted alone, refused against its source.
     cp "$bdir/good.sqlite" "$bdir/stale.sqlite"
