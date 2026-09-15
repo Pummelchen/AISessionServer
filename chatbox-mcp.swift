@@ -227,21 +227,32 @@ while let line = readLine(strippingNewline: true) {
 
     switch method {
     case "initialize":
-        reply(id: id, [
-            "protocolVersion": protocolVersion,
-            "capabilities": ["tools": [:]],
-            "serverInfo": ["name": "chatbox", "version": "1.0"],
-        ])
+        // A notification has no id and gets no reply: JSON-RPC 2.0 says the server MUST NOT reply to
+        // one, and MCP inherits that. `reply` with a nil id would emit `"id":null`, which a strict
+        // host reads as a response it never asked for — the id-keyed stream is polluted, and the
+        // adapter's own comment above states the rule these branches used to break.
+        if !isNotification {
+            reply(id: id, [
+                "protocolVersion": protocolVersion,
+                "capabilities": ["tools": [:]],
+                "serverInfo": ["name": "chatbox", "version": "1.0"],
+            ])
+        }
     case "notifications/initialized", "notifications/cancelled", "initialized":
         break
     case "ping":
-        reply(id: id, [:])
+        if !isNotification { reply(id: id, [:]) }
     case "tools/list":
-        reply(id: id, ["tools": tools.map { tool in
-            ["name": tool.name, "description": tool.description, "inputSchema": tool.schema]
-        }])
+        if !isNotification {
+            reply(id: id, ["tools": tools.map { tool in
+                ["name": tool.name, "description": tool.description, "inputSchema": tool.schema]
+            }])
+        }
     case "tools/call":
-        handleToolCall(id, params)
+        // An id-less `tools/call` is a client bug — MCP defines it as a request — and it is neither
+        // answered nor executed: the caller cannot be told the outcome, and a board change made
+        // behind its back, with no reply to fail, is worse than a no-op.
+        if !isNotification { handleToolCall(id, params) }
     default:
         if !isNotification { fail(id: id, code: -32601, "method not found: \(method)") }
     }

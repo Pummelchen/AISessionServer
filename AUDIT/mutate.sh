@@ -1049,6 +1049,12 @@ m('247-audit0041-windowfallback',
 
 # AUDIT #0024: a consumer that keeps failing must be retried with a delay, not spun. This is the
 # pre-fix branch: print and fall through to the next poll immediately.
+# AUDIT #0026: a notification must not be answered. This is the pre-fix gate: every message is
+# treated as a request, so `reply`/`fail` emit a frame keyed to a null id.
+m('249-audit0026-notifyreply',
+  r'''    let isNotification = id == nil''',
+  r'''    let isNotification = false''', target='mcp')
+
 m('248-audit0024-nobackoff',
   r'''      if [ "$_ok" -eq 0 ]; then
         # The message stays unread, so the next poll returns it immediately: without a delay a

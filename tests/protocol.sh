@@ -4022,6 +4022,33 @@ if [ -x "$mcp_bin" ]; then
     '{"jsonrpc":"2.0","id":11,"method":"ping"}' | mcp_session | grep -c '"id":1[01]')"
   equals "two requests get two replies" "$mcp_pair" "2"
 
+  # A notification has no id and must get no reply: JSON-RPC 2.0 says the server MUST NOT reply to
+  # one, and a response keyed to a null id is a protocol error to a strict host. Four notifications
+  # and one request must produce exactly one line — the request's. The parse-error case is the one
+  # place a null id is still correct, and it is checked separately below.
+  mcp_notes="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+    '{"jsonrpc":"2.0","method":"ping"}' \
+    '{"jsonrpc":"2.0","method":"tools/list"}' \
+    '{"jsonrpc":"2.0","method":"initialize","params":{}}' \
+    '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"peers","arguments":{}}}' \
+    '{"jsonrpc":"2.0","id":14,"method":"ping"}' | mcp_session)"
+  equals "four notifications and one request produce exactly one reply" \
+    "$(printf '%s\n' "$mcp_notes" | grep -c '"jsonrpc"')" "1"
+  contains "and it is the reply to the request that asked" "$mcp_notes" '"id":14'
+  lacks "and nothing is answered with a null id" "$mcp_notes" '"id":null'
+  # A notification must not be a way to change the board behind the caller's back: with no reply to
+  # fail, and no way to report the outcome, the adapter does not execute it.
+  mcp_notify_id="it-$RUN-mcp-notify"
+  mcp_notify_body="mcp-notify-$RUN"
+  printf '%s\n' "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"say\",\"arguments\":{\"from\":\"$mcp_notify_id\",\"to\":\"$A\",\"body\":\"$mcp_notify_body\"}}}" \
+    | mcp_session >/dev/null
+  lacks "a tools/call sent as a notification does not change the board" \
+    "$(get /inbox "id=$A&all=1")" "$mcp_notify_body"
+  # The one null id that is still right: an unparseable line is answered, because there is no id to
+  # address the error to.
+  contains "an unparseable line is still answered with a null id" \
+    "$(printf 'not json\n' | mcp_session)" '"id":null'
+
   # A long poll must not be cut off by the adapter's own HTTP client: `wait` is advertised up to 300s
   # and the server deliberately sends nothing until it has something to report, so a flat 60s client
   # deadline turned every wait over a minute into a transport error that looked like a dead server.
