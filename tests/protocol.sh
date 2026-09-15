@@ -4498,6 +4498,42 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 38. The wake loop acknowledges exactly the messages it was handed
+# Acknowledging "everything unread" marked mail read that the page never held — a page the server
+# capped at 200, or a message that arrived while the page was being delivered — and mail marked read
+# is never delivered again (`chatbox watch` never shows it, and nothing re-queues it). The inbox now
+# says which messages it rendered in a response header, and the loop acknowledges those ids one by
+# one. A header is structural: a peer's message body cannot add an id to it.
+# ---------------------------------------------------------------------------
+if [ -f "$CLI" ]; then
+  w38="it-$RUN-wake-ack"
+  post /register --data-urlencode "id=$w38" --data-urlencode "node=node-w38" >/dev/null
+  for w38n in 1 2 3; do
+    post /message --data-urlencode "from=$A" --data-urlencode "to=$w38" \
+      --data-urlencode "body=w38-$w38n-$RUN" >/dev/null
+  done
+  w38hdr="$SCRATCH/wake-hdr-${RUN}.txt"
+  w38body="$(curl -sS -D "$w38hdr" --max-time 20 "$(url_for /inbox "id=$w38")")"
+  w38ids="$(sed -n 's/^[Xx]-[Cc]hatbox-[Uu]nread-[Ii]ds: *//p' "$w38hdr" | tr -d '\r' | head -n 1)"
+  w38page="$(printf '%s' "$w38body" | sed -n 's/^\[\([0-9][0-9]*\)\].*/\1/p' | paste -sd, -)"
+  equals "the inbox names the messages it rendered" "$w38ids" "$w38page"
+  ( CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+      sh "$CLI" watch --id "$w38" --once --wait 1 --exec 'sleep 2' \
+      > "$SCRATCH/wake-${RUN}.log" 2>&1 ) &
+  w38pid=$!
+  sleep 1
+  post /message --data-urlencode "from=$A" --data-urlencode "to=$w38" \
+    --data-urlencode "body=w38-late-$RUN" >/dev/null
+  wait "$w38pid" 2>/dev/null
+  equals "a message that arrived after the page is still unread" \
+    "$(get /inbox "id=$w38" | grep -c "w38-late-$RUN")" "1"
+  equals "and the three the page held were acknowledged" \
+    "$(get /inbox "id=$w38" | grep -cE "w38-[123]-$RUN")" "0"
+else
+  printf '  skip  the wake-loop acknowledgement (set CHATBOX_CLI or keep chatbox-cli.sh in the tree)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

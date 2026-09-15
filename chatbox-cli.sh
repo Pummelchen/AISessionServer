@@ -148,7 +148,11 @@ curl_checked() { # the curl arguments
     curl_tls -sS "$@"
     return $?
   }
-  _ck_code="$(curl_tls -sS -o "$_ck_body" -w '%{http_code}' "$@")"; _ck_rc=$?
+  if [ -n "${CHATBOX_HEADER_FILE:-}" ]; then
+    _ck_code="$(curl_tls -sS -o "$_ck_body" -D "$CHATBOX_HEADER_FILE" -w '%{http_code}' "$@")"; _ck_rc=$?
+  else
+    _ck_code="$(curl_tls -sS -o "$_ck_body" -w '%{http_code}' "$@")"; _ck_rc=$?
+  fi
   cat "$_ck_body"
   rm -f "$_ck_body"
   [ "$_ck_rc" -ne 0 ] && return "$_ck_rc"
@@ -171,6 +175,14 @@ http_get_wait() { # path, query, curl --max-time
   _q="${2:-}"
   [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
   curl_checked --max-time "$3" "${URL}${1}${_q:+?$_q}"
+}
+
+# The same, with the response headers kept: the inbox says *which* messages it rendered in
+# `X-Chatbox-Unread-Ids`, which is what lets the wake loop acknowledge exactly those.
+http_get_wait_hdr() { # path, query, curl --max-time, header file
+  _q="${2:-}"
+  [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
+  CHATBOX_HEADER_FILE="$4" curl_checked --max-time "$3" "${URL}${1}${_q:+?$_q}"
 }
 
 # ---------- untrusted framing ----------
@@ -778,15 +790,17 @@ case "$cmd" in
     _max=$((_wait + 20))
 
     _tmp="$(mktemp "${TMPDIR:-/tmp}/chatbox-watch.XXXXXX" 2>/dev/null)"
-    if [ -z "$_tmp" ]; then
+    _hdr="$(mktemp "${TMPDIR:-/tmp}/chatbox-watch-hdr.XXXXXX" 2>/dev/null)"
+    if [ -z "$_tmp" ] || [ -z "$_hdr" ]; then
       echo "chatbox: cannot create a working file" >&2; exit 2
     fi
     _child=""
-    trap 'if [ -n "$_child" ]; then kill "$_child" 2>/dev/null; fi; rm -f "$_tmp"; exit 130' INT TERM
+    trap 'if [ -n "$_child" ]; then kill "$_child" 2>/dev/null; fi; rm -f "$_tmp" "$_hdr"; exit 130' INT TERM
 
     _fails=0
     while :; do
-      http_get_wait /inbox "id=$ID&wait=$_wait" "$_max" > "$_tmp" 2>/dev/null &
+      : > "$_hdr"
+      http_get_wait_hdr /inbox "id=$ID&wait=$_wait" "$_max" "$_hdr" > "$_tmp" 2>/dev/null &
       _child=$!
       wait "$_child"; _rc=$?
       _child=""
@@ -803,14 +817,14 @@ case "$cmd" in
         else
           printf 'chatbox: cannot reach the server (curl exit %s); retrying in %ss\n' "$_rc" "$_back" >&2
         fi
-        if [ "$ONCE" = 1 ]; then rm -f "$_tmp"; exit "$_rc"; fi
+        if [ "$ONCE" = 1 ]; then rm -f "$_tmp" "$_hdr"; exit "$_rc"; fi
         sleep "$_back"
         continue
       fi
       _fails=0
       case "$_body" in
         ''|"inbox for "*": empty")
-          if [ "$ONCE" = 1 ]; then rm -f "$_tmp"; exit 0; fi
+          if [ "$ONCE" = 1 ]; then rm -f "$_tmp" "$_hdr"; exit 0; fi
           continue ;;
       esac
       # Deliver, and acknowledge only what was actually delivered. A consumer that
@@ -831,15 +845,27 @@ case "$cmd" in
       if [ "$_ok" -eq 0 ]; then
         printf 'chatbox: delivery failed; leaving the message unread\n' >&2
       elif [ "$NOACK" != 1 ]; then
-        if ! http_post /ack --data-urlencode "id=$ID" --data-urlencode "all=1" >/dev/null 2>&1; then
-          printf 'chatbox: could not acknowledge; the message stays unread and may repeat\n' >&2
-          _fails=$((_fails + 1))
-          _back=$((_fails * 2)); [ "$_back" -gt 10 ] && _back=10
-          sleep "$_back"
+        # Acknowledge exactly the messages this page held. `all=1` marked *everything unread* read,
+        # so a page the server had capped (or a message that arrived while the page was being
+        # delivered) was acknowledged without ever being shown — mail marked read and then never
+        # delivered. The ids come from a response header, which a peer's message body cannot forge.
+        _ids="$(sed -n 's/^[Xx]-[Cc]hatbox-[Uu]nread-[Ii]ds: *//p' "$_hdr" 2>/dev/null | tr -d '\r' | head -n 1)"
+        if [ -z "$_ids" ]; then
+          printf 'chatbox: the server did not say which messages it sent; leaving them unread\n' >&2
+        else
+          for _mid in $(printf '%s' "$_ids" | tr ',' ' '); do
+            case "$_mid" in ''|*[!0-9]*) continue ;; esac
+            if ! http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$_mid" >/dev/null 2>&1; then
+              printf 'chatbox: could not acknowledge message %s; it stays unread and may repeat\n' "$_mid" >&2
+              _fails=$((_fails + 1))
+              _back=$((_fails * 2)); [ "$_back" -gt 10 ] && _back=10
+              sleep "$_back"
+            fi
+          done
         fi
       fi
       if [ "$ONCE" = 1 ]; then
-        rm -f "$_tmp"
+        rm -f "$_tmp" "$_hdr"
         [ "$_ok" -eq 1 ] && exit 0
         exit 1
       fi

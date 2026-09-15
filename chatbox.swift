@@ -985,11 +985,17 @@ struct Reply {
     var status: Int
     var body: String
     var forward: ForwardPlan?
+    /// Extra response headers. Used by the inbox to say *which* messages it rendered, so a client
+    /// can acknowledge what it was handed instead of "everything unread" — a header is structural,
+    /// so a peer's message body can never add an id to it.
+    var headers: [String: String]
 
-    init(_ status: Int, _ body: String, forward: ForwardPlan? = nil) {
+    init(_ status: Int, _ body: String, forward: ForwardPlan? = nil,
+         headers: [String: String] = [:]) {
         self.status = status
         self.body = body
         self.forward = forward
+        self.headers = headers
     }
 }
 
@@ -1221,12 +1227,13 @@ final class Chatbox: @unchecked Sendable {
             forwardQueue.async {
                 let note = self.forwardMessage(plan)
                 self.queue.async {
-                    self.finish(req, conn: conn, status: answer.status, body: base + note)
+                    self.finish(req, conn: conn, status: answer.status, body: base + note,
+                                headers: answer.headers)
                 }
             }
             return
         }
-        finish(req, conn: conn, status: answer.status, body: answer.body)
+        finish(req, conn: conn, status: answer.status, body: answer.body, headers: answer.headers)
     }
 
     /// The plain `(status, body)` a handler returns, as a `Reply`. Only `message` ever sets
@@ -1239,7 +1246,7 @@ final class Chatbox: @unchecked Sendable {
         case ("GET", "/health"): return Reply(200, health())
         case ("POST", "/register"): return reply(register(req, who))
         case ("POST", "/message"), ("POST", "/say"): return message(req, who)
-        case ("GET", "/inbox"): return reply(inbox(req, who))
+        case ("GET", "/inbox"): return inbox(req, who)
         case ("GET", "/thread"): return reply(showThread(req, who))
         case ("GET", "/threads"): return reply(listThreads(req, who))
         case ("POST", "/ack"): return reply(ack(req, who))
@@ -1716,20 +1723,32 @@ final class Chatbox: @unchecked Sendable {
         """, forward: plan)
     }
 
-    func inbox(_ req: Request, _ who: Principal) -> (Int, String) {
+    /// The ids a page rendered, as a response header the client can act on. Headers are structural,
+    /// so a peer's message body can never add an id to the list a wake loop will acknowledge.
+    private func unreadHeader(_ rows: [[String: String]]) -> [String: String] {
+        let rendered = rows.compactMap { $0["id"] }.filter { !$0.isEmpty }
+        return rendered.isEmpty ? [:] : ["X-Chatbox-Unread-Ids": rendered.joined(separator: ",")]
+    }
+
+    func inbox(_ req: Request, _ who: Principal) -> Reply {
         let id = req.p("id").isEmpty ? req.p("for") : req.p("id")
-        guard !id.isEmpty else { return (400, "error: id required\n") }
-        guard validId(id) else { return (400, "error: id must be a single line, without control characters\n") }
-        if let rejection = mayAct(as: id, who) { return rejection }
+        guard !id.isEmpty else { return Reply(400, "error: id required\n") }
+        guard validId(id) else { return Reply(400, "error: id must be a single line, without control characters\n") }
+        if let rejection = mayAct(as: id, who) { return Reply(rejection.0, rejection.1) }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
         let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+        // The ids travel in a header, not in the body: headers are structural, so a peer's message
+        // body cannot add an id to the list a wake loop will acknowledge. Saying which messages a
+        // page contains is what lets a client ack exactly those, instead of "everything unread" —
+        // which marked mail read that the page never held, and lost it.
+        let headers = unreadHeader(rows)
         if rows.isEmpty && req.p("json").isEmpty {
             // The one-line status the client prints unframed, because it is the server talking
             // about the inbox rather than a peer talking to the session. The JSON form still
             // answers JSON — with the counts it has, which are zero.
-            return (200, "inbox for \(id): empty\n")
+            return Reply(200, "inbox for \(id): empty\n")
         }
-        return (200, renderInbox(req, id: id, rows: rows))
+        return Reply(200, renderInbox(req, id: id, rows: rows), headers: headers)
     }
 
     func renderInbox(_ req: Request, id: String, rows: [[String: String]]) -> String {
@@ -2116,7 +2135,8 @@ final class Chatbox: @unchecked Sendable {
         // spin with no backoff.
         if store.hasUnread(forAgent: id) {
             let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
-            finish(req, conn: conn, status: 200, body: renderInbox(req, id: id, rows: rows))
+            finish(req, conn: conn, status: 200, body: renderInbox(req, id: id, rows: rows),
+                   headers: unreadHeader(rows))
             return
         }
         if Date() >= deadline {
@@ -2495,13 +2515,15 @@ final class Chatbox: @unchecked Sendable {
 
     /// Log the outcome and answer. Every route ends here exactly once, whether it
     /// was answered inline or after a long-poll wait.
-    func finish(_ req: Request, conn: NWConnection, status: Int, body: String) {
+    func finish(_ req: Request, conn: NWConnection, status: Int, body: String,
+                headers: [String: String] = [:]) {
         FileHandle.standardError.write("chatbox: \(req.method) \(req.path) -> \(status)\n".data(using: .utf8)!)
-        respond(conn, status: status, body: body)
+        respond(conn, status: status, body: body, headers: headers)
     }
 
     func respond(_ conn: NWConnection, status: Int, body: String,
-                 contentType: String = "text/plain; charset=utf-8") {
+                 contentType: String = "text/plain; charset=utf-8",
+                 headers: [String: String] = [:]) {
         let reason = status == 200 ? "OK"
             : (status == 400 ? "Bad Request"
             : (status == 401 ? "Unauthorized"
@@ -2512,6 +2534,7 @@ final class Chatbox: @unchecked Sendable {
         let payload = Data(body.utf8)
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
         head += "Content-Type: \(contentType)\r\n"
+        for key in headers.keys.sorted() { head += "\(key): \(headers[key]!)\r\n" }
         head += "Content-Length: \(payload.count)\r\n"
         head += "Connection: close\r\n\r\n"
         var out = Data(head.utf8)
