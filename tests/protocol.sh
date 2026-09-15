@@ -3386,6 +3386,122 @@ equals "a second answer reaches the other two, not only the asker" \
   "$(field "$mo_reply2" delivered_to)" "$MO1, $MO3"
 
 # ---------------------------------------------------------------------------
+# 27. The bounds: rows, connections, and a deadline (TRK-30)
+# Three limits that were not there. A thread returned every message in it, so the size of one
+# response was decided by whoever wrote the most; the registry and the credential list were
+# unbounded too. Connection *count* was unbounded, and a connection that never finished a request
+# was held for ever — free for whoever opened it, and a slow trickle was worse than silence. All
+# three are configurable, reported by `GET /health`, and named when they bite.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  boport="${CHATBOX_BOUNDS_PORT:-8797}"
+  bobase="http://127.0.0.1:$boport"
+  bobase2="http://127.0.0.1:${CHATBOX_BOUNDS2_PORT:-8798}"
+  boltb="${CHATBOX_BOUNDS2_PORT:-8798}"
+  bodb="$SCRATCH/bounds-${RUN}.sqlite"
+  bodb2="$SCRATCH/bounds2-${RUN}.sqlite"
+  botok="$SCRATCH/bounds-${RUN}.token"
+  printf '%s\n' "$TOKEN" > "$botok"
+  "$CHATBOX_BIN" --port "$boport" --db "$bodb" --token-file "$botok" \
+    --max-rows 3 --idle-timeout 1 --max-connections 2 > "$SCRATCH/bounds-${RUN}.log" 2>&1 &
+  bopid=$!
+  # A second server, because the idle deadline and the connection ceiling need opposite settings:
+  # proving a silent connection is closed after a second needs a short deadline, and holding two
+  # connections open to reach the ceiling needs a long one.
+  "$CHATBOX_BIN" --port "$boltb" --db "$bodb2" --token-file "$botok" \
+    --max-rows 3 --idle-timeout 30 --max-connections 2 > "$SCRATCH/bounds2-${RUN}.log" 2>&1 &
+  bopid2=$!
+  boready=0
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$bopid" 2>/dev/null; then break; fi
+    if curl -fsS "$bobase/health?token=$TOKEN" >/dev/null 2>&1 \
+       && curl -fsS "$bobase2/health?token=$TOKEN" >/dev/null 2>&1; then boready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$boready" = 1 ]; then
+    bo() { curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" "$bobase/$1" "${@:2}"; }
+    bog() { curl -sS --max-time 20 "$bobase/$1?token=$TOKEN${2:+&$2}"; }
+
+    # The bounds are discoverable without the command line that set them.
+    contains "health reports the row bound" "$(bog health)" "max rows: 3"
+    contains "and the connection bound" "$(bog health)" "up to 2"
+    contains "and the idle deadline" "$(bog health)" "1s idle deadline"
+
+    # Rows: a thread longer than the bound, and a registry longer than the bound.
+    botid="$(bo message --data-urlencode "from=bo" --data-urlencode "to=bo2" \
+      --data-urlencode "subject=bounds $RUN" --data-urlencode "body=b1-$RUN" | sed -n 's/^thread: //p')"
+    for i in 2 3 4 5; do
+      bo message --data-urlencode "from=bo" --data-urlencode "thread=$botid" \
+        --data-urlencode "body=b$i-$RUN" >/dev/null
+    done
+    bofull="$(bog thread "id=$botid")"
+    contains "a long thread says how many of how many it shows" "$bofull" "3 of 5 message(s)"
+    contains "and names what it left out" "$bofull" "2 older one(s) are not"
+    equals "and lists exactly the bound" "$(printf '%s\n' "$bofull" | grep -c '^--- \[')" "3"
+    for i in 1 2 3 4 5; do
+      bo register --data-urlencode "id=bo-agent-$i" --data-urlencode "node=n" >/dev/null
+    done
+    bopeers="$(bog peers)"
+    contains "a registry longer than the bound says how many of how many" "$bopeers" "registered agents — 3 of 5"
+    contains "and says the rest are registered too" "$bopeers" "2 more are registered than are shown"
+    for i in 1 2 3 4 5; do
+      bo token --data-urlencode "node=node-$i" >/dev/null
+    done
+    botokens="$(bog token)"
+    contains "and so does the credential list" "$botokens" "credentials — 3 of 5"
+    contains "naming what it left out" "$botokens" "2 more are issued than are shown"
+
+    # The idle deadline: a connection that sends nothing is closed at the deadline.
+    ( sleep 15 | nc -w 12 127.0.0.1 "$boport" >/dev/null 2>&1 ) &
+    idle_nc=$!
+    sleep 3
+    contains "the idle deadline closed a silent connection" \
+      "$(cat "$SCRATCH/bounds-${RUN}.log")" "idle connection closed after 1s"
+    kill "$idle_nc" 2>/dev/null
+    wait "$idle_nc" 2>/dev/null
+
+    # ... but a request that arrived is the server's own time: a held long poll outlives the
+    # deadline, which is the one interaction that could make the deadline harmful.
+    bold0=$(date +%s)
+    boheld="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$bobase/inbox?id=bo&wait=3&token=$TOKEN")"
+    bold1=$(date +%s)
+    equals "a held long poll is not cut off by the idle deadline" "$boheld" "200"
+    if [ "$((bold1 - bold0))" -ge 3 ]; then
+      ok "and it really waited past the deadline"
+    else
+      no "and it really waited past the deadline" "returned after $((bold1 - bold0))s"
+    fi
+
+    # The ceiling: two connections held open, and the third is answered 503 rather than dropped.
+    # `nc -w 3` is what closes them again: killing the pipeline's subshell leaves nc holding its
+    # socket, so the server would stay at its limit and the "accepts again" check below could not
+    # tell a limit from a latch.
+    ( sleep 15 | nc -w 3 127.0.0.1 "$boltb" >/dev/null 2>&1 ) &
+    con_a=$!
+    ( sleep 15 | nc -w 3 127.0.0.1 "$boltb" >/dev/null 2>&1 ) &
+    con_b=$!
+    sleep 1
+    equals "a connection past the ceiling is refused" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$bobase2/health?token=$TOKEN")" "503"
+    contains "and told why" "$(curl -sS --max-time 10 "$bobase2/health?token=$TOKEN")" \
+      "connection limit (2)"
+    contains "the refusal is in the log too" "$(cat "$SCRATCH/bounds2-${RUN}.log")" "over 2 connections"
+    # nc closes them on its own idle timeout; wait for that, and for the server to notice.
+    wait "$con_a" "$con_b" 2>/dev/null
+    sleep 2
+    # With them gone the server accepts again, so the ceiling is a limit and not a latch.
+    contains "and the server accepts again once they are gone" \
+      "$(curl -sS --max-time 10 "$bobase2/health?token=$TOKEN")" "ok chatbox up"
+  else
+    no "the bounds fixture servers started" "no answer on $boport or $boltb"
+  fi
+  kill "$bopid" "$bopid2" 2>/dev/null
+  wait "$bopid" "$bopid2" 2>/dev/null
+else
+  printf '  skip  the bounds (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

@@ -491,12 +491,14 @@ final class Store: @unchecked Sendable {
         run("UPDATE tokens SET last_used=? WHERE id=?", [at, id])
     }
 
-    func tokensListing() -> [[String: String]] {
+    func tokensListing(limit: Int) -> [[String: String]] {
         rows("""
         SELECT id, node, namespaces, note, created_at, last_used, revoked_at
-        FROM tokens ORDER BY created_at, id
+        FROM tokens ORDER BY created_at, id LIMIT \(limit)
         """)
     }
+
+    func tokenCount() -> Int { Int(scalar("SELECT COUNT(*) FROM tokens")) ?? 0 }
 
     /// Empty when the session has never registered.
     func lastSeen(of id: String) -> String {
@@ -662,9 +664,16 @@ final class Store: @unchecked Sendable {
         }.map { $0["id"] ?? "" }.filter { !$0.isEmpty }
     }
 
-    func agentsListing() -> [[String: String]] {
-        rows("SELECT id, node, agent, harness, session, ip, repos, note, registered_at, last_seen FROM agents ORDER BY id")
+    /// The registry, bounded: a listing that returns everything is a response with no bound at
+    /// all, and the caller states the limit when it bites.
+    func agentsListing(limit: Int) -> [[String: String]] {
+        rows("""
+        SELECT id, node, agent, harness, session, ip, repos, note, registered_at, last_seen
+        FROM agents ORDER BY id LIMIT \(limit)
+        """)
     }
+
+    func agentCount() -> Int { Int(scalar("SELECT COUNT(*) FROM agents")) ?? 0 }
 
     /// Cheap "is there anything unread?" for the long-poll path — one indexed
     /// lookup instead of the full inbox join, which is what makes a waiter cheap
@@ -702,6 +711,22 @@ final class Store: @unchecked Sendable {
         SELECT id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients
         FROM messages WHERE thread_id = ? ORDER BY id ASC
         """, [id])
+    }
+
+    /// The newest `limit` messages of a thread, in reading order. A conversation has no natural
+    /// bound, so an answer that returns all of it is a response whose size the *peer* decides;
+    /// the newest are the ones a reader acts on, and the caller says how many were left out.
+    func threadPage(_ id: String, limit: Int) -> [[String: String]] {
+        rows("""
+        SELECT * FROM (
+          SELECT id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients
+          FROM messages WHERE thread_id = ? ORDER BY id DESC LIMIT \(limit)
+        ) ORDER BY id ASC
+        """, [id])
+    }
+
+    func messageCount(thread id: String) -> Int {
+        Int(scalar("SELECT COUNT(*) FROM messages WHERE thread_id = ?", [id])) ?? 0
     }
 }
 
@@ -759,15 +784,33 @@ final class Chatbox: @unchecked Sendable {
     /// body — because that is what actually arrives on the socket and what a sender
     /// controls; a message is the body inside it.
     let maxBody: Int
+    /// Seconds a connection has to deliver a complete request before the server closes it. A
+    /// connection that sends nothing is not a request, and holding it open is free for whoever
+    /// opened it and a resource here. 0 disables the deadline.
+    let idleTimeout: Int
+    /// How many connections may be open at once. The per-connection memory is bounded by the
+    /// request cap; the number of them was not, so one peer could open as many as it liked.
+    let maxConnections: Int
+    /// The most rows one listing may return — thread messages, the registry, the credential list.
+    /// The inbox has its own window because it is a mail queue rather than a listing.
+    let maxRows: Int
     let queue = DispatchQueue(label: "chatbox.queue")
 
-    init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool, maxBody: Int) {
+    init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool, maxBody: Int,
+         idleTimeout: Int, maxConnections: Int, maxRows: Int) {
         self.store = store
         self.token = token
         self.staleAfter = staleAfter
         self.tlsEnabled = tlsEnabled
         self.maxBody = maxBody
+        self.idleTimeout = idleTimeout
+        self.maxConnections = maxConnections
+        self.maxRows = maxRows
     }
+
+    /// Connections that have been accepted and not yet finished. Kept as identities rather than a
+    /// count so a connection that reports both `failed` and `cancelled` cannot be subtracted twice.
+    private var liveConnections = Set<ObjectIdentifier>()
 
     // ---------- presence ----------
     //
@@ -947,7 +990,8 @@ final class Chatbox: @unchecked Sendable {
         let m = store.scalar("SELECT COUNT(*) FROM messages")
         let presence = staleAfter == 0 ? "off" : "stale after \(humanSeconds(staleAfter))"
         let transport = tlsEnabled ? "tls" : "plain http"
-        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nnow: \(nowISO())\n"
+        let idle = idleTimeout == 0 ? "no idle deadline" : "\(idleTimeout)s idle deadline"
+        return "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nconnections: up to \(maxConnections), \(idle)\nnow: \(nowISO())\n"
     }
 
     func register(_ req: Request, _ who: Principal) -> (Int, String) {
@@ -1373,12 +1417,21 @@ final class Chatbox: @unchecked Sendable {
     func showThread(_ req: Request) -> (Int, String) {
         let id = req.p("id").isEmpty ? req.p("thread") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id (thread) required\n") }
-        let rows = store.thread(id)
+        // A conversation has no natural bound, so this answer is bounded instead: the newest
+        // `--max-rows` messages, with the number left out stated. Silence about the rest would be
+        // the same dishonesty as a silently truncated inbox.
+        let matching = store.messageCount(thread: id)
+        let rows = store.threadPage(id, limit: maxRows)
         guard !rows.isEmpty else { return (404, "no thread \(oneLine(id))\n") }
         if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
         let head = store.rows("SELECT repo, subject, created_at, created_by FROM threads WHERE id=?", [id]).first ?? [:]
         var out = "thread \(id)  repo: \((head["repo"] ?? "").isEmpty ? "-" : head["repo"]!)  subject: \(head["subject"] ?? "-")\n"
-        out += "opened: \(head["created_at"] ?? "-") by \(head["created_by"] ?? "-")   \(rows.count) message(s)\n"
+        out += "opened: \(head["created_at"] ?? "-") by \(head["created_by"] ?? "-")   "
+            + "\(rows.count)\(matching > rows.count ? " of \(matching)" : "") message(s)\n"
+        if matching > rows.count {
+            out += "note: the newest \(rows.count) are shown, \(matching - rows.count) older one(s) are not"
+                + " — raise --max-rows to read further back\n"
+        }
         for r in rows {
             out += "\n--- [\(r["id"] ?? "")] \(r["created_at"] ?? "")  \(r["sender"] ?? "") → \((r["recipients"] ?? "").isEmpty ? "(nobody)" : r["recipients"]!)\n"
             if !(r["subject"] ?? "").isEmpty, r["id"] == rows.first?["id"] { out += "subject: \(r["subject"]!)\n" }
@@ -1450,7 +1503,8 @@ final class Chatbox: @unchecked Sendable {
     }
 
     func peers(_ req: Request) -> (Int, String) {
-        var rows = store.agentsListing()
+        let matchingAgents = store.agentCount()
+        var rows = store.agentsListing(limit: maxRows)
         let now = Date()
         for i in rows.indices {
             let seen = rows[i]["last_seen"] ?? ""
@@ -1459,7 +1513,10 @@ final class Chatbox: @unchecked Sendable {
             rows[i]["age"] = ageDescription(seen, now: now)
         }
         if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
-        var out = "registered agents — \(rows.count)\n"
+        var out = "registered agents — \(rows.count)\(matchingAgents > rows.count ? " of \(matchingAgents)" : "")\n"
+        if matchingAgents > rows.count {
+            out += "note: \(matchingAgents - rows.count) more are registered than are shown — raise --max-rows to see them\n"
+        }
         if staleAfter == 0 { out += "(staleness reporting is off)\n" }
         for r in rows {
             let status = r["status"] ?? "active"
@@ -1528,10 +1585,14 @@ final class Chatbox: @unchecked Sendable {
         guard who.isBootstrap else {
             return (403, "forbidden: only the bootstrap credential may list credentials\n")
         }
-        let rows = store.tokensListing()
+        let matchingTokens = store.tokenCount()
+        let rows = store.tokensListing(limit: maxRows)
         if rows.isEmpty { return (200, "no credentials issued\n") }
         if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
-        var out = "credentials — \(rows.count)\n"
+        var out = "credentials — \(rows.count)\(matchingTokens > rows.count ? " of \(matchingTokens)" : "")\n"
+        if matchingTokens > rows.count {
+            out += "note: \(matchingTokens - rows.count) more are issued than are shown — raise --max-rows to see them\n"
+        }
         for r in rows {
             let revoked = !(r["revoked_at"] ?? "").isEmpty
             out += "\n\(r["id"] ?? "")  \(revoked ? "REVOKED" : "active")  node: \(r["node"] ?? "-")\n"
@@ -1664,7 +1725,8 @@ final class Chatbox: @unchecked Sendable {
             : (status == 401 ? "Unauthorized"
             : (status == 403 ? "Forbidden"
             : (status == 404 ? "Not Found"
-            : (status == 413 ? "Payload Too Large" : "Error")))))
+            : (status == 413 ? "Payload Too Large"
+            : (status == 503 ? "Service Unavailable" : "Error"))))))
         let payload = Data(body.utf8)
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
         head += "Content-Type: text/plain; charset=utf-8\r\n"
@@ -1676,14 +1738,55 @@ final class Chatbox: @unchecked Sendable {
     }
 
     func serve(conn: NWConnection) {
+        let identity = ObjectIdentifier(conn)
+        if liveConnections.count >= maxConnections {
+            // Answer rather than drop: a peer that is told nothing cannot tell a busy server from
+            // a broken one, and the refusal is cheap because nothing has been read yet. The socket
+            // still has to be started before it can carry the answer, and it is deliberately not
+            // counted — refusing it must not keep the server at its limit.
+            conn.stateUpdateHandler = { state in
+                if case .ready = state { self.tooManyConnections(conn) }
+                if case .failed = state { conn.cancel() }
+            }
+            conn.start(queue: queue)
+            return
+        }
+        liveConnections.insert(identity)
+        // A connection that never finishes a request is closed rather than held: the deadline
+        // starts when the socket is accepted, so a slow trickle is bounded exactly like silence.
+        let idle = DispatchWorkItem { [weak self] in
+            guard let self = self, self.liveConnections.contains(identity) else { return }
+            FileHandle.standardError.write("chatbox: idle connection closed after \(self.idleTimeout)s\n".data(using: .utf8)!)
+            conn.cancel()
+        }
         conn.stateUpdateHandler = { state in
-            if case .ready = state { self.receive(conn, buffer: Data()) }
-            if case .failed = state { conn.cancel() }
+            switch state {
+            case .ready:
+                // Armed once the connection is *established*, not when the socket is accepted: a
+                // handshake in progress is not an idle request, and arming earlier made a peer
+                // that failed the handshake wait out the whole deadline instead of being told no.
+                if self.idleTimeout > 0 {
+                    self.queue.asyncAfter(deadline: .now() + .seconds(self.idleTimeout), execute: idle)
+                }
+                self.receive(conn, buffer: Data(), idle: idle)
+            case .failed:
+                idle.cancel()
+                self.liveConnections.remove(identity)
+                // A failed connection is still a live socket until it is cancelled: leaving it
+                // there makes a peer that failed the handshake wait for the deadline instead of
+                // being told no.
+                conn.cancel()
+            case .cancelled:
+                idle.cancel()
+                self.liveConnections.remove(identity)
+            default:
+                break
+            }
         }
         conn.start(queue: queue)
     }
 
-    private func receive(_ conn: NWConnection, buffer: Data) {
+    private func receive(_ conn: NWConnection, buffer: Data, idle: DispatchWorkItem) {
         // Never read far past the cap: the point of the limit is the memory, so the read
         // itself is bounded by it rather than by whatever the peer decides to send.
         conn.receive(minimumIncompleteLength: 1, maximumLength: min(131_072, self.maxBody + 1)) { data, _, isComplete, error in
@@ -1700,6 +1803,9 @@ final class Chatbox: @unchecked Sendable {
                 return
             }
             if let req = self.parse(buf) {
+                // The request has arrived, so the accept deadline has done its job. Anything the
+                // connection does from here — a long poll included — is the server's own time.
+                idle.cancel()
                 self.dispatch(req, conn: conn)
                 return
             }
@@ -1715,7 +1821,7 @@ final class Chatbox: @unchecked Sendable {
                 conn.cancel()
                 return
             }
-            self.receive(conn, buffer: buf)
+            self.receive(conn, buffer: buf, idle: idle)
         }
     }
 
@@ -1744,6 +1850,16 @@ final class Chatbox: @unchecked Sendable {
         guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else { return nil }
         let promised = declaredLength(buffer) ?? 0
         return buffer.count - headerEnd.upperBound < promised ? promised : nil
+    }
+
+    /// The connection ceiling, answered rather than dropped.
+    private func tooManyConnections(_ conn: NWConnection) {
+        FileHandle.standardError.write("chatbox: over \(maxConnections) connections -> 503\n".data(using: .utf8)!)
+        respond(conn, status: 503, body: """
+        error: the server is at its connection limit (\(maxConnections)) — retry shortly, or raise \
+        it with --max-connections.
+
+        """)
     }
 
     /// A body that stops before the length it announced is a request that was never made, and the
@@ -1780,7 +1896,8 @@ final class Chatbox: @unchecked Sendable {
 /// Flags that carry a value.
 let valueFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--stale-after",
                               "--max-body", "--tls-identity", "--tls-password-file", "--prune",
-                              "--backup", "--verify-backup"]
+                              "--backup", "--verify-backup", "--idle-timeout", "--max-connections",
+                              "--max-rows"]
 /// Flags that are their own value. A boolean flag at the end of the line is complete, and one
 /// that is handed a value is a mistake worth naming.
 let boolFlags: Set<String> = ["--prune-dry-run"]
@@ -2196,6 +2313,33 @@ if maxBodyValue < 512 || maxBodyValue > maxBodyCeiling {
 }
 let maxBody = maxBodyValue
 
+// The other three bounds. Each is checked at startup for the same reason the request cap is: a
+// value that bounds nothing, or bounds everything, looks like a configured server from outside and
+// is discovered only under load.
+let idleRaw = argValue("--idle-timeout", "30")
+let idleValue = Int(idleRaw) ?? -1
+if idleValue < 0 || idleValue > 3600 {
+    FileHandle.standardError.write("chatbox: --idle-timeout must be between 0 (no deadline) and 3600 seconds — got '\(idleRaw)'\n".data(using: .utf8)!)
+    exit(2)
+}
+let idleTimeout = idleValue
+
+let maxConnRaw = argValue("--max-connections", "256")
+let maxConnValue = Int(maxConnRaw) ?? 0
+if maxConnValue < 1 || maxConnValue > 65535 {
+    FileHandle.standardError.write("chatbox: --max-connections must be between 1 and 65535 — got '\(maxConnRaw)'\n".data(using: .utf8)!)
+    exit(2)
+}
+let maxConnections = maxConnValue
+
+let maxRowsRaw = argValue("--max-rows", "500")
+let maxRowsValue = Int(maxRowsRaw) ?? 0
+if maxRowsValue < 1 || maxRowsValue > 1000000 {
+    FileHandle.standardError.write("chatbox: --max-rows must be between 1 and 1000000 — got '\(maxRowsRaw)'\n".data(using: .utf8)!)
+    exit(2)
+}
+let maxRows = maxRowsValue
+
 // TLS is opt-in, because turning it on changes the URL every client has to use.
 // Everything about it fails closed: a password without an identity, an unreadable
 // password file, an identity that will not open — each one stops the server rather
@@ -2241,7 +2385,8 @@ if !tlsIdentityPath.isEmpty {
 }
 
 let server = Chatbox(store: store, token: token, staleAfter: staleAfter,
-                     tlsEnabled: tlsIdentity != nil, maxBody: maxBody)
+                     tlsEnabled: tlsIdentity != nil, maxBody: maxBody,
+                     idleTimeout: idleTimeout, maxConnections: maxConnections, maxRows: maxRows)
 let scheme = tlsIdentity == nil ? "http" : "https"
 Chatbox.publicURL = "\(scheme)://\(Host.current().name ?? "localhost"):\(port)"
 
@@ -2277,6 +2422,8 @@ listener.stateUpdateHandler = { state in
 // rules, and they have to mean the same thing as the new ones or mail goes missing.
 let migratedKeys = store.migrateRepoKeys()
 print("auth: \(token == nil ? "OPEN (no token)" : "token required")")
+let idleBanner = idleTimeout == 0 ? "no idle deadline" : "\(idleTimeout)s idle deadline"
+print("bounds: \(maxRows) rows per listing, \(maxConnections) connections, \(idleBanner)")
         print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")
         print("transport: \(tlsIdentity == nil ? "plain HTTP — the token crosses the network in the clear" : "TLS")")
         print("max request: \(maxBody) bytes")
