@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 85 | done: 4 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
+**Open: 84 | done: 5 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -15,7 +15,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0019](#0019) | S0 | M2 | `chatbox-mcp.swift:49` | MCP adapter silently corrupts every argument containing '+' because the server decodes '+' as space [also: CHATBOX_URL with a trailing slash yields //path and 404s every tool call] | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0020](#0020) | S0 | M1 | `chatbox.swift:1550` | Delivery rows are written with an unchecked run(), so a failed delivery is announced as delivered and the message is unreachable | bug | **START** | node1 | phase-B/L1-architecture |
 | [0021](#0021) | S0 | M1 | `chatbox.swift:1826` | GET /ui builds 'path + ?token=' and always gets 401, so the read-only view shows an empty board [also: GET /ui concatenates window.location.search onto paths that already contain a query, so its own credential is swallowed and every fetch is unauthenticated] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-http |
-| [0022](#0022) | S0 | M1 | `chatbox.swift:2300` | Revocation is reported successful without checking whether the UPDATE ran [also: Credential issue and revoke ignore the write result and report success] | unsafe | **AUDIT** | node1 | phase-B/L2-server-core,L3-line-level |
+| [0022](#0022) | S0 | M1 | `chatbox.swift:2300` | Revocation is reported successful without checking whether the UPDATE ran [also: Credential issue and revoke ignore the write result and report success] | unsafe | **DONE** | node1 | phase-B/L2-server-core,L3-line-level |
 | [0023](#0023) | S0 | M1 | `chatbox.swift:2830` | --token "" silently starts a fully open board [also: An explicitly empty --token silently starts an open board (fails open, unlike --token-file); `--token ""` (an unset variable) starts an unauthenticated board; --token beats --token-file although the code says the file is preferred] | incomplete | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L4-security,L7-ops |
 | [0001](#0001) | S1 | M1 | `chatbox.swift (whole file)` | Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors) | unsafe | **START** | node1 | phase-A baseline |
 | [0002](#0002) | S1 | M1 | `chatbox.swift:1062,1070` | Static ISO8601DateFormatter instances are shared mutable state (not Sendable) | unsafe | **START** | node1 | phase-A baseline |
@@ -196,7 +196,7 @@ AUDIT (gate): re-read cold. withQuery is pure and total (empty search returns th
 - **Severity / category / module:** S0 / unsafe / M1
 - **Location:** `chatbox.swift:2300`
 - **Title:** Revocation is reported successful without checking whether the UPDATE ran [also: Credential issue and revoke ignore the write result and report success]
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** VERIFIED BY AUDITOR (static): `store.revokeToken(id, at: nowISO())` result discarded, then 200 "ok revoked <id> / Every request presenting it is rejected from now on."
 
 revokeToken() (2287-2306) reads revoked_at, calls store.revokeToken(id, at:) at 2300, then returns 200 "ok revoked ... Every request presenting it is rejected from now on". Store.revokeToken (557-559) is run("UPDATE tokens SET revoked_at=? WHERE id=? AND (revoked_at IS NULL OR revoked_at='')"); Store.run (468-477) returns -1 on prepare/step failure and the caller ignores it. authorize() (1121) rejects only a row whose revoked_at is non-empty, so after a failed write (write lock past busy_timeout=5000, disk full, read-only file) the credential keeps authenticating. | Line 2300 `store.revokeToken(id, at: nowISO())` discards the result of `run("UPDATE tokens SET revoked_at=?...")` (Store.run returns -1 on failure, 557-559) and then tells the operator 'Every request presenting it is rejected from now on'. Line 2232 `store.addToken(...)` (which calls run at 549-550) is equally unchecked, and the response prints the secret.
@@ -207,6 +207,7 @@ CONFIDENCE: high
 - **Fix:** Make Store.addToken/revokeToken report the statement result, check it in both routes, answer 500 when the write did not happen, print no secret before the row exists, and resolve a concurrent revoke as the existing 'already revoked' success.
 - **Evidence (after):** TEST (gate), with the store forced to refuse by triggers on a live board (the same technique the backup section already uses). BEFORE: with a BEFORE INSERT trigger on tokens, `POST /token` answered 200 and printed `secret:` for a credential that was never stored; with a BEFORE UPDATE trigger, `POST /token/revoke` answered `ok revoked tk-...` while the row was still live (`revoked_at` NULL) — so the operator was told a live credential was dead. AFTER: the issuance is 500 `error: the credential was not stored — nothing was issued (blocked)` with no secret printed; the revocation is 500 `error: the revocation did not run — tk-... is still valid (blocked)`; both work again once the trigger is dropped. Suite base cell green at 891 passed / 0 failed (8 new checks); mutations 234-audit0022-issueguard (3 checks fail) and 235-audit0022-revokeguard (2 checks fail) red, relative cell green, 0 false passes.
 AUDIT (gate): re-read cold. Both store methods use runReporting and return (rc, changes); a DONE with changes == 0 on revoke is resolved by re-reading the row (a concurrent revoke is a success, not a false failure); the issuance route checks the write before printing the one and only copy of the secret; the existing 'already revoked' 200 path is unchanged; a prepare failure (rc != DONE) is still a 500 and now carries the store's own reason. No check weakened: all 8 are additive. Baseline: suite 883 -> 891; build and scanners unchanged.
+- **Commit:** `599a87d`
 - **Notes:** Rejected alternatives: (a) checking only `tokenExists` before the UPDATE (it cannot see a refused UPDATE); (b) printing the secret and warning if the insert failed - the operator would hold a credential that can never work, and the only copy of the secret would be in a response about a failure; (c) treating changes == 0 as 'already revoked' unconditionally - that hides a real refusal, so the row is re-read instead.
 
 ### 0023
