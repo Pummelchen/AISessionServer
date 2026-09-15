@@ -8,8 +8,9 @@
 // external packages, one file, no daemon dependencies.
 //
 // Build: xcrun swiftc -O chatbox.swift -o chatbox
-// Run:   ./chatbox --port 8787 --db ~/chatbox.sqlite [--token SECRET] [--open]
+// Run:   ./chatbox --port 8787 --db ~/chatbox.sqlite [--token SECRET | --token-file PATH]
 //        [--stale-after SECONDS]   (default 604800 = 7 days; 0 disables)
+//        With no token at all the board is OPEN to anyone who can reach the port.
 //
 // Operator modes, which run and exit rather than listen:
 //   ./chatbox --db <path> --prune <days> [--prune-dry-run]
@@ -449,6 +450,21 @@ final class Store: @unchecked Sendable {
     /// row's id, so a caller that needs to know whether the row was really stored has
     /// to ask this instead.
     func changedRows() -> Int32 { sqlite3_changes(db) }
+
+    /// Run a statement and report what the database did: the step's result code and the rows it
+    /// changed. `run` plus `changedRows` cannot tell "the statement stored nothing" from "the
+    /// statement failed" — both leave the counter at zero — and a caller that has to answer 404
+    /// must not say "no such thread" when the real answer is "the store refused".
+    func runReporting(_ sql: String, _ binds: [String?] = []) -> (rc: Int32, changes: Int32, id: Int64) {
+        guard let st = prepare(sql, binds) else { return (SQLITE_ERROR, 0, -1) }
+        defer { sqlite3_finalize(st) }
+        let rc = sqlite3_step(st)
+        return (rc, sqlite3_changes(db), sqlite3_last_insert_rowid(db))
+    }
+
+    /// The database's own description of the last failure. A caller that has to explain why a
+    /// write did not happen should say what SQLite said rather than guess at it.
+    func lastError() -> String { String(cString: sqlite3_errmsg(db)) }
 
     // MARK: credentials
 
@@ -1134,14 +1150,21 @@ final class Chatbox: @unchecked Sendable {
         // there, so an operator's `--prune` racing this reply cannot leave a message
         // nobody can reach. A reply into a thread that is not there stores nothing at
         // all — no message, no delivery, and not even the sender's liveness stamp.
-        let msgId = store.run("""
+        let attempt = store.runReporting("""
         INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,reply_to,recipients)
         SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM threads WHERE id=?)
         """, [String(threadId), nowISO(), from, effRepo, subject, body, replyTo == 0 ? nil : String(replyTo), recipients.joined(separator: ","), String(threadId)])
-        if store.changedRows() == 0 {
-            // The select matched no row, so nothing was stored. For a reply that means
-            // the thread is gone — and answering 404 here is what keeps a message from
-            // ever being written where no reader can reach it.
+        let msgId = attempt.id
+        if attempt.changes == 0 {
+            // Nothing was stored, and there are two reasons for that. A statement that *failed* —
+            // a locked database, a trigger that refused — is a storage problem: answering "no such
+            // thread" would be a lie, and its advice ("send without thread=") would open a
+            // duplicate thread. Only a statement that ran and matched no row means the thread is
+            // gone, which is the case answering 404 protects.
+            if attempt.rc != SQLITE_DONE {
+                FileHandle.standardError.write("chatbox: the message insert failed: \(store.lastError())\n".data(using: .utf8)!)
+                return (500, "error: the message could not be stored — nothing was written\n")
+            }
             return (404, "error: no thread \(threadId) — send without thread= to open one\n")
         }
 
@@ -1351,7 +1374,7 @@ final class Chatbox: @unchecked Sendable {
         let id = req.p("id").isEmpty ? req.p("thread") : req.p("id")
         guard !id.isEmpty else { return (400, "error: id (thread) required\n") }
         let rows = store.thread(id)
-        guard !rows.isEmpty else { return (404, "no thread \(id)\n") }
+        guard !rows.isEmpty else { return (404, "no thread \(oneLine(id))\n") }
         if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
         let head = store.rows("SELECT repo, subject, created_at, created_by FROM threads WHERE id=?", [id]).first ?? [:]
         var out = "thread \(id)  repo: \((head["repo"] ?? "").isEmpty ? "-" : head["repo"]!)  subject: \(head["subject"] ?? "-")\n"
@@ -1397,9 +1420,15 @@ final class Chatbox: @unchecked Sendable {
         // message in the thread, so a session holding one of them was told `ok acked 3`, and
         // `ack?message=N` claimed one whatever the store held: acknowledgements that never
         // happened, reported by the one answer a caller can check.
+        //
+        // All three forms stamp only rows that are still unread, so all three are idempotent: acking
+        // the same thing twice reports the work the second call really did (none), and the first
+        // ack time is not moved by the second — a read cursor records when the mail was read.
         var n = 0
         if !req.p("message").isEmpty {
-            store.run("UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=?", [nowISO(), id, req.p("message")])
+            store.run("""
+            UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=? AND (acked_at IS NULL OR acked_at='')
+            """, [nowISO(), id, req.p("message")])
             n = Int(store.changedRows())
         } else if !req.p("all").isEmpty {
             store.run("""
@@ -1410,7 +1439,8 @@ final class Chatbox: @unchecked Sendable {
             // One statement for the whole thread rather than one per message: the count is then
             // what the ack changed, and a long thread is not a long list of statements.
             store.run("""
-            UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id IN (SELECT id FROM messages WHERE thread_id=?)
+            UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at='')
+              AND message_id IN (SELECT id FROM messages WHERE thread_id=?)
             """, [nowISO(), id, req.p("thread")])
             n = Int(store.changedRows())
         } else {
@@ -1830,21 +1860,60 @@ func sqliteText(_ db: OpaquePointer?, _ sql: String) -> String? {
     return String(cString: c)
 }
 
-/// Row counts for every board table, or nil when the file cannot be read as a board. An empty
-/// file, a 4 KB header, a truncated copy and a plain text file all fail the same way — which is
-/// the point: none of them is a backup, and each one used to look like one.
-func boardCounts(_ path: String) -> [String: Int]? {
+/// Whether a non-empty `-wal` sits beside this file. If one does, the file is not at rest: the
+/// write-ahead log is part of its content and has to be read with it, the ordinary way. If none
+/// does, the file can be read as an immutable snapshot — which writes no `-shm` beside it, and is
+/// therefore the only way to verify a backup sitting on a read-only mount.
+func hasPendingWAL(_ path: String) -> Bool {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: path + "-wal"),
+          let n = attrs[.size] as? NSNumber else { return false }
+    return n.intValue > 0
+}
+
+/// A path as the body of a `file:` URI: the three characters that would change its meaning.
+func uriPath(_ path: String) -> String {
+    path.replacingOccurrences(of: "%", with: "%25")
+        .replacingOccurrences(of: "?", with: "%3F")
+        .replacingOccurrences(of: "#", with: "%23")
+}
+
+/// Row counts for every board table, or the reason the file cannot be read as a board. An empty
+/// file, a 4 KB header, a truncated copy, a plain text file and a database with no board tables
+/// all fail — which is the point: none of them is a backup, and each one used to look like one.
+/// The reason is carried out so the caller can name the real problem instead of guessing at it.
+/// What reading a board file produced: its table counts, or the reason it is not a board. A plain
+/// enum rather than `Result` because the failure is a sentence for the operator, not an `Error`.
+enum BoardRead {
+    case counts([String: Int])
+    case problem(String)
+}
+
+func boardCounts(_ path: String) -> BoardRead {
     var db: OpaquePointer?
-    guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
+    let pending = hasPendingWAL(path)
+    let target = pending ? path : "file:\(uriPath(path))?immutable=1"
+    let flags = pending ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READONLY | SQLITE_OPEN_URI)
+    guard sqlite3_open_v2(target, &db, flags, nil) == SQLITE_OK else {
+        let why = String(cString: sqlite3_errmsg(db))
+        sqlite3_close(db)
+        return .problem("cannot be opened (\(why))")
+    }
     defer { sqlite3_close(db) }
     // Integrity first: a half-copied file can open and still be unreadable.
-    guard sqliteText(db, "PRAGMA integrity_check") == "ok" else { return nil }
+    guard let integrity = sqliteText(db, "PRAGMA integrity_check") else {
+        return .problem("cannot be read (\(String(cString: sqlite3_errmsg(db))))")
+    }
+    guard integrity == "ok" else {
+        return .problem("fails its integrity check (\(integrity))")
+    }
     var out: [String: Int] = [:]
     for table in boardTables {
-        guard let n = sqliteText(db, "SELECT COUNT(*) FROM \(table)") else { return nil }
+        guard let n = sqliteText(db, "SELECT COUNT(*) FROM \(table)") else {
+            return .problem("has no usable `\(table)` table (\(String(cString: sqlite3_errmsg(db))))")
+        }
         out[table] = Int(n)
     }
-    return out
+    return .counts(out)
 }
 
 /// The `agents=3 threads=5 …` line, shared by both modes so the two outputs cannot drift.
@@ -1860,34 +1929,67 @@ func fileSize(_ path: String) -> String {
     return "\(n.intValue)"
 }
 
-/// Check a copy, and — when the caller says which board it came from — that it still holds the
-/// same rows. Structural checks alone cannot see a *stale* copy: a copy taken before the last
-/// few messages is a perfectly valid database. Only a comparison can, which is why `--backup`
-/// always makes one, and why `--verify-backup` makes it when `--db` is given.
-func verifyBoard(_ path: String, against sourcePath: String?) -> String? {
+/// Read a file as a board, or explain why it is not one. Shared by both modes so neither can
+/// report a file it could not read as verified.
+func readBoard(_ path: String) -> BoardRead {
     let shown = NSString(string: path).expandingTildeInPath
-    // Opened read-only *before* anything is said about the file: a verification that creates the
-    // copy it was asked to check is not a verification. Only when that read fails does the
-    // absence get its own message.
-    guard let counts = boardCounts(shown) else {
+    switch boardCounts(shown) {
+    case .counts(let counts):
+        return .counts(counts)
+    case .problem(let why):
+        // An absent file gets its own sentence: "not a usable board" is the wrong thing to say
+        // about a path that was never there.
         if !FileManager.default.fileExists(atPath: shown) {
-            return "\(shown) does not exist — a backup you have not read is not a backup"
+            return .problem("\(shown) does not exist — a backup you have not read is not a backup")
         }
-        return "\(shown) is not a usable board — it is empty, truncated, or not a SQLite database"
-             + " (a hand copy of a WAL database looks exactly like this: its rows live in -wal)"
+        return .problem("\(shown) is not a usable board — \(why)")
     }
-    if let sourcePath = sourcePath {
-        let source = NSString(string: sourcePath).expandingTildeInPath
-        guard let sourceCounts = boardCounts(source) else {
-            return "\(source) is not a usable board, so there is nothing to compare \(shown) with"
+}
+
+/// Check a copy against the board it came from. Used by `--verify-backup --db <board>`, where the
+/// question is "is this copy current?": any row the board has that the copy does not makes it out
+/// of date. `--backup` deliberately does *not* use this — see `verifyCopy`.
+func verifyBoard(_ path: String, against sourcePath: String) -> String? {
+    let shown = NSString(string: path).expandingTildeInPath
+    let source = NSString(string: sourcePath).expandingTildeInPath
+    let counts: [String: Int]
+    switch readBoard(shown) {
+    case .counts(let c): counts = c
+    case .problem(let why): return why
+    }
+    let sourceCounts: [String: Int]
+    switch readBoard(source) {
+    case .counts(let c): sourceCounts = c
+    case .problem(let why): return "\(why), so there is nothing to compare \(shown) with"
+    }
+    let differing = boardTables.filter { counts[$0] != sourceCounts[$0] }
+    if !differing.isEmpty {
+        let detail = differing.map {
+            "\($0): \(counts[$0] ?? 0) in the copy, \(sourceCounts[$0] ?? 0) in \(source)"
         }
-        let differing = boardTables.filter { counts[$0] != sourceCounts[$0] }
-        if !differing.isEmpty {
-            let detail = differing.map {
-                "\($0): \(counts[$0] ?? 0) in the copy, \(sourceCounts[$0] ?? 0) in \(source)"
-            }
-            return "\(shown) is out of date — " + detail.joined(separator: "; ")
-        }
+        return "\(shown) is out of date — " + detail.joined(separator: "; ")
+    }
+    return nil
+}
+
+/// Check a copy against the counts the source had when the copy was taken.
+///
+/// A live board keeps accepting writes while it is being copied, so a copy is a *snapshot*: it
+/// legitimately holds fewer rows than a re-read of the board a moment later. Requiring equality
+/// with the board would fail the one case this command exists for — under a steady writer, the
+/// backup of a live board failed almost every time. A copy that holds *fewer* rows than the source
+/// had before the copy began is the defect: it lost committed data.
+func verifyCopy(_ path: String, atLeast snapshot: [String: Int]) -> String? {
+    let shown = NSString(string: path).expandingTildeInPath
+    let counts: [String: Int]
+    switch readBoard(shown) {
+    case .counts(let c): counts = c
+    case .problem(let why): return why
+    }
+    let behind = boardTables.filter { (counts[$0] ?? -1) < (snapshot[$0] ?? 0) }
+    if !behind.isEmpty {
+        let detail = behind.map { "\($0): \(counts[$0] ?? 0) in the copy, \(snapshot[$0] ?? 0) before it" }
+        return "\(shown) lost rows — " + detail.joined(separator: "; ")
     }
     return nil
 }
@@ -1945,15 +2047,19 @@ if !verifyRaw.isEmpty {
     // `--db` is optional here and only means "and compare against this board": the default is
     // `~/chatbox.sqlite`, and silently comparing a copy the operator named against whatever
     // board happens to live in the home directory is how a verified backup becomes a mystery.
-    let against = argPresent("--db") ? dbPath : nil
-    if let problem = verifyBoard(verifyRaw, against: against) {
-        FileHandle.standardError.write("chatbox: \(problem)\n".data(using: .utf8)!)
+    if argPresent("--db") {
+        if let problem = verifyBoard(verifyRaw, against: dbPath) {
+            FileHandle.standardError.write("chatbox: \(problem)\n".data(using: .utf8)!)
+            exit(1)
+        }
+    } else if case .problem(let why) = readBoard(verifyRaw) {
+        FileHandle.standardError.write("chatbox: \(why)\n".data(using: .utf8)!)
         exit(1)
     }
     let shown = NSString(string: verifyRaw).expandingTildeInPath
     print("backup ok: \(shown) (\(fileSize(shown)) bytes)")
-    if let counts = boardCounts(shown) { print(boardCountsLine(counts)) }
-    if let against = against { print("compared with: \(NSString(string: against).expandingTildeInPath)") }
+    if case .counts(let counts) = boardCounts(shown) { print(boardCountsLine(counts)) }
+    if argPresent("--db") { print("compared with: \(NSString(string: dbPath).expandingTildeInPath)") }
     exit(0)
 }
 if !backupRaw.isEmpty {
@@ -1969,8 +2075,14 @@ if !backupRaw.isEmpty {
         FileHandle.standardError.write("chatbox: \(sourcePath) does not exist — nothing to back up\n".data(using: .utf8)!)
         exit(1)
     }
-    guard let sourceCounts = boardCounts(sourcePath) else {
-        FileHandle.standardError.write("chatbox: \(sourcePath) is not a usable board — refusing to copy it as if it were\n".data(using: .utf8)!)
+    // The counts *before* the copy, which is what the copy is proved against: a live board moves
+    // on while it is being copied, and requiring the snapshot to equal a later re-read would fail
+    // every backup taken under a writer — the case this command exists for.
+    let sourceCounts: [String: Int]
+    switch readBoard(sourcePath) {
+    case .counts(let c): sourceCounts = c
+    case .problem(let why):
+        FileHandle.standardError.write("chatbox: \(why) — refusing to copy it as if it were a board\n".data(using: .utf8)!)
         exit(1)
     }
     var db: OpaquePointer?
@@ -1996,15 +2108,17 @@ if !backupRaw.isEmpty {
         FileHandle.standardError.write("chatbox: the copy to \(destPath) failed: \(reason) — nothing was verified\n".data(using: .utf8)!)
         exit(1)
     }
-    // The copy is verified in the same command, against the board it came from: a backup nobody
-    // read is not a backup.
-    if let problem = verifyBoard(destPath, against: sourcePath) {
-        FileHandle.standardError.write("chatbox: \(problem) — the copy is not usable\n".data(using: .utf8)!)
+    // The copy is verified in the same command: a backup nobody read is not a backup. If it is not
+    // usable it is removed, because a file that failed verification must not sit there looking like
+    // one — and because leaving it would make the obvious retry fail on "already exists".
+    if let problem = verifyCopy(destPath, atLeast: sourceCounts) {
+        try? FileManager.default.removeItem(atPath: destPath)
+        FileHandle.standardError.write("chatbox: \(problem) — the copy was removed\n".data(using: .utf8)!)
         exit(1)
     }
     print("source: \(sourcePath) (\(fileSize(sourcePath)) bytes)")
     print("backup: \(destPath) (\(fileSize(destPath)) bytes)")
-    print(boardCountsLine(sourceCounts) + "  (verified equal to the source)")
+    print(boardCountsLine(sourceCounts) + "  (nothing below this was lost)")
     exit(0)
 }
 

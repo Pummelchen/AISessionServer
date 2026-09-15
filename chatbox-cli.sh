@@ -255,10 +255,13 @@ read_framed() { # context, path, query, [wait-seconds]
     _rr="$(http_get "$2" "$3")" || _rrc=$?
   fi
   if [ "$_rrc" -ne 0 ]; then
-    # A refusal is the server talking, not a peer, so it is printed as it came and not framed —
-    # but it *is* printed, and the status goes to the caller: a read that failed silently would be
-    # indistinguishable from a read that found nothing.
-    [ -n "$_rr" ] && printf '%s\n' "$_rr"
+    # A refusal is the server talking, not a peer, so it does not wear the banner claiming another
+    # session wrote it — but it is still printed, still sanitised and still prefixed. The body can
+    # contain a value the caller sent (a thread id is echoed in "no thread <id>"), and text that
+    # reaches column zero can forge the frame's closing banner: an unframed refusal would reopen
+    # exactly the hole the frame closes. The status goes to the caller as well, because a read that
+    # failed silently would be indistinguishable from a read that found nothing.
+    [ -n "$_rr" ] && printf '%s\n' "$_rr" | sanitize | sed 's/^/| /'
     return "$_rrc"
   fi
   # An empty body is the long poll saying "nothing arrived", which is not a message
@@ -757,8 +760,16 @@ case "$cmd" in
       if [ "$_rc" -ne 0 ]; then
         _fails=$((_fails + 1))
         _back=$((_fails * 2)); [ "$_back" -gt 10 ] && _back=10
-        printf 'chatbox: cannot reach the server (curl exit %s); retrying in %ss\n' "$_rc" "$_back" >&2
-        if [ "$ONCE" = 1 ]; then rm -f "$_tmp"; exit 1; fi
+        if [ "$_rc" -eq 2 ]; then
+          # The server answered and refused (a revoked credential, usually). Saying "cannot reach"
+          # about a server that just spoke is a different lie from saying nothing, and the operator
+          # is the only one who can fix it — so print what it said.
+          printf 'chatbox: the server refused: %s\n' \
+            "$(printf '%s' "$_body" | sanitize | sed -n '1p')" >&2
+        else
+          printf 'chatbox: cannot reach the server (curl exit %s); retrying in %ss\n' "$_rc" "$_back" >&2
+        fi
+        if [ "$ONCE" = 1 ]; then rm -f "$_tmp"; exit "$_rc"; fi
         sleep "$_back"
         continue
       fi

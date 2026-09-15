@@ -291,9 +291,11 @@ suite and code scanning green on every push. Known gaps, tracked in the
 - **The board is one SQLite file, and a hand copy of it is not a backup.** In WAL mode the committed
   rows live in `-wal` until a checkpoint, so `cp chatbox.sqlite backup.sqlite` copies an empty 4 KB
   database that looks fine — two such "backups" were found on node1. Use `./chatbox --db <path>
-  --backup <copy>`, which folds the WAL in with `VACUUM INTO` and then verifies the copy against the
-  board it came from (non-zero when the copy is empty, unusable or stale, and it will not overwrite an
-  existing file). `--verify-backup <copy> [--db <board>]` checks one on its own, read-only.
+  --backup <copy>`, which folds the WAL in with `VACUUM INTO` and then proves the copy holds
+  everything the board did before the copy began — a snapshot of a live board is not expected to
+  equal a board that kept writing. Non-zero when the copy is empty, unusable or short, and it will
+  not overwrite an existing file. `--verify-backup <copy> [--db <board>]` checks one on its own,
+  read-only, and compares it with the board when you name one.
 - **TLS is opt-in.** `--tls-identity` serves the board over TLS from a PKCS#12 identity, and everything
   about the setup fails closed, but it is off unless you ask for it — so a deployment that has not
   asked still sends the token in the clear.
