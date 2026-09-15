@@ -4615,6 +4615,15 @@ if [ -f "$CLI" ]; then
   w38ids="$(sed -n 's/^[Xx]-[Cc]hatbox-[Uu]nread-[Ii]ds: *//p' "$w38hdr" | tr -d '\r' | head -n 1)"
   w38page="$(printf '%s' "$w38body" | sed -n 's/^\[\([0-9][0-9]*\)\].*/\1/p' | paste -sd, -)"
   equals "the inbox names the messages it rendered" "$w38ids" "$w38page"
+  # Handing a page over is not the same as acknowledging it: the read cursor moves when the reader
+  # says so, from the ids in the header. A long poll that acked what it rendered would mark mail read
+  # at the instant it was sent, so a page the server had capped would lose everything past the cap
+  # without ever showing it. The first check keeps the second from being vacuous: the poll has to have
+  # seen unread mail before "it is still unread" means anything.
+  equals "a long poll hands the unread page over" \
+    "$(curl -sS --max-time 20 "$(url_for /inbox "id=$w38&wait=1")" | grep -cE "w38-[123]-$RUN")" "3"
+  equals "and a long poll acknowledges nothing on the server's side" \
+    "$(get /inbox "id=$w38" | grep -cE "w38-[123]-$RUN")" "3"
   ( CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
       sh "$CLI" watch --id "$w38" --once --wait 1 --exec 'sleep 2' \
       > "$SCRATCH/wake-${RUN}.log" 2>&1 ) &

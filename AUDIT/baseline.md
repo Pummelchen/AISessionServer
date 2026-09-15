@@ -22,7 +22,7 @@ compliant" and the target is 0/0 (tasks 0001–0005, 0015).
 | What | Result | Artefact |
 |---|---|---|
 | `tests/protocol.sh` against a disposable server (CI-equivalent env, `CHATBOX_MCP` set) | **864 passed, 0 failed**, 0 skipped except the documented `sqlite3`/`nc` guards when absent | `../tests/.scratch/manual33/out.txt` (local), CI run 34953230087 |
-| Mutation matrix (226 mutations, harness `tests/.scratch/mutate.sh`) | base GREEN, **226/226 cells red** on the frozen revision, relative-path cell GREEN, **0 false passes** | `../tests/.scratch/matrix-trk17-run2.log` (33 cells), `matrix-trk17-final2.log` (the other 4, re-run after the local Xcode 27 SDK switch blocked them mid-run) |
+| Mutation matrix (239 mutations, harness `AUDIT/mutate.sh`) | last full sweep on the pre-audit revision: base GREEN, **226/226 cells red**, relative-path cell GREEN, **0 false passes**. After the audit changed the source, eleven fragments no longer matched and were being skipped (task #0091); they are repaired, the anchor check is now fatal and the harness is committed. The repaired cells were re-verified red individually; a **full 239-cell sweep on the final revision is Phase E work** | `../tests/.scratch/matrix-trk17-run2.log`, `matrix-trk17-final2.log` |
 | CI | **success** on `971faae` | https://github.com/Pummelchen/AISessionServer/actions/runs/34953230087 |
 | CodeQL | **success** on `971faae`, 1 open alert (`swift/cleartext-transmission`, task 0014) | `baseline/codeql-alerts.txt` |
 
@@ -45,7 +45,7 @@ Note on the mid-run toolchain switch: at 16:15 on node1 the CommandLineTools/Xco
 |---|---|---|---|
 | shellcheck | `shellcheck -s sh chatbox-cli.sh` | **4** (SC1090, SC2059, SC2094 x2) | `baseline/shellcheck-cli.txt` |
 | shellcheck | `shellcheck -s sh tests/protocol.sh` | **12** (SC3057 x3, SC2143 x5, SC2059 x2, SC2034, SC2329, SC1090) | `baseline/shellcheck-suite.txt` |
-| shellcheck | `shellcheck -s sh tests/.scratch/mutate.sh` | 0 | `baseline/shellcheck-mutate.txt` |
+| shellcheck | `shellcheck -s sh AUDIT/mutate.sh` | 0 | `baseline/shellcheck-mutate.txt` |
 | swiftlint | `swiftlint lint --reporter json chatbox.swift chatbox-mcp.swift` | **303** across 14 rules (identifier_name 124, line_length 83, non_optional_string_data_conversion 63, cyclomatic_complexity 8, statement_position 5, function_body_length 5, large_tuple 4, …) | `baseline/swiftlint.json`, `baseline/swiftlint-counts.txt` |
 | swift-format | `xcrun swift-format lint --strict` | **3309** | `baseline/swift-format.txt` |
 | type checker | the strict-concurrency build above | 22 errors | `baseline/strict-concurrency.txt` |

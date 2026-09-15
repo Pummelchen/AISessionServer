@@ -13,7 +13,7 @@ Committed before any Phase B finding, as required. Line counts are from `971faae
 | M4 | `tests/protocol.sh` | POSIX `sh` | 4309 | none | runs against a live server; starts fixture servers of its own | Mac (needs `CHATBOX_BIN`) | yes |
 | M5 | `.github/workflows/ci.yml`, `codeql.yml` | YAML | 106 + 62 | GitHub Actions | push/PR/dispatch | GitHub-hosted `macos-latest` | yes |
 | M6 | `README.md`, `LICENSE`, `.gitignore` | Markdown/text | — | — | — | any | yes |
-| M7 | `tests/.scratch/mutate.sh` | POSIX `sh` + embedded Python | ~1000 | none | runs 226 mutations against the suite | Mac | **no — gitignored** (audit tooling, not a product) |
+| M7 | `AUDIT/mutate.sh` | POSIX `sh` + embedded Python | ~1160 | none | runs 239 mutations against the suite | Mac | **yes — committed** since #0091 (a matrix that only exists on one machine cannot be reproduced) |
 | M8 | wiki (`aisessionserver-wiki`, separate repo) | Markdown | 8 pages | none | — | any | separate repo, branch `master` |
 
 Not present, and therefore not audited as if they were: no Python, no C#, no C, no package

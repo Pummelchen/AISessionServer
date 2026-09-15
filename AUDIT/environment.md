@@ -83,3 +83,35 @@ Rejected alternative, recorded because it is the tempting shortcut: pinning the 
 6.3.3 and leaving the compiler at its default mode. Rejected because the brief's non-negotiable is
 "do not lower compiler strictness", and because the same code must keep building on the CI image
 (`macos-latest`), which now ships 6.4.
+
+## The mutation matrix
+
+`AUDIT/mutate.sh` is the harness that proves the suite catches the bugs it claims to. It is committed,
+because a matrix that lives only in one machine's uncommitted scratch directory cannot be reproduced
+and — as task #0091 records — eleven of its cells went stale and were silently skipped before it was
+moved here.
+
+```sh
+sh AUDIT/mutate.sh                    # every cell, plus the base and relative-path cells
+ONLY=name,name sh AUDIT/mutate.sh      # those cells (base and relative always run)
+```
+
+How it works and the rules it enforces:
+
+- It freezes `chatbox.swift`, `chatbox-cli.sh`, `chatbox-mcp.swift` and `tests/protocol.sh` into
+  `tests/.scratch/frozen/`, so an edit made while a long run is in flight cannot change what the
+  surviving cells were measured against.
+- Each mutation names an exact fragment of the frozen source. **A fragment that no longer matches
+  aborts the run before any cell executes** (no results table, exit 1). Repair the fragment or delete
+  the cell in a commit that says why; never leave it stale, because a skipped cell looks exactly like
+  a clean one.
+- The base cell must be green, every mutation cell must be red, and both the base being red and a
+  mutant failing to build are counted with the false passes. The run exits non-zero if there are any.
+- The last cell re-runs the suite the way CI does (`sh tests/protocol.sh` from the repository root,
+  relative paths, no `CHATBOX_CLI`/`CHATBOX_SCRATCH`).
+- One run at a time: the harness refuses to start if another is live, because two runs share the
+  scratch directory and the port range.
+- Scratch state stays under `tests/.scratch/` (gitignored); the harness writes nothing else.
+- Cost: each cell runs the whole suite, so a full matrix is hours. `ONLY=` is what makes re-checking
+  one fix affordable.
+
