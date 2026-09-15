@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 63 | done: 29 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
+**Open: 62 | done: 30 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -23,7 +23,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0004](#0004) | S1 | M1 | `chatbox.swift:27,3215,3217,3221` | Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code | unsafe | **DONE** | node1 | phase-A baseline |
 | [0005](#0005) | S1 | M1 | `chatbox.swift:2464,1155-1180,1700-1745,1600-1660` | Non-Sendable captures and captured-var mutation across @Sendable closures (DispatchWorkItem, URLSession completion, waiters, event poll) | unsafe | **DONE** | node1 | phase-A baseline |
 | [0015](#0015) | S1 | M1 | `chatbox.swift:896,373` | `@unchecked Sendable` on Chatbox and Store suppresses all concurrency checking | unsafe | **DONE** | node1 | L2 |
-| [0024](#0024) | S1 | M3 | `chatbox-cli.sh:817` | a failed --exec or print spins the wake loop with no backoff | bug | **AUDIT** | node1 | phase-B/M3-client |
+| [0024](#0024) | S1 | M3 | `chatbox-cli.sh:817` | a failed --exec or print spins the wake loop with no backoff | bug | **DONE** | node1 | phase-B/M3-client |
 | [0025](#0025) | S1 | M2 | `chatbox-mcp.swift:138` | MCP adapter feeds raw peer text to the model with no untrusted frame [also: MCP adapter returns peer text to the model with no untrusted frame] | unsafe | **START** | node1 | phase-B/L1-architecture,L4-security |
 | [0026](#0026) | S1 | M2 | `chatbox-mcp.swift:191` | JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally) | bug | **START** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0027](#0027) | S1 | M2 | `chatbox-mcp.swift:47` | MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)] | bug | **DONE** | node1 | phase-B/L1-architecture,L3-line-level |
@@ -332,7 +332,7 @@ NO MUTATION IS ADDED FOR THIS TASK, deliberately: removing a `dispatchPreconditi
 - **Severity / category / module:** S1 / bug / M3
 - **Location:** `chatbox-cli.sh:817`
 - **Title:** a failed --exec or print spins the wake loop with no backoff
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** chatbox-cli.sh:812-816 sets `_ok=0` when `framed_of "$_body" | sh -c "$EXEC"` fails; 817-818 only prints 'delivery failed; leaving the message unread'. Unlike the ack-failure path (821-824) it neither increments `_fails` nor sleeps, and --exec does not imply --once (only --hook forces it, line 737). The message stays unread, so the next poll at 775 returns it immediately. The suite only exercises --exec with --once (tests/protocol.sh:1048).
 
 WHY IT MATTERS: A consumer that keeps failing turns the loop into a tight busy loop: the failing command is re-run and the server re-polled as fast as the shell can go, for ever, with no delay - CPU burn and a hammered board on what the docs present as the supported wake loop.
@@ -342,6 +342,7 @@ CONFIDENCE: high
 - **Evidence (after):** TEST (gate): reproduced before the fix against a disposable board with one unread message and a consumer that appends one byte and exits 1. The pre-fix client (HEAD's `chatbox-cli.sh`) ran the consumer **246 times in 7 seconds** - a tight busy loop, re-running the failing command and re-polling the server as fast as the shell could go; the fixed client ran it **3 times in 7 seconds** (the 2s, 4s then 6s waits). Section 38 now pins it: the consumer writes one byte per invocation, the loop runs for a fixed 7s window, and 2..8 bytes is the passing range - the upper bound is what the fix pins and the lower bound keeps the check from passing when the fixture never fails (a consumer that succeeded would be acknowledged and never run again). A second check asserts the message it never delivered is still unread. Base cell GREEN at 942 passed / 0 failed; mutant `248-audit0024-nobackoff` (the pre-fix branch: print and fall straight through to the next poll) is red on the rate check; relative cell GREEN, 0 false passes; `sh -n`, `dash -n` and shellcheck on the client stay at the baseline's four findings (SC1090, SC2059, SC2094 x2).
 PHASE-D NOTE: the check backgrounds the client **directly** (`VAR=... sh "$CLI" ... &`), not in a subshell. `( ... ) &` makes `$!` the subshell and whether it execs the client is the shell's choice, so an orphaned wake loop could keep polling the board after the check had finished; the failed-consumer loop is continuous, unlike the `--once` runs elsewhere in this section that die on their own. After the change the process table was checked for stray `chatbox-cli.sh` processes.
 AUDIT (gate): re-read cold. The backoff reuses the loop's existing cap and sleep, so there is one delay policy rather than two; `--once` keeps its exit code (1) and its immediate exit, so the documented one-shot use is unchanged; the durable-delivery promise is untouched - the message is never acked on a failure, and a later success still acknowledges exactly the ids the header named.
+- **Commit:** `9198f3d`
 - **Notes:** Rejected alternatives: (a) reuse `_fails` - it is reset by any successful poll, and a failing consumer's poll always succeeds, so the shared counter would hold the wait at 2s and never escalate; (b) make `--exec` imply `--once` - it silently removes the documented continuous wake loop, and a transient consumer failure would then stop the session; (c) give up on the message after N failures - unread mail is never dropped by design, and the consumer failing says nothing about whether the message is wanted; (d) a fixed one-second sleep - no escalation for a consumer that is down for minutes, and a needless delay for one that fails once.
 
 ### 0025
