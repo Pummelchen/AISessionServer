@@ -939,6 +939,11 @@ final class Chatbox: @unchecked Sendable {
         guard !id.isEmpty else { return (400, "error: id required (who you are, e.g. node1-dsh-abc)\n") }
         guard validId(id) else { return (400, "error: id must be a single line, without control characters\n") }
         let node = req.p("node")
+        let agent = req.p("agent")
+        let harness = req.p("harness")
+        let session = req.p("session")
+        let ip = req.p("ip")
+        let note = req.p("note")
         let repos = req.p("repos").isEmpty ? req.p("repo") : req.p("repos")
         let kept = store.scalar("SELECT repos FROM agents WHERE id = ?", [id])
 
@@ -996,19 +1001,39 @@ final class Chatbox: @unchecked Sendable {
         let existing = store.scalar("SELECT id FROM agents WHERE id = ?", [id])
         if existing.isEmpty {
             store.run("INSERT INTO agents (id,node,agent,harness,session,ip,repos,note,registered_at,last_seen) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                      [id, req.p("node"), req.p("agent"), req.p("harness"), req.p("session"), req.p("ip"), effectiveRepos, req.p("note"), ts, ts])
+                      [id, node, agent, harness, session, ip, effectiveRepos, note, ts, ts])
         } else {
+            // An omitted (empty) field keeps the stored value — the rule `repos` already followed,
+            // now applied to all of them. The update used to write node, agent, harness, session,
+            // ip and note unconditionally, so a session that re-registered only to add a repo
+            // silently lost the rest of its identity, and because /peers prints the harness line
+            // only when a field is set, the loss was invisible in the default view.
             store.run("""
-            UPDATE agents SET node=?, agent=?, harness=?, session=?, ip=?,
-              repos=CASE WHEN ?='' THEN repos ELSE ? END, note=?, last_seen=? WHERE id=?
-            """, [req.p("node"), req.p("agent"), req.p("harness"), req.p("session"), req.p("ip"), effectiveRepos, effectiveRepos, req.p("note"), ts, id])
+            UPDATE agents SET
+              node    = CASE WHEN ?='' THEN node    ELSE ? END,
+              agent   = CASE WHEN ?='' THEN agent   ELSE ? END,
+              harness = CASE WHEN ?='' THEN harness ELSE ? END,
+              session = CASE WHEN ?='' THEN session ELSE ? END,
+              ip      = CASE WHEN ?='' THEN ip      ELSE ? END,
+              repos   = CASE WHEN ?='' THEN repos   ELSE ? END,
+              note    = CASE WHEN ?='' THEN note    ELSE ? END,
+              last_seen = ?
+            WHERE id = ?
+            """, [node, node, agent, agent, harness, harness, session, session, ip, ip,
+                  effectiveRepos, effectiveRepos, note, note, ts, id])
         }
+        // The answer reports what is *stored*, not what was sent: with an omitted field preserved,
+        // echoing the request would say "session: " while the session was still on the board.
+        let stored = store.rows("""
+        SELECT node, agent, harness, session, ip, repos FROM agents WHERE id = ?
+        """, [id]).first ?? [:]
+        let storedRepos = stored["repos"] ?? ""
         return (200, """
         ok registered
         id: \(id)
-        node: \(req.p("node","-"))  agent: \(req.p("agent","-"))  session: \(req.p("session","-"))
-        ip: \(req.p("ip","-"))  harness: \(req.p("harness","-"))
-        repos: \(repos.isEmpty ? "(none declared)" : oneLine(effectiveRepos))
+        node: \(stored["node"] ?? "")  agent: \(stored["agent"] ?? "")  session: \(stored["session"] ?? "")
+        ip: \(stored["ip"] ?? "")  harness: \(stored["harness"] ?? "")
+        repos: \(storedRepos.isEmpty ? "(none declared)" : oneLine(storedRepos))
         at: \(ts)
 
         Next: POST /message?from=\(id)&repo=<repo>&subject=<...>&body=<...>

@@ -117,10 +117,38 @@ curl_tls() { # curl, with the configured CA if there is one
   fi
 }
 
+# A refusal is printed *and* signalled.
+#
+# The client used to hand curl's status straight through, and curl was invoked without `-f`, so a
+# `404` printed the server's answer and exited 0: a script — or a harness hook, which can only see
+# the exit status — could not tell a delivered report from a rejected one. The body still has to
+# come out unchanged, which is why the answer goes to a file and is `cat`ed rather than being
+# captured (command substitution eats trailing newlines) or fetched with `--fail` (which throws the
+# body away). A 2xx is 0, a server refusal is 2 — the client's own "that request cannot be made"
+# code — and a transport failure keeps curl's own status (7, 28, 52, 56, …), which is a different
+# thing and must stay distinguishable.
+curl_checked() { # the curl arguments
+  _ck_body="$(mktemp "${TMPDIR:-/tmp}/chatbox-body.XXXXXX" 2>/dev/null)" || {
+    # No temporary file: fall back to the old behaviour rather than refusing to make the request
+    # at all. The status is then curl's again, which is what the caller used to get.
+    curl_tls -sS "$@"
+    return $?
+  }
+  _ck_code="$(curl_tls -sS -o "$_ck_body" -w '%{http_code}' "$@")"; _ck_rc=$?
+  cat "$_ck_body"
+  rm -f "$_ck_body"
+  [ "$_ck_rc" -ne 0 ] && return "$_ck_rc"
+  case "$_ck_code" in
+    ''|000) return 1 ;;
+    2??)    return 0 ;;
+    *)      return 2 ;;
+  esac
+}
+
 http_get() { # path [query]
   _q="${2:-}"
   [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
-  curl_tls -sS --max-time 30 "${URL}${1}${_q:+?$_q}"
+  curl_checked --max-time 30 "${URL}${1}${_q:+?$_q}"
 }
 
 # A long poll is meant to be held open, so the client's own timeout has to
@@ -128,7 +156,7 @@ http_get() { # path [query]
 http_get_wait() { # path, query, curl --max-time
   _q="${2:-}"
   [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
-  curl_tls -sS --max-time "$3" "${URL}${1}${_q:+?$_q}"
+  curl_checked --max-time "$3" "${URL}${1}${_q:+?$_q}"
 }
 
 # ---------- untrusted framing ----------
@@ -154,8 +182,34 @@ frame_end() {
 FRAME
 }
 
-sanitize() { # drop control bytes that could forge the frame or drive a terminal
-  tr -d '\000-\010\013-\037\177'
+# Unicode format controls. C0 and DEL are one byte each, so `tr -d` takes them out cleanly. These
+# are not: every one is three bytes in UTF-8, and their bytes are shared with ordinary characters —
+# U+200B (ZWSP) is E2 80 8B, and U+2003 (EM SPACE) is E2 80 83. A byte-wise `tr -d` of a control's
+# bytes would eat the first two bytes of every em space in the text and leave a broken character
+# behind, so each sequence is deleted whole, by a sed program built once from printf escapes.
+#
+# What they do is why they cannot be left in: the bidi overrides and isolates (U+202A–U+202E,
+# U+2066–U+2069) reorder or hide a line without changing a letter of it, the zero-width joiners
+# (U+200B–U+200D) and the bidi marks (U+200E, U+200F) make text appear that is not there in the
+# bytes, and the byte-order mark (U+FEFF) is invisible anywhere. None of them can remove the `| `
+# prefix, so this is a display trick rather than a frame escape — but a framed line that reads as
+# something it does not say is exactly what the frame exists to prevent.
+FORMAT_CONTROLS_SED=""
+for _fc_seq in \
+  '\342\200\213' '\342\200\214' '\342\200\215' '\342\200\216' '\342\200\217' \
+  '\342\200\252' '\342\200\253' '\342\200\254' '\342\200\255' '\342\200\256' \
+  '\342\201\246' '\342\201\247' '\342\201\250' '\342\201\251' '\357\273\277' ; do
+  FORMAT_CONTROLS_SED="$FORMAT_CONTROLS_SED
+s/$(printf "$_fc_seq")//g"
+done
+unset _fc_seq
+
+strip_format_controls() {
+  sed "$FORMAT_CONTROLS_SED"
+}
+
+sanitize() { # drop control bytes and Unicode format controls that could forge the frame
+  tr -d '\000-\010\013-\037\177' | strip_format_controls
 }
 
 framed_of() { # message body -> the framed block on stdout
@@ -186,6 +240,7 @@ framed_response() { # context -> the framed block on stdout
 
 # Every read path goes through here, so a new one cannot quietly skip the frame.
 read_framed() { # context, path, query, [wait-seconds]
+  _rrc=0
   if [ -n "${4:-}" ]; then
     # A leading zero is octal to the shell, and `08` is not a valid octal number:
     # `$(( 08 + 20 ))` does not return a wrong number, it aborts the client under
@@ -195,9 +250,16 @@ read_framed() { # context, path, query, [wait-seconds]
     [ -n "$_w" ] || _w=0
     [ "${#_w}" -gt 4 ] && _w=300
     [ "$_w" -gt 300 ] && _w=300
-    _rr="$(http_get_wait "$2" "$3" "$(( _w + 20 ))")" || return $?
+    _rr="$(http_get_wait "$2" "$3" "$(( _w + 20 ))")" || _rrc=$?
   else
-    _rr="$(http_get "$2" "$3")" || return $?
+    _rr="$(http_get "$2" "$3")" || _rrc=$?
+  fi
+  if [ "$_rrc" -ne 0 ]; then
+    # A refusal is the server talking, not a peer, so it is printed as it came and not framed —
+    # but it *is* printed, and the status goes to the caller: a read that failed silently would be
+    # indistinguishable from a read that found nothing.
+    [ -n "$_rr" ] && printf '%s\n' "$_rr"
+    return "$_rrc"
   fi
   # An empty body is the long poll saying "nothing arrived", which is not a message
   # and must not be framed into one. `framed_response` is the single place that
@@ -462,9 +524,9 @@ repo_primary() { # directory -> the canonical key of origin, else of the first u
 http_post() { # path, then k=v pairs
   _path="$1"; shift
   if [ -n "$TOKEN" ]; then
-    curl_tls -sS --max-time 60 -G -X POST "$@" --data-urlencode "token=$TOKEN" "${URL}${_path}"
+    curl_checked --max-time 60 -G -X POST "$@" --data-urlencode "token=$TOKEN" "${URL}${_path}"
   else
-    curl_tls -sS --max-time 60 -G -X POST "$@" "${URL}${_path}"
+    curl_checked --max-time 60 -G -X POST "$@" "${URL}${_path}"
   fi
 }
 

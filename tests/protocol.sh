@@ -585,6 +585,38 @@ contains "re-registering updates the harness" "$peers2_json" "DeepSeek Harness v
 contains "re-registering without repos preserves ownership" "$peers2" "$REPO_APP"
 contains "note is stored" "$peers2_json" "carries a note"
 
+# The same rule for every other field (TRK-26). A session re-registering to change one thing used
+# to lose node, agent, harness, session, ip and note in silence — and the answer echoed the
+# *request*, so "session: " was printed while the session was still on the board.
+keep="it-$RUN-keep"
+post /register --data-urlencode "id=$keep" --data-urlencode "node=node-keep" \
+  --data-urlencode "agent=dsh" --data-urlencode "harness=DeepSeek Harness" \
+  --data-urlencode "session=sess-$RUN-keep" --data-urlencode "ip=10.9.9.9" \
+  --data-urlencode "repos=example.test/$RUN/keep1" --data-urlencode "note=first note" >/dev/null
+kept="$(post /register --data-urlencode "id=$keep" --data-urlencode "repos=example.test/$RUN/keep2")"
+contains "a re-registration keeps the node it was not given" "$kept" "node: node-keep"
+contains "and the agent it was not given" "$kept" "agent: dsh"
+contains "and the harness it was not given" "$kept" "harness: DeepSeek Harness"
+contains "and the session it was not given" "$kept" "session: sess-$RUN-keep"
+contains "and the address it was not given" "$kept" "ip: 10.9.9.9"
+contains "while the field it was given changes" "$kept" "repos: example.test/$RUN/keep2"
+# Read back from the plain view, so this cannot pass on an echo alone. (The JSON view escapes `/`,
+# so a repo key cannot be compared there without knowing that.)
+keptpeers="$(get /peers)"
+contains "the registry still holds the preserved node" "$keptpeers" "node-keep"
+contains "and the preserved session" "$(get /peers "json=1")" "sess-$RUN-keep"
+contains "and the repo that was given" "$keptpeers" "example.test/$RUN/keep2"
+lacks "and not the one it replaced" "$keptpeers" "example.test/$RUN/keep1"
+# An explicit value still wins on the next registration.
+changed="$(post /register --data-urlencode "id=$keep" --data-urlencode "session=sess-2-$RUN" \
+  --data-urlencode "harness=Codex")"
+contains "an explicit field still overwrites the stored one" "$changed" "session: sess-2-$RUN"
+contains "and so does an explicit harness" "$changed" "harness: Codex"
+if [ -n "${CHATBOX_DB:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  equals "the note was preserved in the store too" \
+    "$(sqlite3 "$CHATBOX_DB" "select note from agents where id='$keep';")" "first note"
+fi
+
 # The repo= alias, and a session that declares more than one repo.
 post /register --data-urlencode "id=$E" --data-urlencode "node=node-e" \
   --data-urlencode "repo=$REPO_ALIAS" >/dev/null
@@ -1272,6 +1304,30 @@ BANNER
   fhealth="$(cb health 2>&1)"
   contains "health still reports" "$fhealth" "ok chatbox up"
   lacks "health is not framed, because nothing in it is peer text" "$fhealth" "UNTRUSTED PEER MESSAGE"
+
+  # TRK-29: Unicode format controls do not survive the frame. They are invisible, they do not
+  # change a letter, and they reorder or hide the line they are in — a framed body that reads as
+  # something it does not say. Each is three bytes, so they must be deleted as sequences: the
+  # em space below shares its first two bytes with the zero-width space, and is the control that
+  # says whether the strip was byte-wise (which would corrupt it) or sequence-wise.
+  fc_zwsp="$(printf '\342\200\213')"
+  fc_rlo="$(printf '\342\200\256')"
+  fc_isolate="$(printf '\342\201\247')"
+  fc_bom="$(printf '\357\273\277')"
+  fc_emspace="$(printf '\342\200\203')"
+  fc_body="before${fc_rlo}reordered${fc_isolate} isolated${fc_zwsp} hidden${fc_bom} bom${fc_emspace}emspace$RUN"
+  post /message --data-urlencode "from=$FS" --data-urlencode "to=$FB" \
+    --data-urlencode "body=$fc_body" >/dev/null
+  fc_out="$(cb inbox --id "$FB" --all 2>&1)"
+  contains "the framing fixture arrived" "$fc_out" "before"
+  lacks "a right-to-left override is stripped from a framed body" "$fc_out" "$fc_rlo"
+  lacks "a bidi isolate is stripped too" "$fc_out" "$fc_isolate"
+  lacks "and so is a zero-width space" "$fc_out" "$fc_zwsp"
+  lacks "and the byte-order mark" "$fc_out" "$fc_bom"
+  contains "the ordinary characters on both sides are untouched" "$fc_out" \
+    "beforereordered isolated hidden bom"
+  contains "a character that merely shares bytes with a control survives" "$fc_out" \
+    "${fc_emspace}emspace"
 else
   printf '  skip  untrusted framing on every read path (needs the client)\n'
 fi
@@ -1372,6 +1428,22 @@ mixed_to="$(post /message --data-urlencode "from=$SS" \
 contains "an unregistered recipient is labelled as such" "$mixed_to" "(unregistered)"
 equals "a duplicated recipient is reported once" \
   "$(printf '%s' "$(field "$mixed_to" delivered_to)" | grep -o "$SS-x" | wc -l | tr -d ' ')" "1"
+
+# TRK-24: an explicit to= is never refused — naming an id that registers later is how a durable
+# delivery reaches a session that is not up yet — but a recipient nobody is listening for has to be
+# named as undeliverable, or a typo reads exactly like a delivery.
+ghost_to="it-$RUN-ghost-recipient"
+ghost_send="$(post /message --data-urlencode "from=$SS" --data-urlencode "to=$ghost_to" \
+  --data-urlencode "body=undeliverable $RUN")"
+contains "an explicit recipient that was never registered is still accepted" "$ghost_send" "ok posted"
+contains "and is marked in delivered_to" "$ghost_send" "$ghost_to (unregistered)"
+contains "and named in the warning as never registered" "$ghost_send" \
+  "no sign of $ghost_to (never registered)"
+# The delivery is durable, which is the reason this is a report and not a refusal: when that id
+# registers, the message is already waiting for it.
+post /register --data-urlencode "id=$ghost_to" --data-urlencode "node=node-ghost" >/dev/null
+contains "a delivery to a session that registers later is waiting for it" \
+  "$(get /inbox "id=$ghost_to")" "undeliverable $RUN"
 
 # ---------------------------------------------------------------------------
 # 13b. Presence timing
@@ -3097,6 +3169,42 @@ if command -v nc >/dev/null 2>&1 && [ -n "$cbport" ] && [ "$cbport" -eq "$cbport
   fi
 else
   printf '  skip  raw Content-Length handling (needs nc and a URL with an explicit port)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 25. A refusal is printed *and* signalled (TRK-31)
+# The client handed curl's status straight through and invoked curl without `-f`, so a 404 printed
+# the server's answer and exited 0: a script — or a harness hook, which can only see an exit status —
+# could not tell a refused request from a successful one. The body still has to reach the reader
+# unchanged, and a transport failure has to stay distinguishable from a refusal.
+# ---------------------------------------------------------------------------
+if [ -f "$CLI" ]; then
+  rc31() { CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" sh "$CLI" "$@"; }
+  equals "a successful read exits zero" "$(rc31 health >/dev/null 2>&1; echo $?)" "0"
+  equals "a successful write exits zero"     "$(rc31 say --from "$A" --to "$B" --body "exit codes $RUN" >/dev/null 2>&1; echo $?)" "0"
+
+  ref31="$(rc31 say --from "$A" --thread 987654321 --body "ghost $RUN" 2>&1)"; ref31rc=$?
+  equals "a refused write exits 2" "$ref31rc" "2"
+  contains "and the refusal is still printed" "$ref31" "no thread 987654321"
+  equals "and it is the server's own answer, unchanged" "$ref31"     "$(post /message --data-urlencode "from=$A" --data-urlencode "thread=987654321" --data-urlencode "body=x")"
+
+  read31="$(rc31 thread --id 999999999 2>&1)"; read31rc=$?
+  equals "a refused read exits 2 as well" "$read31rc" "2"
+  contains "and a refused read is not silent" "$read31" "no thread 999999999"
+
+  # A transport failure is not a refusal and must not be reported as one.
+  dead31="$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL=http://127.0.0.1:1 CHATBOX_TOKEN=x \
+    sh "$CLI" health >/dev/null 2>&1; echo $?)"
+  if [ "$dead31" -ne 0 ] && [ "$dead31" -ne 2 ]; then
+    ok "a transport failure keeps its own exit code"
+  else
+    no "a transport failure keeps its own exit code" "got $dead31"
+  fi
+
+  # And a long poll that times out is not an error: nothing arrived is a success.
+  equals "a timed-out long poll exits zero"     "$(rc31 inbox --id "it-$RUN-exit-codes" --wait 1 >/dev/null 2>&1; echo $?)" "0"
+else
+  printf '  skip  exit statuses (needs the client)\n'
 fi
 
 # ---------------------------------------------------------------------------
