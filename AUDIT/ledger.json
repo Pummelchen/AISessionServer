@@ -62,14 +62,14 @@
       "file_line": "chatbox.swift:1238",
       "title": "`Chatbox.publicURL` is a mutable static global",
       "category": "unsafe",
-      "status": "START",
+      "status": "AUDIT",
       "host_used": "node1",
       "discovered_by": "phase-A baseline",
       "evidence_before": "chatbox.swift:1238:16: error: static property 'publicURL' is not concurrency-safe because it is nonisolated global shared mutable state.",
-      "fix_summary": "Make the public URL an immutable value produced once from configuration and passed into Chatbox (used by usage()/`GET /`), removing the static var.",
-      "evidence_after": "",
+      "fix_summary": "Make the public URL instance configuration instead of a mutable static: a `let` set from an initialiser parameter, with the scheme computed before the object is built and the usage text reading the instance.",
+      "evidence_after": "TEST (gate): the strict-concurrency typecheck goes from 8 primary errors / 10 warnings to **7 / 10**, with `static property 'publicURL' is not concurrency-safe` gone (AUDIT/baseline/strict-concurrency-after-0003.txt); the documented build still compiles with 0 warnings. Runtime check added (section 40): the usage text served by `GET /` must name the port this board is actually serving \u2014 it used to start as the hardcoded 8787 default and was overwritten after the object was built, so any answer produced before that assignment advertised a port nobody was listening on. Suite base cell green at 905 passed / 0 failed, relative cell green, 0 false passes.\nPHASE-D NOTE (a defect in my own first attempt, caught by the base cell before any commit): the new check read `$PORT`, which the suite never defines; under `set -u` that aborted the whole run (base RED, 61 checks never reached). Fixed by deriving the port from `$URL` the way the suite already does elsewhere, and the cell was re-run green.\nAUDIT (gate): re-read cold. `publicURL` is now a `let` on the instance, passed through the initialiser from the startup configuration (scheme decided before the object is built); the two usage call sites read the instance; no static mutable state remains for this value and no `nonisolated(unsafe)`/`@unchecked Sendable` was added. No check weakened: section 40 is additive.",
       "commit": "",
-      "notes": "",
+      "notes": "Rejected alternatives: (a) `nonisolated(unsafe) static var` or a `static let` assigned once - the first is the forbidden escape hatch and the second cannot be assigned after construction in Swift; (b) removing the URL from the usage text - it is the one place a caller learns where to connect.",
       "blocked_reason": ""
     },
     {

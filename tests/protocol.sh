@@ -4557,6 +4557,20 @@ esac
 # against `nowISO()`. Both are already in the suite and fail on a shifted clock.
 
 # ---------------------------------------------------------------------------
+# 40. The usage text names the board you are actually talking to
+# The public URL used to be a mutable global assigned after the server object was built; it started
+# as a hardcoded default, so anything that answered usage before the assignment (or a refactor that
+# dropped it) advertised a port nobody was listening on. It is configuration now, and the port in the
+# usage text is the port this board serves.
+# ---------------------------------------------------------------------------
+port40="$(printf '%s' "$URL" | sed -n 's|.*:\([0-9][0-9]*\)$|\1|p')"
+case "$(get /)" in
+  *":$port40"*) ok "the usage text names the port this board is serving" ;;
+  *) no "the usage text names the port this board is serving" \
+       "port $port40 not found in [$(snip "$(get /)")]" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

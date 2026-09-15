@@ -1058,7 +1058,7 @@ final class Chatbox: @unchecked Sendable {
 
     init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool, maxBody: Int,
          idleTimeout: Int, maxConnections: Int, maxRows: Int, serverID: String,
-         peerURL: String, peerToken: String, maxHops: Int) {
+         peerURL: String, peerToken: String, maxHops: Int, publicURL: String) {
         self.store = store
         self.token = token
         self.staleAfter = staleAfter
@@ -1071,6 +1071,7 @@ final class Chatbox: @unchecked Sendable {
         self.peerURL = peerURL
         self.peerToken = peerToken
         self.maxHops = maxHops
+        self.publicURL = publicURL
         self.forwardSession = URLSession(configuration: .ephemeral,
                                          delegate: NoForwardRedirects(), delegateQueue: nil)
     }
@@ -1239,7 +1240,7 @@ final class Chatbox: @unchecked Sendable {
 
     func handle(_ req: Request, _ who: Principal) -> Reply {
         switch (req.method, req.path) {
-        case ("GET", "/"), ("GET", "/help"): return Reply(200, usage(Self.publicURL))
+        case ("GET", "/"), ("GET", "/help"): return Reply(200, usage(publicURL))
         case ("GET", "/health"): return Reply(200, health())
         case ("POST", "/register"): return reply(register(req, who))
         case ("POST", "/message"), ("POST", "/say"): return message(req, who)
@@ -1251,11 +1252,14 @@ final class Chatbox: @unchecked Sendable {
         case ("POST", "/token"): return reply(createToken(req, who))
         case ("GET", "/token"): return reply(listTokens(req, who))
         case ("POST", "/token/revoke"): return reply(revokeToken(req, who))
-        default: return Reply(404, "not found: \(req.method) \(req.path)\n\n" + usage(Self.publicURL))
+        default: return Reply(404, "not found: \(req.method) \(req.path)\n\n" + usage(publicURL))
         }
     }
 
-    static var publicURL = "http://<host>:8787"
+    /// The URL this board tells callers to use, fixed at startup. It was a `static var` assigned
+    /// after the instance was built, which is mutable global state the compiler cannot reason about
+    /// — and the only thing that ever read it was the usage text.
+    let publicURL: String
 
     func usage(_ url: String) -> String {
         """
@@ -3296,12 +3300,15 @@ if !tlsIdentityPath.isEmpty {
     tlsIdentity = identity
 }
 
+// The public URL is part of the configuration the board is built from, not a global it writes back
+// into: it is what every usage answer tells a caller to connect to.
+let scheme = tlsIdentity == nil ? "http" : "https"
+let publicURL = "\(scheme)://\(Host.current().name ?? "localhost"):\(port)"
 let server = Chatbox(store: store, token: token, staleAfter: staleAfter,
                      tlsEnabled: tlsIdentity != nil, maxBody: maxBody,
                      idleTimeout: idleTimeout, maxConnections: maxConnections, maxRows: maxRows,
-                     serverID: serverID, peerURL: peerURL, peerToken: peerToken, maxHops: maxHops)
-let scheme = tlsIdentity == nil ? "http" : "https"
-Chatbox.publicURL = "\(scheme)://\(Host.current().name ?? "localhost"):\(port)"
+                     serverID: serverID, peerURL: peerURL, peerToken: peerToken, maxHops: maxHops,
+                     publicURL: publicURL)
 
 let params: NWParameters
 if let identity = tlsIdentity {
