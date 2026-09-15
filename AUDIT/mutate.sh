@@ -281,7 +281,7 @@ m('56-dupmarkers', '''        // An explicit to=a,b,a should not deliver, mark o
 # A negative window is a mistake, not a way to switch reporting off.
 m('57-negallowed', '''if staleAfterValue < 0 {
     // A negative window used to mean "off", which fails open on a typo.
-    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds\\n".data(using: .utf8)!)
+    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds \u2014 got '\\(staleAfterRaw)'\\n".data(using: .utf8)!)
     exit(2)
 }
 ''', '')
@@ -1026,6 +1026,26 @@ m('245-audit0036-noguard',
 ''',
   r'''        _ = rc
 ''')
+
+# AUDIT #0041: a port the server cannot bind must stop it, not become 8787. This is the pre-fix line.
+m('246-audit0041-portfallback',
+  r'''// The port is the address every client is pointed at, so a value this server cannot bind is
+// refused instead of quietly replaced by the default: `--port 9000o` used to bind 8787 and leave
+// the caller talking to nothing, with no server-side signal. `UInt16` accepts "0", which asks the
+// kernel for an unnamed port, so the floor is 1 — the same rule as the other bounded flags below.
+let portRaw = argValue("--port", "8787")
+let portValue = UInt16(portRaw) ?? 0
+if portValue < 1 {
+    FileHandle.standardError.write("chatbox: --port must be between 1 and 65535 — got '\(portRaw)'\n".data(using: .utf8)!)
+    exit(2)
+}
+let port = portValue''',
+  r'''let port = UInt16(argValue("--port", "8787")) ?? 8787''')
+
+# AUDIT #0041: a presence window nobody asked for must stop the server, not restore seven days.
+m('247-audit0041-windowfallback',
+  r'''let staleAfterValue = Int(staleAfterRaw) ?? -1''',
+  r'''let staleAfterValue = Int(staleAfterRaw) ?? 604800''')
 
 cli = open(os.path.join(fr, 'chatbox-cli.sh')).read()
 mcp = open(os.path.join(fr, 'chatbox-mcp.swift')).read()

@@ -4777,6 +4777,90 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 42. A value nobody asked for stops the server
+# `--port` and `--stale-after` were the two flags that answered a typo with a default:
+# `UInt16(argValue("--port", "8787")) ?? 8787` and `Int(staleAfterRaw) ?? 604800`. A client pointed at
+# the port on the command line talked to nothing while an unintended port was open, and a misspelt
+# presence window silently became seven days, so sessions that had gone quiet were still reported
+# active. Every other bounded flag refuses (`--max-body`, `--idle-timeout`, `--max-connections`,
+# `--max-rows`, `--max-hops`); these now do too.
+#
+# The `--port` cases run in `--prune-dry-run` mode deliberately. The flag is parsed before the mode
+# branch, so it is the same code path, but a build with the default restored falls back to **8787** -
+# the documented default port - and this check must never be the thing that binds it. Operator mode
+# exits without listening, so the fallback is observable (a bad exit code) and harmless.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  p42port="${CHATBOX_BADFLAG_PORT:-8797}"
+  p42db="$SCRATCH/badflag-${RUN}.sqlite"
+  p42tok="$SCRATCH/badflag-${RUN}.token"
+  rm -f "$p42db" "$p42db-wal" "$p42db-shm"
+  printf '%s\n' "$TOKEN" > "$p42tok"
+  chmod 600 "$p42tok" 2>/dev/null
+  badprune() { # label, the flag the refusal must name, then the arguments
+    _lbl="$1"; _flag="$2"; shift 2
+    _out="$("$CHATBOX_BIN" --db "$p42db" "$@" 2>&1)"; _rc=$?
+    if [ "$_rc" -eq 2 ] && printf '%s' "$_out" | grep -q -- "$_flag"; then
+      ok "$_lbl"
+    else
+      no "$_lbl" "exit=$_rc out=[$(snip "$_out")]"
+    fi
+  }
+  badprune "a port that is not a number is refused" --port --prune-dry-run --port 9000o
+  badprune "a port above the range is refused" --port --prune-dry-run --port 70000
+  badprune "port 0 (an unnamed port) is refused" --port --prune-dry-run --port 0
+  badprune "an empty port is refused" --port --prune-dry-run --port ""
+
+  # The window is refused where it would actually be used: at startup, before anything listens. A
+  # server that wrongly accepted the value would hold this port, so the check is bounded.
+  badstart() { # label, the flag the refusal must name, then the arguments
+    _lbl="$1"; _flag="$2"; shift 2
+    "$CHATBOX_BIN" --port "$p42port" --db "$p42db" --token-file "$p42tok" "$@" \
+      > "$SCRATCH/badflag-${RUN}.log" 2>&1 &
+    _bpid=$!
+    _bw=0
+    while [ "$_bw" -lt 30 ] && kill -0 "$_bpid" 2>/dev/null; do
+      sleep 0.1
+      _bw=$((_bw + 1))
+    done
+    if kill -0 "$_bpid" 2>/dev/null; then
+      no "$_lbl" "it started anyway: $(head -1 "$SCRATCH/badflag-${RUN}.log")"
+      kill "$_bpid" 2>/dev/null
+      wait "$_bpid" 2>/dev/null
+    else
+      wait "$_bpid" 2>/dev/null; _brc=$?
+      if [ "$_brc" -eq 2 ] && grep -q -- "$_flag" "$SCRATCH/badflag-${RUN}.log"; then
+        ok "$_lbl"
+      else
+        no "$_lbl" "exit=$_brc: $(head -1 "$SCRATCH/badflag-${RUN}.log")"
+      fi
+    fi
+  }
+  badstart "a presence window that is not a number is refused" --stale-after --stale-after abc
+  badstart "and a unit suffix is not a number either" --stale-after --stale-after 7d
+  badstart "a negative window is still refused" --stale-after --stale-after -1
+  # A window that *is* usable still starts, so the checks above are not passing because every
+  # window is refused.
+  "$CHATBOX_BIN" --port "$p42port" --db "$p42db" --token-file "$p42tok" --stale-after 6 \
+    > "$SCRATCH/badflag-ok-${RUN}.log" 2>&1 &
+  p42pid=$!
+  p42ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS "http://127.0.0.1:$p42port/health?token=$TOKEN" >/dev/null 2>&1; then p42ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$p42ready" = 1 ]; then
+    ok "a usable presence window still starts the board"
+  else
+    no "a usable presence window still starts the board" "no answer on port $p42port"
+  fi
+  kill "$p42pid" 2>/dev/null
+  wait "$p42pid" 2>/dev/null
+else
+  printf '  skip  the startup flag refusals (needs CHATBOX_BIN)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

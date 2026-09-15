@@ -3031,7 +3031,17 @@ func verifyCopy(_ path: String, atLeast snapshot: [String: Int]) -> String? {
 
 checkArguments(CommandLine.arguments)
 
-let port = UInt16(argValue("--port", "8787")) ?? 8787
+// The port is the address every client is pointed at, so a value this server cannot bind is
+// refused instead of quietly replaced by the default: `--port 9000o` used to bind 8787 and leave
+// the caller talking to nothing, with no server-side signal. `UInt16` accepts "0", which asks the
+// kernel for an unnamed port, so the floor is 1 — the same rule as the other bounded flags below.
+let portRaw = argValue("--port", "8787")
+let portValue = UInt16(portRaw) ?? 0
+if portValue < 1 {
+    FileHandle.standardError.write("chatbox: --port must be between 1 and 65535 — got '\(portRaw)'\n".data(using: .utf8)!)
+    exit(2)
+}
+let port = portValue
 let dbPath = argValue("--db", NSString(string: "~/chatbox.sqlite").expandingTildeInPath)
 let tokenArg = argValue("--token", "")
 let tokenFile = argValue("--token-file", "")
@@ -3177,10 +3187,13 @@ if !backupRaw.isEmpty {
 // first statement of the schema migration to the last request it serves.
 let store = chatboxQueue.sync { Store(path: dbPath, migrating: !argPresent("--prune-dry-run"), queue: chatboxQueue) }
 let staleAfterRaw = argValue("--stale-after", "604800")
-let staleAfterValue = Int(staleAfterRaw) ?? 604800
+// `?? -1` rather than `?? 604800`: a window nobody asked for must stop the server, not restore the
+// seven-day default. `--stale-after 7d` used to be accepted *as* the default, so a session that had
+// gone quiet was still reported active — presence reporting behaving unlike the command line.
+let staleAfterValue = Int(staleAfterRaw) ?? -1
 if staleAfterValue < 0 {
     // A negative window used to mean "off", which fails open on a typo.
-    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds\n".data(using: .utf8)!)
+    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds — got '\(staleAfterRaw)'\n".data(using: .utf8)!)
     exit(2)
 }
 let staleAfter = staleAfterValue
