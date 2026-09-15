@@ -1101,6 +1101,18 @@ m('256-audit0035-hidenote',
   r'''        var out = "threads\(repo.isEmpty ? "" : " for \(repo)") — \(rows.count)\n"''')
 
 # AUDIT #0035: the listing the served page polls every five seconds must not sort the whole table.
+# AUDIT #0048: the three startup bounds must refuse an unusable value. Each guard is removed on its
+# own, so each cell proves its own three checks are what enforces it.
+m('258-audit0048-idleguard',
+  r'''if idleValue < 0 || idleValue > 3600 {''',
+  r'''if false {''')
+m('259-audit0048-connsguard',
+  r'''if maxConnValue < 1 || maxConnValue > 65535 {''',
+  r'''if false {''')
+m('260-audit0048-rowsguard',
+  r'''if maxRowsValue < 1 || maxRowsValue > 1000000 {''',
+  r'''if false {''')
+
 m('257-audit0035-noindex',
   r'''        exec("CREATE INDEX IF NOT EXISTS idx_threads_last_at ON threads(last_at DESC);")
         exec("CREATE INDEX IF NOT EXISTS idx_threads_repo_last ON threads(repo, last_at DESC);")

@@ -3787,6 +3787,41 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
     # With them gone the server accepts again, so the ceiling is a limit and not a latch.
     contains "and the server accepts again once they are gone" \
       "$(curl -sS --max-time 10 "$bobase2/health?token=$TOKEN")" "ok chatbox up"
+
+    # Every bound refuses an unusable value at startup. `--max-body` had this check from the start
+    # and the other three did not: `--max-rows 0` made every listing empty, `--max-connections 0`
+    # refused every request and `--idle-timeout -1` failed open to no deadline, each from a server
+    # that looks configured from outside. The check is bounded rather than awaited, because a build
+    # without the guard would start a board here instead of exiting.
+    bounds_refuses() { # label, the flag the refusal must name, then the arguments
+      _lbl="$1"; _flag="$2"; shift 2
+      "$CHATBOX_BIN" --port "$((boport + 2))" --db "$SCRATCH/bounds-refuse-${RUN}.sqlite" \
+        --token-file "$botok" "$@" > "$SCRATCH/bounds-refuse-${RUN}.log" 2>&1 &
+      _brpid=$!
+      _brw=0
+      while [ "$_brw" -lt 30 ] && kill -0 "$_brpid" 2>/dev/null; do sleep 0.1; _brw=$((_brw + 1)); done
+      if kill -0 "$_brpid" 2>/dev/null; then
+        no "$_lbl" "it started a server: $(head -1 "$SCRATCH/bounds-refuse-${RUN}.log")"
+        kill "$_brpid" 2>/dev/null
+        wait "$_brpid" 2>/dev/null
+      else
+        wait "$_brpid" 2>/dev/null; _brrc=$?
+        if [ "$_brrc" -eq 2 ] && grep -q -- "$_flag" "$SCRATCH/bounds-refuse-${RUN}.log"; then
+          ok "$_lbl"
+        else
+          no "$_lbl" "exit=$_brrc: $(head -1 "$SCRATCH/bounds-refuse-${RUN}.log")"
+        fi
+      fi
+    }
+    bounds_refuses "a row bound of zero is refused" --max-rows --max-rows 0
+    bounds_refuses "a row bound above the ceiling is refused" --max-rows --max-rows 1000001
+    bounds_refuses "a row bound that is not a number is refused" --max-rows --max-rows abc
+    bounds_refuses "a connection bound of zero is refused" --max-connections --max-connections 0
+    bounds_refuses "a connection bound above 65535 is refused" --max-connections --max-connections 65536
+    bounds_refuses "a connection bound that is not a number is refused" --max-connections --max-connections abc
+    bounds_refuses "a negative idle deadline is refused" --idle-timeout --idle-timeout -1
+    bounds_refuses "an idle deadline above an hour is refused" --idle-timeout --idle-timeout 3601
+    bounds_refuses "an idle deadline that is not a number is refused" --idle-timeout --idle-timeout abc
   else
     no "the bounds fixture servers started" "no answer on $boport or $boltb"
   fi

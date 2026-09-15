@@ -47,7 +47,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0045](#0045) | S1 | M1 | `chatbox.swift:484` | Store.rows treats every non-ROW step result as end-of-data, returning partial results as complete | incomplete | **START** | node1 | phase-B/L3-line-level |
 | [0046](#0046) | S1 | M1 | `chatbox.swift:827` | Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender) | perf | **START** | node1 | phase-B/L5-performance |
 | [0047](#0047) | S1 | M4 | `tests/protocol.sh:1505` | --port and --stale-after silently fall back to defaults on an unusable value; no check | test | **DONE** | node1 | phase-B/L6-tests |
-| [0048](#0048) | S1 | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **START** | node1 | phase-B/L6-tests |
+| [0048](#0048) | S1 | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **AUDIT** | node1 | phase-B/L6-tests |
 | [0006](#0006) | S2 | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **DONE** | node1 | L0 |
 | [0007](#0007) | S2 | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **START** | node1 | L0 swiftlint baseline |
 | [0008](#0008) | S2 | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **START** | node1 | L0 shellcheck baseline |
@@ -718,13 +718,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S1 / test / M4
 - **Location:** `tests/protocol.sh:3442`
 - **Title:** No startup-boundary test for --idle-timeout, --max-connections or --max-rows
-- **Status:** START
+- **Status:** AUDIT
 - **Evidence (before):** Section 27 starts its two servers at 3442-3449 with in-range values only (--max-rows 3 --idle-timeout 1 --max-connections 2); it never runs an out-of-range one, while mb_refuses (2257) does exactly that for --max-body. chatbox.swift:3018, 3026 and 3034 hold the guards ('--idle-timeout must be between 0 ... and 3600', '--max-connections must be between 1 and 65535', '--max-rows must be between 1 and 1000000'), and tests/.scratch/mutate.sh has no mutant for any of the three.
 
 WHY IT MATTERS: Deleting any guard silently misconfigures the board: --max-connections 0 makes every request 503, --max-rows 0 makes every listing empty, --idle-timeout -1 fails open to no deadline. Nothing in the suite or the matrix would go red.
 
 CONFIDENCE: high
-- **Fix:** Add a bounds_refuses helper modelled on mb_refuses and assert exit 2 plus the flag named in the log for --max-rows 0/1000001/abc, --max-connections 0/65536/abc, --idle-timeout -1/3601/abc; add matching mutants.
+- **Fix:** Section 27 gains a `bounds_refuses` fixture, modelled on the `--max-body` one, that runs the built server with nine unusable values - `--max-rows 0`, `1000001`, `abc`; `--max-connections 0`, `65536`, `abc`; `--idle-timeout -1`, `3601`, `abc` - and asserts **exit 2 plus the flag named in the log** for each. Three matrix cells remove one guard each.
+- **Evidence (after):** TEST (gate): each of the nine values is refused with exit 2 and a message naming the flag (verified against the built binary before the checks were written). The fixture watches the process for three seconds instead of awaiting it, because a build without the guard starts a board rather than exiting - so a missing guard is reported as "it started a server", not as a hang - and it truncates its log per call, so a previous refusal cannot be read as this one's. Base cell GREEN at 985 passed / 0 failed; mutants `258-audit0048-idleguard`, `259-audit0048-connsguard` and `260-audit0048-rowsguard` (`if false` in place of each guard) are each red on their own three checks; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0. This is a test-only task: the guards already existed and were already correct, and nothing in the source changed.
+AUDIT (gate): re-read cold. The three guards sit with the `--max-body` guard and share its shape, so the fixture mirrors the existing one rather than inventing a second style. The values cover both routes into a guard: a number out of range (the comparison) and a value that is not a number at all (the `?? -1`/`?? 0` fallback), because those are different mistakes and an operator can make either.
+- **Notes:** Rejected alternatives: (a) assert the exit code alone - an unrelated exit-2 path (a misspelt flag elsewhere on the line) would pass as a refusal, which is why the flag name is grepped as well; (b) await the process with a timeout - a server that wrongly accepted the value would hold the port and stall the suite for the whole section; (c) test one value per flag - "not a number" and "out of range" take different paths to the same guard, and `--max-rows abc` is the one an operator actually types; (d) add a shared validation helper to the server - a refactor of four guards that are already right, with no behaviour change, is not what this task is.
 
 ### 0006
 
