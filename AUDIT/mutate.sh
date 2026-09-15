@@ -1047,6 +1047,29 @@ m('247-audit0041-windowfallback',
   r'''let staleAfterValue = Int(staleAfterRaw) ?? -1''',
   r'''let staleAfterValue = Int(staleAfterRaw) ?? 604800''')
 
+# AUDIT #0024: a consumer that keeps failing must be retried with a delay, not spun. This is the
+# pre-fix branch: print and fall through to the next poll immediately.
+m('248-audit0024-nobackoff',
+  r'''      if [ "$_ok" -eq 0 ]; then
+        # The message stays unread, so the next poll returns it immediately: without a delay a
+        # consumer that keeps failing is re-run as fast as the shell can go, for ever. The wait
+        # escalates and is capped, and only a delivery that worked resets it.
+        printf 'chatbox: delivery failed; leaving the message unread\n' >&2
+        _dfails=$((_dfails + 1))
+        _back=$((_dfails * 2)); [ "$_back" -gt 10 ] && _back=10
+        if [ "$ONCE" = 1 ]; then
+          rm -f "$_tmp" "$_hdr"
+          exit 1
+        fi
+        sleep "$_back"
+        continue
+      fi
+      _dfails=0
+      if [ "$NOACK" != 1 ]; then''',
+  r'''      if [ "$_ok" -eq 0 ]; then
+        printf 'chatbox: delivery failed; leaving the message unread\n' >&2
+      elif [ "$NOACK" != 1 ]; then''', target='cli')
+
 cli = open(os.path.join(fr, 'chatbox-cli.sh')).read()
 mcp = open(os.path.join(fr, 'chatbox-mcp.swift')).read()
 bad = []
