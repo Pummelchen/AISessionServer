@@ -4534,6 +4534,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 39. Every timestamp this server writes is ISO-8601 UTC at second precision
+# The database compares timestamps as strings, so the *shape* is part of the storage contract: a
+# stamp that is not 20 characters, not UTC or not second-precision sorts wrongly against the rows
+# already there (staleness, expiry, retention and reply ordering all read those comparisons). The
+# formatter behind it was replaced with a Sendable one, and this is what keeps the shape honest.
+# ---------------------------------------------------------------------------
+case "$(get /health | sed -n 's/^now: //p')" in
+  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)
+    ok "health's timestamp is ISO-8601 UTC at second precision" ;;
+  *) no "health's timestamp is ISO-8601 UTC at second precision" \
+       "got [$(get /health | sed -n 's/^now: //p')]" ;;
+esac
+ts_msg="$(post /message --data-urlencode "from=$A" --data-urlencode "to=$B" --data-urlencode "body=stamp-$RUN")"
+case "$(field "$ts_msg" at)" in
+  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)
+    ok "and a stored message's timestamp has the same shape" ;;
+  *) no "and a stored message's timestamp has the same shape" "got [$(field "$ts_msg" at)]" ;;
+esac
+# A local-time formatter would still match the shape above, so UTC is pinned where it is observable:
+# the staleness fixture backdates a session with `date -u` and the expiry checks compare stored dates
+# against `nowISO()`. Both are already in the suite and fail on a shifted clock.
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

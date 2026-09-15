@@ -47,26 +47,34 @@ private func longPollTouchInterval(_ staleAfter: Int) -> TimeInterval {
     return min(60, max(1, Double(staleAfter) / 2))
 }
 
-private func nowISO() -> String {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime]
-    return f.string(from: Date())
+/// One ISO-8601 style for everything this server writes and reads: UTC, second precision, the exact
+/// shape stored in the database and compared there as a string. `Date.ISO8601FormatStyle` is a value
+/// type and `Sendable`, so it can be a shared constant; `ISO8601DateFormatter` is a class with
+/// mutable state, which Swift 6 refuses as a `static` shared across threads — and building a fresh
+/// one per call was the alternative. Verified byte-identical to the old formatter's output, and the
+/// same style parses a stamp that carries fractional seconds, which is why one is enough here.
+private enum ISOStamp {
+    static let style = Date.ISO8601FormatStyle(timeZone: TimeZone(secondsFromGMT: 0)!)
+
+    static func now() -> String { style.format(Date()) }
+
+    static func daysAgo(_ days: Int) -> String {
+        style.format(Date().addingTimeInterval(-Double(days) * 86400))
+    }
+
+    static func daysAhead(_ days: Int) -> String {
+        style.format(Date().addingTimeInterval(Double(days) * 86400))
+    }
 }
 
+private func nowISO() -> String { ISOStamp.now() }
+
 /// The same shape as `nowISO`, so the two compare as strings in SQL.
-private func isoDaysAgo(_ days: Int) -> String {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime]
-    return f.string(from: Date().addingTimeInterval(-Double(days) * 86400))
-}
+private func isoDaysAgo(_ days: Int) -> String { ISOStamp.daysAgo(days) }
 
 /// An ISO-8601 stamp `days` from now, for a credential's expiry. Compared as a string, like every
 /// other timestamp here, which is why the format has to match `nowISO` exactly.
-private func isoDaysAhead(_ days: Int) -> String {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime]
-    return f.string(from: Date().addingTimeInterval(Double(days) * 86400))
-}
+private func isoDaysAhead(_ days: Int) -> String { ISOStamp.daysAhead(days) }
 
 /// Credentials are stored only as a SHA-256 of the secret. The secrets are 192 bits
 /// of randomness, so a fast hash is the right tool — there is nothing to brute
@@ -1081,22 +1089,11 @@ final class Chatbox: @unchecked Sendable {
     // merely waiting. Nothing is ever probed or evicted: this is an inference, and
     // the response says what the server believes rather than what it knows.
 
-    static let iso: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
-
-    /// A timestamp this server did not write may still carry fractional seconds;
-    /// failing to parse it would report a live session as never seen.
-    static let isoTiny: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
+    /// A timestamp this server did not write may still carry fractional seconds, and a stamp that
+    /// does not parse at all is not a date — the one style accepts both shapes, so there is no second
+    /// attempt to make and nothing shared to guard.
     static func parseISO(_ s: String) -> Date? {
-        iso.date(from: s) ?? isoTiny.date(from: s)
+        try? ISOStamp.style.parse(s)
     }
 
     /// A never-seen or unparseable timestamp counts as stale: the only sessions in

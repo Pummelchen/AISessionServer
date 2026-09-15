@@ -10,7 +10,7 @@ this on any metric without an explicit, numbered task.
 |---|---|---|---|
 | Documented build, server | `xcrun swiftc -O chatbox.swift -o chatbox` | **rc=0, 0 warnings** | `baseline/build-warnings.txt` |
 | Documented build, MCP adapter | `xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp` | **rc=0, 0 warnings** | `baseline/build-warnings.txt` |
-| Audit standard, server | `xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox.swift` | **rc=1 — 22 errors, 20 warnings** | `baseline/strict-concurrency.txt` |
+| Audit standard, server | `xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox.swift` | **rc=1 — 10 primary errors, 10 primary warnings** (22/20 when continuation lines are counted too; the primary count is the metric used below) | `baseline/strict-concurrency.txt` |
 | Audit standard, MCP adapter | same flags, `chatbox-mcp.swift` | rc=0 — 0 errors, 3 warnings (captured-var mutation in the `URLSession` completion) | `baseline/strict-concurrency-mcp.txt` |
 
 Baseline warning count for the *documented* build: **0**. That is the number no change may exceed.
