@@ -844,14 +844,14 @@
       "file_line": ".github/workflows/codeql.yml:57",
       "title": "CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned",
       "category": "test",
-      "status": "START",
+      "status": "AUDIT",
       "host_used": "node1",
       "discovered_by": "phase-B/M2-mcp-and-placeholders",
       "evidence_before": "The 'Build for extraction' step runs only 'xcrun swiftc -O chatbox.swift -o chatbox' (codeql.yml:57), while CI builds both binaries (ci.yml:39-40) and README.md states 'CodeQL analyses the same build'. Swift CodeQL is extraction-based, so code that is never compiled is never analysed.\n\nWHY IT MATTERS: The component that reads CHATBOX_TOKEN and constructs outbound HTTP requests has no static security analysis at all. Defects in it (such as the query-encoding corruption above) cannot be reported by the security gate the README advertises as covering the shipped binaries.\n\nCONFIDENCE: high",
-      "fix_summary": "Add 'xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp' to the CodeQL build-for-extraction step.",
-      "evidence_after": "",
+      "fix_summary": "Build both Swift binaries in the CodeQL extraction step, so `chatbox-mcp.swift` is extracted and analysed rather than silently excluded.",
+      "evidence_after": "TEST (gate): the extraction step now compiles both binaries (`xcrun swiftc -O chatbox.swift -o chatbox` and `xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp`), which is what the Swift extractor observes, so the adapter is in the analysis database. Verification is a dispatched CodeQL run on the audit branch with this commit checked out; the first dispatch was made with the fix still uncommitted and therefore analysed the old workflow \u2014 discarded, not counted (a reminder that a dispatched workflow runs the branch, not the working tree).\nAUDIT (gate): re-read cold. The change is the documented build command for the second binary, identical to what ci.yml runs (so the analysed binary is the shipped one), `actionlint` is clean, and the pin from #0006 is untouched. After the run: the alert count is compared against the baseline to confirm the newly-scanned file introduces no new finding and that no previously-reported alert disappeared.",
       "commit": "",
-      "notes": "",
+      "notes": "Rejected alternatives: (a) a second CodeQL job per binary - two databases to merge, two runners, same coverage; (b) analysing only the adapter and not the server - the server is the larger surface; (c) relying on autobuild - there is no Package.swift, which is why build-mode is manual.",
       "blocked_reason": ""
     },
     {
