@@ -798,6 +798,10 @@ case "$cmd" in
     trap 'if [ -n "$_child" ]; then kill "$_child" 2>/dev/null; fi; rm -f "$_tmp" "$_hdr"; exit 130' INT TERM
 
     _fails=0
+    # A separate counter for a consumer that keeps failing. `_fails` counts unreachable polls and is
+    # reset by any successful poll; a failing consumer's poll *succeeds* (the server hands the same
+    # unread message back), so sharing the counter would reset the backoff to its floor every time.
+    _dfails=0
     while :; do
       : > "$_hdr"
       http_get_wait_hdr /inbox "id=$ID&wait=$_wait" "$_max" "$_hdr" > "$_tmp" 2>/dev/null &
@@ -843,8 +847,21 @@ case "$cmd" in
         framed_of "$_body" || _ok=0
       fi
       if [ "$_ok" -eq 0 ]; then
+        # The message stays unread, so the next poll returns it immediately: without a delay a
+        # consumer that keeps failing is re-run as fast as the shell can go, for ever. The wait
+        # escalates and is capped, and only a delivery that worked resets it.
         printf 'chatbox: delivery failed; leaving the message unread\n' >&2
-      elif [ "$NOACK" != 1 ]; then
+        _dfails=$((_dfails + 1))
+        _back=$((_dfails * 2)); [ "$_back" -gt 10 ] && _back=10
+        if [ "$ONCE" = 1 ]; then
+          rm -f "$_tmp" "$_hdr"
+          exit 1
+        fi
+        sleep "$_back"
+        continue
+      fi
+      _dfails=0
+      if [ "$NOACK" != 1 ]; then
         # Acknowledge exactly the messages this page held. `all=1` marked *everything unread* read,
         # so a page the server had capped (or a message that arrived while the page was being
         # delivered) was acknowledged without ever being shown — mail marked read and then never

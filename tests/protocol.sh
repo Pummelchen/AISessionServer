@@ -4685,6 +4685,42 @@ if [ -f "$CLI" ]; then
     "$(get /inbox "id=$w38" | grep -c "w38-late-$RUN")" "1"
   equals "and the three the page held were acknowledged" \
     "$(get /inbox "id=$w38" | grep -cE "w38-[123]-$RUN")" "0"
+
+  # A consumer that keeps failing must not turn the loop into a busy loop. `--exec` does not imply
+  # `--once`, and a failed delivery leaves the message unread, so the next poll returns it
+  # immediately: without a delay the failing command is re-run and the server re-polled as fast as
+  # the shell can go, for ever. The exec writes one byte per invocation, so the size of that file
+  # after a fixed window is a direct count of how often the consumer ran. The upper bound is what
+  # the fix pins; the lower bound keeps the check from passing when the fixture never fails (a
+  # consumer that succeeded would be acknowledged and never run again).
+  b24id="it-$RUN-wake-backoff"
+  b24count="$SCRATCH/backoff-${RUN}.count"
+  b24cmd="$SCRATCH/backoff-${RUN}.sh"
+  b24log="$SCRATCH/backoff-${RUN}.log"
+  rm -f "$b24count" "$b24cmd"
+  post /register --data-urlencode "id=$b24id" --data-urlencode "node=node-b24" >/dev/null
+  printf '#!/bin/sh\nprintf x >> "%s"\nexit 1\n' "$b24count" > "$b24cmd"
+  post /message --data-urlencode "from=$A" --data-urlencode "to=$b24id" \
+    --data-urlencode "body=backoff-$RUN" >/dev/null
+  # Unlike the `--once` runs above, this one is continuous, so it has to be killed *as the client*:
+  # `( ... ) &` makes `$!` the subshell (whether it execs the client is the shell's choice), and an
+  # orphaned wake loop would keep polling the board after the check.
+  CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
+    sh "$CLI" watch --id "$b24id" --wait 1 --exec "sh '$b24cmd'" > "$b24log" 2>&1 &
+  b24pid=$!
+  sleep 7
+  kill "$b24pid" 2>/dev/null
+  wait "$b24pid" 2>/dev/null
+  b24runs="$(wc -c < "$b24count" 2>/dev/null | tr -d ' ')"
+  b24runs="${b24runs:-0}"
+  if [ "$b24runs" -ge 2 ] && [ "$b24runs" -le 8 ]; then
+    ok "a failing consumer is retried with a backoff instead of spun"
+  else
+    no "a failing consumer is retried with a backoff instead of spun" \
+       "$b24runs run(s) of the consumer in 7s (expected 2..8; a tight loop runs hundreds)"
+  fi
+  equals "and the message it never delivered is still unread" \
+    "$(get /inbox "id=$b24id" | grep -c "backoff-$RUN")" "1"
 else
   printf '  skip  the wake-loop acknowledgement (set CHATBOX_CLI or keep chatbox-cli.sh in the tree)\n'
 fi
