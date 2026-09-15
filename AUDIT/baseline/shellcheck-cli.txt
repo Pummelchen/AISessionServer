@@ -1,0 +1,24 @@
+
+In chatbox-cli.sh line 30:
+  . "${CHATBOX_CONFIG:-$HOME/.chatbox}"
+    ^-- SC1090 (warning): ShellCheck can't follow non-constant source. Use a directive to specify location.
+
+
+In chatbox-cli.sh line 203:
+s/$(printf "$_fc_seq")//g"
+           ^--------^ SC2059 (info): Don't use variables in the printf format string. Use printf '..%s..' "$foo".
+
+
+In chatbox-cli.sh line 456:
+      rm -f "$_t"
+            ^---^ SC2094 (info): Make sure not to read and write the same file in the same pipeline.
+
+
+In chatbox-cli.sh line 463:
+  done < "$_t"
+         ^---^ SC2094 (info): Make sure not to read and write the same file in the same pipeline.
+
+For more information:
+  https://www.shellcheck.net/wiki/SC1090 -- ShellCheck can't follow non-const...
+  https://www.shellcheck.net/wiki/SC2059 -- Don't use variables in the printf...
+  https://www.shellcheck.net/wiki/SC2094 -- Make sure not to read and write t...

@@ -1,0 +1,2729 @@
+[
+  {
+    "character" : 10,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 47,
+    "reason" : "Variable name 'k' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 47,
+    "reason" : "Variable name 'v' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 137,
+    "reason" : "Variable name 'ok' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 14,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 153,
+    "reason" : "Variable name 'k' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 153,
+    "reason" : "Variable name 'v' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 20,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 154,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 25,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 155,
+    "reason" : "Variable name 'n' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 105,
+    "reason" : "Line should be 120 characters or less; currently it has 133 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 51,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 154,
+    "reason" : "Else and catch should be on the same line, one space after the previous declaration",
+    "rule_id" : "statement_position",
+    "severity" : "Warning",
+    "type" : "Statement Position"
+  },
+  {
+    "character" : 23,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 133,
+    "reason" : "Collection literals should not have trailing commas",
+    "rule_id" : "trailing_comma",
+    "severity" : "Warning",
+    "type" : "Trailing Comma"
+  },
+  {
+    "character" : 64,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox-mcp.swift",
+    "line" : 195,
+    "reason" : "Collection literals should not have trailing commas",
+    "rule_id" : "trailing_comma",
+    "severity" : "Warning",
+    "type" : "Trailing Comma"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 203,
+    "reason" : "Function should have complexity 10 or less; currently complexity is 19",
+    "rule_id" : "cyclomatic_complexity",
+    "severity" : "Warning",
+    "type" : "Cyclomatic Complexity"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 594,
+    "reason" : "Function should have complexity 10 or less; currently complexity is 19",
+    "rule_id" : "cyclomatic_complexity",
+    "severity" : "Warning",
+    "type" : "Cyclomatic Complexity"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 665,
+    "reason" : "Function should have complexity 10 or less; currently complexity is 15",
+    "rule_id" : "cyclomatic_complexity",
+    "severity" : "Warning",
+    "type" : "Cyclomatic Complexity"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1105,
+    "reason" : "Function should have complexity 10 or less; currently complexity is 11",
+    "rule_id" : "cyclomatic_complexity",
+    "severity" : "Warning",
+    "type" : "Cyclomatic Complexity"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1220,
+    "reason" : "Function should have complexity 10 or less; currently complexity is 13",
+    "rule_id" : "cyclomatic_complexity",
+    "severity" : "Warning",
+    "type" : "Cyclomatic Complexity"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1292,
+    "reason" : "Function should have complexity 10 or less; currently complexity is 15",
+    "rule_id" : "cyclomatic_complexity",
+    "severity" : "Warning",
+    "type" : "Cyclomatic Complexity"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1398,
+    "reason" : "Function should have complexity 10 or less; currently complexity is 39",
+    "rule_id" : "cyclomatic_complexity",
+    "severity" : "Error",
+    "type" : "Cyclomatic Complexity"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2324,
+    "reason" : "Function should have complexity 10 or less; currently complexity is 21",
+    "rule_id" : "cyclomatic_complexity",
+    "severity" : "Error",
+    "type" : "Cyclomatic Complexity"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3232,
+    "reason" : "File should contain 1000 lines or less: currently contains 3232",
+    "rule_id" : "file_length",
+    "severity" : "Error",
+    "type" : "File Length"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 722,
+    "reason" : "`where` clauses are preferred over a single `if` inside a `for`",
+    "rule_id" : "for_where",
+    "severity" : "Warning",
+    "type" : "Prefer For-Where"
+  },
+  {
+    "character" : 81,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 140,
+    "reason" : "Force casts should be avoided",
+    "rule_id" : "force_cast",
+    "severity" : "Error",
+    "type" : "Force Cast"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1292,
+    "reason" : "Function body should span 50 lines or less excluding comments and whitespace: currently spans 79 lines",
+    "rule_id" : "function_body_length",
+    "severity" : "Warning",
+    "type" : "Function Body Length"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1398,
+    "reason" : "Function body should span 100 lines or less excluding comments and whitespace: currently spans 168 lines",
+    "rule_id" : "function_body_length",
+    "severity" : "Error",
+    "type" : "Function Body Length"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1788,
+    "reason" : "Function body should span 50 lines or less excluding comments and whitespace: currently spans 70 lines",
+    "rule_id" : "function_body_length",
+    "severity" : "Warning",
+    "type" : "Function Body Length"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2194,
+    "reason" : "Function body should span 50 lines or less excluding comments and whitespace: currently spans 52 lines",
+    "rule_id" : "function_body_length",
+    "severity" : "Warning",
+    "type" : "Function Body Length"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2324,
+    "reason" : "Function body should span 50 lines or less excluding comments and whitespace: currently spans 55 lines",
+    "rule_id" : "function_body_length",
+    "severity" : "Warning",
+    "type" : "Function Body Length"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 547,
+    "reason" : "Function should have 5 parameters or less: it currently has 7",
+    "rule_id" : "function_parameter_count",
+    "severity" : "Warning",
+    "type" : "Function Parameter Count"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2008,
+    "reason" : "Function should have 5 parameters or less: it currently has 6",
+    "rule_id" : "function_parameter_count",
+    "severity" : "Warning",
+    "type" : "Function Parameter Count"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 51,
+    "reason" : "Variable name 'f' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 58,
+    "reason" : "Variable name 'f' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 66,
+    "reason" : "Variable name 'f' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 26,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 74,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 29,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 86,
+    "reason" : "Variable name 'a' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 42,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 86,
+    "reason" : "Variable name 'b' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 87,
+    "reason" : "Variable name 'x' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 88,
+    "reason" : "Variable name 'y' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 90,
+    "reason" : "Variable name 'i' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 112,
+    "reason" : "Variable name 'p' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 139,
+    "reason" : "Variable name 'cf' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 31,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 153,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 24,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 174,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 205,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 16,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 220,
+    "reason" : "Variable name 'at' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 20,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 232,
+    "reason" : "Variable name 'at' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 12,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 238,
+    "reason" : "Variable name 'q' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 12,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 239,
+    "reason" : "Variable name 'h' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 276,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 29,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 309,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 24,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 317,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 29,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 362,
+    "reason" : "Variable name 'ns' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 19,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 363,
+    "reason" : "Variable name 'n' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 381,
+    "reason" : "Variable name 'db' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 454,
+    "reason" : "Variable name 'st' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 14,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 459,
+    "reason" : "Variable name 'i' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 459,
+    "reason" : "Variable name 'v' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 20,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 460,
+    "reason" : "Variable name 'v' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 19,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 469,
+    "reason" : "Variable name 'st' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 471,
+    "reason" : "Variable name 'rc' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 19,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 481,
+    "reason" : "Variable name 'st' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 486,
+    "reason" : "Variable name 'n' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 487,
+    "reason" : "Variable name 'i' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 24,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 489,
+    "reason" : "Variable name 'c' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 19,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 513,
+    "reason" : "Variable name 'st' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 515,
+    "reason" : "Variable name 'rc' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 19,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 548,
+    "reason" : "Variable name 'at' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 557,
+    "reason" : "Variable name 'at' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 35,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 561,
+    "reason" : "Variable name 'at' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 21,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 600,
+    "reason" : "Variable name 'k' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 21,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 602,
+    "reason" : "Variable name 'c' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 759,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 768,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 30,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 909,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 26,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 913,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 916,
+    "reason" : "Variable name 'kv' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 27,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 927,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1063,
+    "reason" : "Variable name 'f' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1071,
+    "reason" : "Variable name 'f' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 28,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1076,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 14,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1098,
+    "reason" : "Enum element name 'ok' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1280,
+    "reason" : "Variable name 'a' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1281,
+    "reason" : "Variable name 't' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1282,
+    "reason" : "Variable name 'm' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1300,
+    "reason" : "Variable name 'ip' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1355,
+    "reason" : "Variable name 'ts' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1452,
+    "reason" : "Variable name 't' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 23,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1464,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 23,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1483,
+    "reason" : "Variable name 't' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 21,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1509,
+    "reason" : "Variable name 'm' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 28,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1510,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 25,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1511,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 29,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1512,
+    "reason" : "Variable name 't' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1550,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1580,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1684,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1693,
+    "reason" : "Variable name 'b' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1935,
+    "reason" : "Variable name 'c' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2078,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 20,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2082,
+    "reason" : "Variable name 'rt' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2112,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2133,
+    "reason" : "Variable name 'n' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2165,
+    "reason" : "Variable name 'i' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2177,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2208,
+    "reason" : "Variable name 'ns' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2272,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 19,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2318,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2339,
+    "reason" : "Variable name 'l' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2340,
+    "reason" : "Variable name 'kv' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 21,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2342,
+    "reason" : "Variable name 'k' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 21,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2343,
+    "reason" : "Variable name 'v' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 28,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2352,
+    "reason" : "Variable name 'r' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 16,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2369,
+    "reason" : "Variable name 'q' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 50,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2383,
+    "reason" : "Variable name 'd' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 22,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2385,
+    "reason" : "Variable name 'k' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 25,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2385,
+    "reason" : "Variable name 'v' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 22,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2387,
+    "reason" : "Variable name 'k' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 25,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2387,
+    "reason" : "Variable name 'v' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 16,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2395,
+    "reason" : "Variable name 't' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 57,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2395,
+    "reason" : "Variable name 'h' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 23,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2397,
+    "reason" : "Variable name 't' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 20,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2487,
+    "reason" : "Variable name 'd' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2529,
+    "reason" : "Variable name 'l' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 17,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2530,
+    "reason" : "Variable name 'kv' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2602,
+    "reason" : "Variable name 'i' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 10,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2638,
+    "reason" : "Variable name 'i' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2638,
+    "reason" : "Variable name 'a' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 19,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2666,
+    "reason" : "Variable name 'db' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2667,
+    "reason" : "Variable name 'st' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 47,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2670,
+    "reason" : "Variable name 'c' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 15,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2680,
+    "reason" : "Variable name 'n' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2703,
+    "reason" : "Variable name 'db' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 19,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2722,
+    "reason" : "Variable name 'n' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 15,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2739,
+    "reason" : "Variable name 'n' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 22,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2768,
+    "reason" : "Variable name 'c' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 22,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2773,
+    "reason" : "Variable name 'c' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 22,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2797,
+    "reason" : "Variable name 'c' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2817,
+    "reason" : "Variable name 'p' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 15,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2818,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 22,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2894,
+    "reason" : "Variable name 'c' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2899,
+    "reason" : "Variable name 'db' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2909,
+    "reason" : "Variable name 'st' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2915,
+    "reason" : "Variable name 'rc' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Warning",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 9,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3157,
+    "reason" : "Variable name 'p' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 15,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3158,
+    "reason" : "Variable name 's' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3221,
+    "reason" : "Variable name 'a' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 22,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3225,
+    "reason" : "Variable name 'e' should be between 3 and 40 characters long",
+    "rule_id" : "identifier_name",
+    "severity" : "Error",
+    "type" : "Identifier Name"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1597,
+    "reason" : "Optional should be implicitly initialized without nil",
+    "rule_id" : "implicit_optional_initialization",
+    "severity" : "Warning",
+    "type" : "Implicit Optional Initialization"
+  },
+  {
+    "character" : 5,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3164,
+    "reason" : "Optional should be implicitly initialized without nil",
+    "rule_id" : "implicit_optional_initialization",
+    "severity" : "Warning",
+    "type" : "Implicit Optional Initialization"
+  },
+  {
+    "character" : 66,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 512,
+    "reason" : "Tuples should have at most 2 members",
+    "rule_id" : "large_tuple",
+    "severity" : "Warning",
+    "type" : "Large Tuple"
+  },
+  {
+    "character" : 58,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 665,
+    "reason" : "Tuples should have at most 2 members",
+    "rule_id" : "large_tuple",
+    "severity" : "Warning",
+    "type" : "Large Tuple"
+  },
+  {
+    "character" : 27,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 672,
+    "reason" : "Tuples should have at most 2 members",
+    "rule_id" : "large_tuple",
+    "severity" : "Warning",
+    "type" : "Large Tuple"
+  },
+  {
+    "character" : 27,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 767,
+    "reason" : "Tuples should have at most 2 members",
+    "rule_id" : "large_tuple",
+    "severity" : "Warning",
+    "type" : "Large Tuple"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 131,
+    "reason" : "Line should be 120 characters or less; currently it has 166 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 147,
+    "reason" : "Line should be 200 characters or less; currently it has 205 characters",
+    "rule_id" : "line_length",
+    "severity" : "Error",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 456,
+    "reason" : "Line should be 120 characters or less; currently it has 126 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 473,
+    "reason" : "Line should be 120 characters or less; currently it has 127 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 536,
+    "reason" : "Line should be 120 characters or less; currently it has 159 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 616,
+    "reason" : "Line should be 120 characters or less; currently it has 130 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 627,
+    "reason" : "Line should be 120 characters or less; currently it has 129 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 635,
+    "reason" : "Line should be 120 characters or less; currently it has 135 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 646,
+    "reason" : "Line should be 120 characters or less; currently it has 130 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 722,
+    "reason" : "Line should be 120 characters or less; currently it has 122 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1135,
+    "reason" : "Line should be 120 characters or less; currently it has 136 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1160,
+    "reason" : "Line should be 120 characters or less; currently it has 122 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1171,
+    "reason" : "Line should be 120 characters or less; currently it has 121 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1245,
+    "reason" : "Line should be 120 characters or less; currently it has 129 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1289,
+    "reason" : "Line should be 200 characters or less; currently it has 317 characters",
+    "rule_id" : "line_length",
+    "severity" : "Error",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1314,
+    "reason" : "Line should be 120 characters or less; currently it has 147 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1358,
+    "reason" : "Line should be 120 characters or less; currently it has 142 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1401,
+    "reason" : "Line should be 120 characters or less; currently it has 121 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1433,
+    "reason" : "Line should be 120 characters or less; currently it has 145 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1447,
+    "reason" : "Line should be 120 characters or less; currently it has 152 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1454,
+    "reason" : "Line should be 120 characters or less; currently it has 134 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1490,
+    "reason" : "Line should be 120 characters or less; currently it has 124 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1532,
+    "reason" : "Line should be 120 characters or less; currently it has 175 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1541,
+    "reason" : "Line should be 120 characters or less; currently it has 128 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1604,
+    "reason" : "Line should be 120 characters or less; currently it has 123 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1613,
+    "reason" : "Line should be 120 characters or less; currently it has 125 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1614,
+    "reason" : "Line should be 120 characters or less; currently it has 126 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1686,
+    "reason" : "Line should be 120 characters or less; currently it has 122 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1764,
+    "reason" : "Line should be 120 characters or less; currently it has 136 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1771,
+    "reason" : "Line should be 120 characters or less; currently it has 192 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1779,
+    "reason" : "Line should be 120 characters or less; currently it has 129 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1871,
+    "reason" : "Line should be 120 characters or less; currently it has 159 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1940,
+    "reason" : "Line should be 120 characters or less; currently it has 121 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2071,
+    "reason" : "Line should be 120 characters or less; currently it has 131 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2080,
+    "reason" : "Line should be 120 characters or less; currently it has 169 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2092,
+    "reason" : "Line should be 120 characters or less; currently it has 133 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2096,
+    "reason" : "Line should be 120 characters or less; currently it has 153 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2113,
+    "reason" : "Line should be 120 characters or less; currently it has 168 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2174,
+    "reason" : "Line should be 120 characters or less; currently it has 125 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2179,
+    "reason" : "Line should be 120 characters or less; currently it has 129 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2211,
+    "reason" : "Line should be 120 characters or less; currently it has 126 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2226,
+    "reason" : "Line should be 120 characters or less; currently it has 124 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2250,
+    "reason" : "Line should be 120 characters or less; currently it has 125 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2270,
+    "reason" : "Line should be 120 characters or less; currently it has 121 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2279,
+    "reason" : "Line should be 120 characters or less; currently it has 133 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2352,
+    "reason" : "Line should be 120 characters or less; currently it has 133 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2389,
+    "reason" : "Line should be 120 characters or less; currently it has 143 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2455,
+    "reason" : "Line should be 120 characters or less; currently it has 126 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2485,
+    "reason" : "Line should be 120 characters or less; currently it has 127 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2614,
+    "reason" : "Line should be 120 characters or less; currently it has 141 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2827,
+    "reason" : "Line should be 120 characters or less; currently it has 137 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2854,
+    "reason" : "Line should be 120 characters or less; currently it has 136 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2880,
+    "reason" : "Line should be 120 characters or less; currently it has 151 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2886,
+    "reason" : "Line should be 120 characters or less; currently it has 122 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2896,
+    "reason" : "Line should be 120 characters or less; currently it has 123 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2919,
+    "reason" : "Line should be 120 characters or less; currently it has 137 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2944,
+    "reason" : "Line should be 120 characters or less; currently it has 130 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2975,
+    "reason" : "Line should be 200 characters or less; currently it has 208 characters",
+    "rule_id" : "line_length",
+    "severity" : "Error",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2981,
+    "reason" : "Line should be 120 characters or less; currently it has 151 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2986,
+    "reason" : "Line should be 120 characters or less; currently it has 131 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2990,
+    "reason" : "Line should be 120 characters or less; currently it has 145 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3008,
+    "reason" : "Line should be 200 characters or less; currently it has 232 characters",
+    "rule_id" : "line_length",
+    "severity" : "Error",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3019,
+    "reason" : "Line should be 120 characters or less; currently it has 151 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3027,
+    "reason" : "Line should be 120 characters or less; currently it has 136 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3035,
+    "reason" : "Line should be 120 characters or less; currently it has 131 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3052,
+    "reason" : "Line should be 120 characters or less; currently it has 189 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3061,
+    "reason" : "Line should be 120 characters or less; currently it has 145 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3067,
+    "reason" : "Line should be 120 characters or less; currently it has 164 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3074,
+    "reason" : "Line should be 120 characters or less; currently it has 159 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3078,
+    "reason" : "Line should be 120 characters or less; currently it has 136 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3084,
+    "reason" : "Line should be 120 characters or less; currently it has 127 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3090,
+    "reason" : "Line should be 120 characters or less; currently it has 144 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3102,
+    "reason" : "Line should be 120 characters or less; currently it has 126 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3117,
+    "reason" : "Line should be 120 characters or less; currently it has 160 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3124,
+    "reason" : "Line should be 120 characters or less; currently it has 126 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3140,
+    "reason" : "Line should be 120 characters or less; currently it has 166 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3144,
+    "reason" : "Line should be 120 characters or less; currently it has 125 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3152,
+    "reason" : "Line should be 120 characters or less; currently it has 165 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3167,
+    "reason" : "Line should be 120 characters or less; currently it has 134 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3215,
+    "reason" : "Line should be 120 characters or less; currently it has 178 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3219,
+    "reason" : "Line should be 120 characters or less; currently it has 135 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 1,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3220,
+    "reason" : "Line should be 120 characters or less; currently it has 147 characters",
+    "rule_id" : "line_length",
+    "severity" : "Warning",
+    "type" : "Line Length"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 114,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 131,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 147,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 388,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 456,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 473,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 536,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1193,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 48,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1541,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1882,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 13,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 1998,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2406,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2455,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2550,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2561,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2572,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2606,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2614,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2618,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2625,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2629,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2819,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2827,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2846,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2850,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2854,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 44,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2863,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2867,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2880,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2886,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2896,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2901,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2911,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2919,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2927,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2944,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2966,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2970,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2975,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2981,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 2986,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3008,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3019,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3027,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3035,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3052,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3061,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3067,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3074,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3078,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3084,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3090,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3095,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3102,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3117,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3124,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3140,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3144,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3152,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3159,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3167,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 36,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3198,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 40,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 3226,
+    "reason" : "Prefer non-optional `Data(_:)` initializer when converting `String` to `Data`",
+    "rule_id" : "non_optional_string_data_conversion",
+    "severity" : "Warning",
+    "type" : "Non-optional String -> Data Conversion"
+  },
+  {
+    "character" : 97,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 232,
+    "reason" : "Else and catch should be on the same line, one space after the previous declaration",
+    "rule_id" : "statement_position",
+    "severity" : "Warning",
+    "type" : "Statement Position"
+  },
+  {
+    "character" : 82,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 460,
+    "reason" : "Else and catch should be on the same line, one space after the previous declaration",
+    "rule_id" : "statement_position",
+    "severity" : "Warning",
+    "type" : "Statement Position"
+  },
+  {
+    "character" : 88,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 489,
+    "reason" : "Else and catch should be on the same line, one space after the previous declaration",
+    "rule_id" : "statement_position",
+    "severity" : "Warning",
+    "type" : "Statement Position"
+  },
+  {
+    "character" : 93,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 917,
+    "reason" : "Else and catch should be on the same line, one space after the previous declaration",
+    "rule_id" : "statement_position",
+    "severity" : "Warning",
+    "type" : "Statement Position"
+  },
+  {
+    "character" : 7,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 380,
+    "reason" : "Class body should span 250 lines or less excluding comments and whitespace: currently spans 349 lines",
+    "rule_id" : "type_body_length",
+    "severity" : "Warning",
+    "type" : "Type Body Length"
+  },
+  {
+    "character" : 7,
+    "file" : "/Users/node1/Downloads/AISessionServer/chatbox.swift",
+    "line" : 982,
+    "reason" : "Class body should span 350 lines or less excluding comments and whitespace: currently spans 1162 lines",
+    "rule_id" : "type_body_length",
+    "severity" : "Error",
+    "type" : "Type Body Length"
+  }
+]

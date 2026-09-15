@@ -1,0 +1,64 @@
+
+In tests/protocol.sh line 1284:
+    if [ "$lzrc" -eq 0 ] && [ -n "$(printf '%s' "$lz" | grep "leading-zero wait $lead $RUN")" ]; then
+                              ^-- SC2143 (style): Use grep -q instead of comparing output with [ -n .. ].
+
+
+In tests/protocol.sh line 1679:
+        if [ "$mix_rc" -ne 0 ] && [ -n "$(printf '%s' "$mix_out" | grep CACERT)" ]; then
+                                    ^-- SC2143 (style): Use grep -q instead of comparing output with [ -n .. ].
+
+
+In tests/protocol.sh line 1689:
+        if [ "$nocert_rc" -ne 0 ] && [ -n "$(printf '%s' "$nocert" | grep -i certificate)" ]; then
+                                       ^-- SC2143 (style): Use grep -q instead of comparing output with [ -n .. ].
+
+
+In tests/protocol.sh line 2054:
+  if [ "$say_bad_rc" -ne 0 ] && [ -n "$(printf '%s' "$say_bad" | grep "is not a usable repo key")" ]; then
+                                  ^-- SC2143 (style): Use grep -q instead of comparing output with [ -n .. ].
+
+
+In tests/protocol.sh line 2551:
+      "http://127.0.0.1:$pport/$1" "${@:2}"; }
+                                    ^----^ SC3057 (warning): In POSIX sh, string indexing is undefined.
+
+
+In tests/protocol.sh line 2676:
+    if [ "$blocked_rc" -ne 0 ] && [ -n "$(printf '%s' "$blocked_out" | grep 'rolled back')" ]; then
+                                    ^-- SC2143 (style): Use grep -q instead of comparing output with [ -n .. ].
+
+
+In tests/protocol.sh line 3021:
+      "http://127.0.0.1:$bport/$1" "${@:2}"; }
+                                    ^----^ SC3057 (warning): In POSIX sh, string indexing is undefined.
+
+
+In tests/protocol.sh line 3299:
+  truncated24="$(printf "$tbody" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
+                        ^------^ SC2059 (info): Don't use variables in the printf format string. Use printf '..%s..' "$foo".
+
+
+In tests/protocol.sh line 3312:
+  surplus24="$(printf "$oversend" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
+                      ^---------^ SC2059 (info): Don't use variables in the printf format string. Use printf '..%s..' "$foo".
+
+
+In tests/protocol.sh line 3459:
+    bo() { curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" "$bobase/$1" "${@:2}"; }
+                                                                                           ^----^ SC3057 (warning): In POSIX sh, string indexing is undefined.
+
+
+In tests/protocol.sh line 3565:
+ID28="$(field "$tok28" id)"
+^--^ SC2034 (warning): ID28 appears unused. Verify use (or export if used externally).
+
+
+In tests/protocol.sh line 3941:
+  fed_cleanup() {
+  ^-- SC2329 (info): This function is never invoked. Check usage (or ignored if invoked indirectly).
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2034 -- ID28 appears unused. Verify use (...
+  https://www.shellcheck.net/wiki/SC3057 -- In POSIX sh, string indexing is u...
+  https://www.shellcheck.net/wiki/SC2059 -- Don't use variables in the printf...

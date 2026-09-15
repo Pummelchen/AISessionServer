@@ -1,0 +1,4 @@
+=== documented build: xcrun swiftc -O chatbox.swift -o chatbox ===
+rc=0
+=== documented build: xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp ===
+rc=0
