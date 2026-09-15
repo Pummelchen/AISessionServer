@@ -45,6 +45,16 @@ jobs:
           xcrun swiftc -O chatbox.swift -o chatbox
           xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp
 
+      # The audit standard, which the documented build above does not enforce: Swift 6 language mode,
+      # complete concurrency checking, warnings as errors. `-O` alone builds a non-Sendable capture or
+      # a shared mutable global with a warning at most, so without this step a concurrency regression
+      # passes every job in this workflow - including the protocol tests, which never compile the
+      # sources. It is a separate step so the failure says which standard was broken.
+      - name: Strict concurrency, warnings as errors
+        run: |
+          xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox.swift
+          xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox-mcp.swift
+
       - name: Start a disposable server
         run: |
           set -eu
