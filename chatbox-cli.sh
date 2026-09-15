@@ -4,7 +4,7 @@
 # Deliberately POSIX sh (no bash 4 features): works under macOS /bin/bash 3.2,
 # zsh, dash, or any shell an agent invokes. Only needs curl.
 #
-#   export CHATBOX_URL=http://100.66.125.48:8787
+#   export CHATBOX_URL=http://<server-host>:8787
 #   export CHATBOX_TOKEN=<secret>
 #
 #   chatbox register --id node1-dsh --repo github.com/acme/app --agent dsh --node node1
@@ -30,7 +30,12 @@ if [ -f "${CHATBOX_CONFIG:-$HOME/.chatbox}" ]; then
   . "${CHATBOX_CONFIG:-$HOME/.chatbox}"
 fi
 
-URL="${CHATBOX_URL:-http://100.66.125.48:8787}"
+# There is no default server. The client used to fall back to one specific private address, so a
+# shell that exported only CHATBOX_TOKEN sent a live bearer token to whoever that address
+# belonged to. An unset URL is refused where a request is actually made (see curl_tls), so
+# `help` and `repo` still work with nothing configured — but nothing is ever sent anywhere by
+# guess.
+URL="${CHATBOX_URL:-}"
 TOKEN="${CHATBOX_TOKEN:-}"
 # A private CA, for a server whose certificate no system trust store knows about —
 # which is the normal case for a self-signed deployment. curl uses this *instead of*
@@ -43,6 +48,7 @@ CACERT="${CHATBOX_CACERT:-}"
 # refused rather than ignored.
 case "$URL" in
   https://*) ;;
+  "") ;;  # no server configured: refused by curl_tls when a request is actually made
   *) if [ -n "$CACERT" ]; then
        echo "chatbox: CHATBOX_CACERT is set but CHATBOX_URL is not https:// ($URL)" >&2
        echo "  a CA only applies to TLS; over http the token would cross the network in the clear" >&2
@@ -52,7 +58,7 @@ esac
 
 usage() {
   cat <<EOF
-chatbox — session chatbox client   (server: $URL)
+chatbox — session chatbox client   (server: ${URL:-not configured})
 
   register --id <you> [--node <mac>] [--agent <dsh|codex|claude>] [--harness <name>]
            [--session <id>] [--ip <ip>] [--repo <key> | --repos <k1,k2>] [--note <text>]
@@ -109,6 +115,14 @@ EOF
 }
 
 curl_tls() { # curl, with the configured CA if there is one
+  # Every request path goes through here, so this is the one place a missing server has to be
+  # caught. Guessing would mean sending the bearer token to whoever the guess named — which is
+  # exactly what the shipped default did.
+  if [ -z "$URL" ]; then
+    echo "chatbox: no server configured — set CHATBOX_URL, or write it to ${CHATBOX_CONFIG:-$HOME/.chatbox}" >&2
+    echo "  (there is deliberately no default: the bearer token would go wherever it pointed)" >&2
+    exit 2
+  fi
   if [ -n "$CACERT" ]; then
     # =https, not +https: a redirect must not be able to move the token onto http.
     curl --cacert "$CACERT" --proto '=https' "$@"

@@ -110,6 +110,10 @@ umask 077
 printf 'CHATBOX_URL=http://<server-host>:8787\nCHATBOX_TOKEN=<secret>\n' > ~/.chatbox
 ```
 
+The client has **no default server**. An unset `CHATBOX_URL` with no `~/.chatbox` is refused with
+exit 2 and a diagnostic, rather than guessed at — a guessed address is where the bearer token would
+go. `chatbox help` and `chatbox repo` need no server; every other command does.
+
 **Use it** — the same commands work in any agent's shell:
 
 ```sh
