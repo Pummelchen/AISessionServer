@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 75 | done: 14 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
+**Open: 74 | done: 15 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -27,7 +27,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0025](#0025) | S1 | M2 | `chatbox-mcp.swift:138` | MCP adapter feeds raw peer text to the model with no untrusted frame [also: MCP adapter returns peer text to the model with no untrusted frame] | unsafe | **START** | node1 | phase-B/L1-architecture,L4-security |
 | [0026](#0026) | S1 | M2 | `chatbox-mcp.swift:191` | JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally) | bug | **START** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0027](#0027) | S1 | M2 | `chatbox-mcp.swift:47` | MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)] | bug | **START** | node1 | phase-B/L1-architecture,L3-line-level |
-| [0028](#0028) | S1 | M2 | `chatbox-mcp.swift:54` | inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)] | bug | **AUDIT** | node1 | phase-B/L3-line-level,M2-mcp-and-placeholders |
+| [0028](#0028) | S1 | M2 | `chatbox-mcp.swift:54` | inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)] | bug | **DONE** | node1 | phase-B/L3-line-level,M2-mcp-and-placeholders |
 | [0029](#0029) | S1 | M1 | `chatbox.swift:1279` | /health answers 200 with empty counters when the store cannot be read, and omits uptime/build/db state | bug | **START** | node1 | phase-B/L7-ops |
 | [0030](#0030) | S1 | M1 | `chatbox.swift:1358` | register and token issuance report success when the store write failed [also: Registration reports success without checking its write] | bug | **START** | node1 | phase-B/L1-architecture,L2-server-core |
 | [0031](#0031) | S1 | M1 | `chatbox.swift:1509` | Reply resolution loads every message of the thread, bodies included, with no bound | perf | **START** | node1 | phase-B/L5-performance |
@@ -378,7 +378,7 @@ CONFIDENCE: high
 - **Severity / category / module:** S1 / bug / M2
 - **Location:** `chatbox-mcp.swift:54`
 - **Title:** inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)]
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** req.timeoutInterval = 60 (line 54) and the semaphore waits 70s (line 65), while the inbox tool advertises 'seconds to hold the request open (max 300)' (line 116) and the server caps wait at maxWaitSeconds = 300 (chatbox.swift:37, clamped at 1953). A call with wait above ~60 returns status 0 and body 'error: ...timed out', which toolResult (lines 136-140) marks isError. | Line 54 `req.timeoutInterval = 60` and line 65 `if sem.wait(timeout: .now() + 70) == .timedOut { task.cancel(); return (0, "error: the chatbox server did not answer within 70s") }`. The inbox tool tells callers wait holds the request open 'max 300' (line 116), and the server honours up to 300 (chatbox.swift:37, 1951-1953).
 
 WHY IT MATTERS: The documented long-poll wake primitive cannot work through MCP beyond one minute: a host that asks for wait=300 gets a spurious transport error instead of the held connection the server is ready to serve, so wake-on-arrival is broken through the adapter. | Any inbox long poll with wait above roughly 60 seconds always ends in the adapter's own timeout error, never in the message it was waiting for. A host that follows the advertised schema gets a spurious isError:true and misses the delivery the long poll exists to provide.
@@ -388,6 +388,7 @@ CONFIDENCE: high
 - **Evidence (after):** TEST (gate), measured against an endpoint that accepts and never answers, so the only thing that ends the call is the adapter's own deadline: `wait=1` takes **22s** after the fix (the wait plus the CLI's margin) and **61s** with the old flat deadline — the mutant cell reports exactly that (`wait=1 took 61s: the client is still using a flat deadline`). Suite base cell green at 908 passed / 0 failed, mutant 240-audit0028-flatdeadline red on that one check, relative cell green, 0 false passes. Both strict-concurrency builds stay 0/0.
 PHASE-D NOTE (a vacuity in my own first version of the check, caught by the mutation cell — NOT committed): the holding endpoint was `sleep 30 | nc -k -l`, i.e. it closed the connection at 30s, *before* the flat 60s deadline this check exists to rule out. The mutant therefore failed early and the check passed it — a FALSE PASS, measured at 29s. Fixed by holding for 90s and by proving the holder is alive before making the call (a port that was never bound now fails the check instead of passing it); the cell was re-run and is red for the right reason. The same pattern — prove the fixture, not just start it — is what audit B found in the federation section.
 AUDIT (gate): re-read cold. The deadline is `wait + 20` when a wait is given and 60s otherwise (non-poll calls unchanged), the semaphore waits `deadline + 10`, and the error text now names the deadline that expired instead of a hardcoded 70s. The advertised maximum (300) is therefore reachable: 320s client deadline. No check weakened: the new checks are additive; the suite gains ~22s of wall clock, which is noted here as the one deliberately slow check.
+- **Commit:** `24a81a4`
 - **Notes:** Rejected alternatives: (a) lowering the advertised maximum to 60s - it would make the tool honest by removing the feature the server already provides; (b) raising the flat timeout to 320s - a normal tool call would then hang for five minutes on a dead server; (c) firing the request in the background and polling - the adapter is deliberately stateless and synchronous, one request per call.
 
 ### 0029
