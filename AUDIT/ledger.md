@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 70 | done: 22 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
+**Open: 69 | done: 23 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -26,7 +26,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0024](#0024) | S1 | M3 | `chatbox-cli.sh:817` | a failed --exec or print spins the wake loop with no backoff | bug | **START** | node1 | phase-B/M3-client |
 | [0025](#0025) | S1 | M2 | `chatbox-mcp.swift:138` | MCP adapter feeds raw peer text to the model with no untrusted frame [also: MCP adapter returns peer text to the model with no untrusted frame] | unsafe | **START** | node1 | phase-B/L1-architecture,L4-security |
 | [0026](#0026) | S1 | M2 | `chatbox-mcp.swift:191` | JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally) | bug | **START** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0027](#0027) | S1 | M2 | `chatbox-mcp.swift:47` | MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)] | bug | **START** | node1 | phase-B/L1-architecture,L3-line-level |
+| [0027](#0027) | S1 | M2 | `chatbox-mcp.swift:47` | MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)] | bug | **DONE** | node1 | phase-B/L1-architecture,L3-line-level |
 | [0028](#0028) | S1 | M2 | `chatbox-mcp.swift:54` | inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)] | bug | **DONE** | node1 | phase-B/L3-line-level,M2-mcp-and-placeholders |
 | [0029](#0029) | S1 | M1 | `chatbox.swift:1279` | /health answers 200 with empty counters when the store cannot be read, and omits uptime/build/db state | bug | **DONE** | node1 | phase-B/L7-ops |
 | [0030](#0030) | S1 | M1 | `chatbox.swift:1358` | register and token issuance report success when the store write failed [also: Registration reports success without checking its write] | bug | **START** | node1 | phase-B/L1-architecture,L2-server-core |
@@ -371,13 +371,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S1 / bug / M2
 - **Location:** `chatbox-mcp.swift:47`
 - **Title:** MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)]
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** 47-50 builds the request from URLQueryItem values; Foundation leaves '+' literal (probe printed `?body=a%26b%3Dc%20d+e`) while the server's parseForm decodes '+' as a space (chatbox.swift:910). End to end: an MCP say with body `a+b and c+d+e` was stored as `a b and c d e`; the same body through curl/chatbox-cli is stored intact. The server's own forward path escapes this on purpose (chatbox.swift:923-938). | Lines 45-50 build the request with `URLQueryItem(name: k, value: v)` then `comps?.queryItems = items`. Foundation leaves + unescaped in the query (a Swift probe printed the URL `...?body=a+b`), and the server's percentDecode (chatbox.swift:909-911) replaces + with a space. End-to-end with the built adapter and server, `say` with body `sum a+b = c` was stored and returned by `inbox?json=1` as `sum a b = c`.
 
 WHY IT MATTERS: The MCP adapter is a documented front-end for model hosts (README:166-172), so messages containing '+' (diff hunks, arithmetic, URLs) reach the peer silently altered - wrong results in the only payload the product carries, from a consumer the server cannot correct. | Every tool call whose value contains + is silently altered -- message bodies, subjects, repo keys, notes. The server's own formEncode comment (chatbox.swift:923-926) calls this exact hazard out and avoids it on the forward path; the MCP adapter is the one client that still does it.
 
 CONFIDENCE: high
 - **Fix:** Percent-encode query values with the server's formEncode rule, or POST an application/x-www-form-urlencoded body, in chatbox-mcp.swift; add a suite check that an MCP say preserves '+'. | Do not use URLQueryItem for values: percent-encode them with the same unreserved-set rule the server uses (escaping + as %2B), or POST the arguments as an application/x-www-form-urlencoded body like performForward does.
+- **Evidence (after):** Covered by #0019, which is this same defect found in an earlier pass: the MCP adapter now percent-encodes every parameter value (RFC 3986) in `queryEncode`, so a `+` travels as `%2B` and the server's form decoding no longer turns it into a space. The suite round-trips a body containing `c++ plus+plus a+b` through the adapter and reads it back intact, and matrix cell `233-audit0019-mcpplus` (which puts `0x2B` back into the unescaped set) is red. Nothing was changed for this entry beyond recording that the earlier task is the fix; closing a duplicate instead of fixing the same line twice is the point of deduplicating the ledger.
+- **Commit:** `842e588`
+- **Notes:** Duplicate of #0019 (`chatbox-mcp.swift:49`, DONE at 842e588). The two entries came from different passes over the same file and describe the same missing encoding; the fix, the check and the mutation all live under #0019.
 
 ### 0028
 
