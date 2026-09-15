@@ -189,6 +189,12 @@ Leave previous releases' notes and performance tables alone.
 ## AISessionServer — Shell, no release yet
 
 - **Identity** semantic version, not yet established.
-- **No compiled artifact.** A release, if warranted, is a tagged source archive
-  with a documented entry point, and the archive is what the Release carries.
-- **Code scanning** CodeQL default setup covers `actions`.
+- **Two Swift binaries are compiled, but neither is committed.** `xcrun swiftc -O
+  chatbox.swift -o chatbox`, and the same for `chatbox-mcp.swift`; both outputs are
+  gitignored. A release would therefore carry either the built binaries (native
+  `arm64` only, per §1.2.1–§1.2.4) or a tagged source archive with a documented entry
+  point. There is no release script.
+- **Code scanning** runs CodeQL **advanced** setup (`.github/workflows/codeql.yml`,
+  Swift, `build-mode: manual`). **Default setup is not configured and must stay
+  that way** — it ran `swift build`, found no `Package.swift`, and analysed nothing
+  while failing.
