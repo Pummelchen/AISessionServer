@@ -2811,6 +2811,19 @@ let port = UInt16(argValue("--port", "8787")) ?? 8787
 let dbPath = argValue("--db", NSString(string: "~/chatbox.sqlite").expandingTildeInPath)
 let tokenArg = argValue("--token", "")
 let tokenFile = argValue("--token-file", "")
+// A *present* flag with an empty value is a mistake, not a request for an open board. `argValue`
+// cannot tell "flag absent" from "flag given nothing", so `--token "$SECRET"` with SECRET unset —
+// and `--token-file ""` in a unit file that meant to name one — used to clear the token and come up
+// with `auth: OPEN (no token)`: every route as bootstrap, no diagnostic, no log line. Open mode is
+// asked for by name (`--token open`) or by passing no token flag at all.
+if argPresent("--token") && tokenArg.isEmpty {
+    FileHandle.standardError.write("chatbox: --token was given but is empty — refusing to start an open board (use --token open to ask for one by name)\n".data(using: .utf8)!)
+    exit(2)
+}
+if argPresent("--token-file") && tokenFile.isEmpty {
+    FileHandle.standardError.write("chatbox: --token-file was given but names no file — refusing to start an open board\n".data(using: .utf8)!)
+    exit(2)
+}
 // Prefer --token-file: a token passed as argv is visible to every local user in `ps`.
 let tokenFromFile: String = {
     guard !tokenFile.isEmpty else { return "" }

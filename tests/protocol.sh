@@ -4302,6 +4302,61 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 34. An empty credential flag must not start an open board
+# `argValue` cannot tell "flag absent" from "flag given nothing", so `--token "$SECRET"` with SECRET
+# unset came up fully open — every route as bootstrap, no diagnostic — and `--token-file ""` had the
+# same hole. This is the one failure a bearer-token board must never have, because nothing about the
+# running board says it happened. Open mode is asked for by name (`--token open`) or by passing no
+# token flag at all, and the empty *file* case was already refused.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  authport="${CHATBOX_AUTH_PORT:-9406}"
+  : > "$SCRATCH/auth-empty-${RUN}.token"
+  chmod 600 "$SCRATCH/auth-empty-${RUN}.token"
+  auth_refuse() { # label, the phrase the refusal must carry, then the token arguments
+    _lbl="$1"; _phrase="$2"; shift 2
+    "$CHATBOX_BIN" --port "$authport" --db "$SCRATCH/auth-${RUN}.sqlite" "$@" \
+      > "$SCRATCH/auth-${RUN}.log" 2>&1 &
+    _apid=$!
+    _aw=0
+    while [ "$_aw" -lt 30 ] && kill -0 "$_apid" 2>/dev/null; do
+      sleep 0.1; _aw=$((_aw + 1))
+    done
+    if kill -0 "$_apid" 2>/dev/null; then
+      no "$_lbl" "it started anyway: $(head -1 "$SCRATCH/auth-${RUN}.log")"
+      kill "$_apid" 2>/dev/null
+    else
+      ok "$_lbl"
+    fi
+    wait "$_apid" 2>/dev/null
+    contains "$_lbl — and the refusal names the flag" "$(cat "$SCRATCH/auth-${RUN}.log")" "$_phrase"
+  }
+  auth_refuse "an empty --token is refused rather than opening the board" \
+    "--token was given but is empty" --token ""
+  auth_refuse "an empty --token-file is refused rather than opening the board" \
+    "--token-file was given but names no file" --token-file ""
+  auth_refuse "an empty token file is refused rather than opening the board" \
+    "is empty — refusing to start an open board" --token-file "$SCRATCH/auth-empty-${RUN}.token"
+  # …and the documented way to ask for an open board still works, or this guard would be a
+  # behaviour change rather than a hole closed.
+  "$CHATBOX_BIN" --port "$((authport + 1))" --db "$SCRATCH/auth-open-${RUN}.sqlite" --token open \
+    > "$SCRATCH/auth-open-${RUN}.log" 2>&1 &
+  _opid=$!
+  _ow=0
+  while [ "$_ow" -lt 40 ]; do
+    curl -fsS "http://127.0.0.1:$((authport + 1))/health" >/dev/null 2>&1 && break
+    sleep 0.2; _ow=$((_ow + 1))
+  done
+  equals "a board asked for by name (--token open) still starts" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$((authport + 1))/health")" "200"
+  contains "and says it is open in the banner" "$(cat "$SCRATCH/auth-open-${RUN}.log")" "auth: OPEN (no token)"
+  kill "$_opid" 2>/dev/null
+  wait "$_opid" 2>/dev/null
+else
+  printf '  skip  the credential-flag refusals (set CHATBOX_BIN to the built server)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
