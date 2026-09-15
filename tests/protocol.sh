@@ -231,6 +231,12 @@ field() { # response, key -> first matching "key: value"
   printf '%s' "$1" | sed -n "s/^$2: //p" | head -n 1
 }
 
+jsonnum() { # JSON listing, key -> the number the hand-built prefix reports
+  # `jsonRows` writes `{"shown": N, "matching": M, "<key>": [` ahead of the pretty-printed
+  # array, so both counts are on the first line, before any row value could be read as one.
+  printf '%s' "$1" | sed -n "s/.*\"$2\": \([0-9][0-9]*\).*/\1/p" | head -n 1
+}
+
 # Scratch space for the checks that have to run something in the background.
 #
 # Paths built from $0 are *relative* when the suite is invoked as `sh tests/protocol.sh`,
@@ -3754,6 +3760,46 @@ contains "and the refusal says what the boundary is" \
 # The same for the listing: C's board is empty, A's is not.
 lacks "an outside machine does not see the thread listed" "$(scoped_get /threads "$TOK27C")" "[$SCOPE_TID]"
 contains "a participating machine does see it listed" "$(scoped_get /threads "$TOK27A")" "[$SCOPE_TID]"
+# So is the *count* the JSON listing reports. `matching` is an answer about other machines' mail just
+# as much as a row is: it used to be a board-wide (or repo-wide) `COUNT(*)` with the scope applied
+# only to the rows, so a credential bound to one machine was handed the size of a board it may not
+# read. One `WHERE` clause now decides both, so the number cannot disagree with what was listed.
+SCOPE_COUNT_REPO="example.test/$RUN/scoped-count"
+# The fixture machines are a pair of their own: the checks below read A's and C's registry, and
+# giving one of them a new correspondent here would change what those checks see.
+ok27d="$(post /token --data-urlencode "node=node-scope-d" --data-urlencode "namespaces=*")"
+TOK27D="$(field "$ok27d" secret)"
+if [ -n "$TOK27D" ]; then
+  ok "the count fixture has a machine of its own"
+else
+  no "the count fixture has a machine of its own" "$(snip "$ok27d")"
+fi
+scoped_post /register "$TOK27D" --data-urlencode "id=it-$RUN-scope-d" --data-urlencode "node=node-scope-d" >/dev/null
+scoped_post /register "$TOK27D" --data-urlencode "id=it-$RUN-scope-d2" --data-urlencode "node=node-scope-d" >/dev/null
+# A conversation in that repo between the two sessions on that machine — C is not in it.
+scoped_post /message "$TOK27D" --data-urlencode "from=it-$RUN-scope-d" \
+  --data-urlencode "to=it-$RUN-scope-d2" --data-urlencode "repo=$SCOPE_COUNT_REPO" \
+  --data-urlencode "body=not for C" >/dev/null
+# ... and one C *is* in, so the repo filter has a row to find rather than falling back to the
+# empty-board text answer (which carries no counts at all).
+scoped_post /message "$TOK27D" --data-urlencode "from=it-$RUN-scope-d" \
+  --data-urlencode "to=it-$RUN-scope-c" --data-urlencode "repo=$SCOPE_COUNT_REPO" \
+  --data-urlencode "body=for C" >/dev/null
+equals "the count fixture's repo holds two conversations in total" \
+  "$(jsonnum "$(get /threads "repo=$SCOPE_COUNT_REPO&json=1")" matching)" "2"
+equals "a scoped credential's repo count is scoped, not repo-wide" \
+  "$(jsonnum "$(scoped_get "/threads?json=1&repo=$SCOPE_COUNT_REPO" "$TOK27C")" matching)" "1"
+scope_json="$(scoped_get "/threads?json=1" "$TOK27C")"
+equals "and its unfiltered count is the number it was actually shown" \
+  "$(jsonnum "$scope_json" matching)" "$(jsonnum "$scope_json" shown)"
+board_count="$(jsonnum "$(get /threads "json=1")" matching)"
+scoped_count="$(jsonnum "$scope_json" matching)"
+if [ "$board_count" -gt "$scoped_count" ]; then
+  ok "while the operator's count is larger, so the fixture is not vacuous"
+else
+  no "while the operator's count is larger, so the fixture is not vacuous" \
+     "board=$board_count scoped=$scoped_count"
+fi
 # And the registry: its own machine plus correspondents, not the whole board.
 contains "the scoped registry answers at all" "$(scoped_get /peers "$TOK27C")" "registered agents"
 contains "the registry shows the machine's own session" "$(scoped_get /peers "$TOK27C")" "it-$RUN-scope-c"

@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 74 | done: 15 | blocked: 0 | total: 89** (S0 7, S1 31, S2 44, S3 7)
+**Open: 76 | done: 15 | blocked: 0 | total: 91** (S0 7, S1 31, S2 46, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -33,7 +33,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0031](#0031) | S1 | M1 | `chatbox.swift:1509` | Reply resolution loads every message of the thread, bodies included, with no bound | perf | **START** | node1 | phase-B/L5-performance |
 | [0032](#0032) | S1 | M1 | `chatbox.swift:1551` | Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row] | bug | **START** | node1 | phase-B/L2-server-core,L3-line-level |
 | [0033](#0033) | S1 | M1 | `chatbox.swift:1902` | SSE 'bye' frame is built with a doubled backslash, so the documented bye event is never delivered [also: SSE deadline frame uses literal backslash-n, so the bye event is never terminated] | bug | **START** | node1 | phase-B/L2-server-http,L3-line-level |
-| [0034](#0034) | S1 | M1 | `chatbox.swift:2095` | Scoped credential's /threads count is board-wide, breaking read scoping [also: Scoped GET /threads?json=1 reports the board-wide thread count; GET /threads?json=1 leaks the board-wide thread count to a scoped credential; GET /threads JSON 'matching' counts the whole board, not the scoped caller's visible set] | unsafe | **START** | node1 | phase-B/L1-architecture,L2-server-core,L2-server-http,L4-security |
+| [0034](#0034) | S1 | M1 | `chatbox.swift:2095` | Scoped credential's /threads count is board-wide, breaking read scoping [also: Scoped GET /threads?json=1 reports the board-wide thread count; GET /threads?json=1 leaks the board-wide thread count to a scoped credential; GET /threads JSON 'matching' counts the whole board, not the scoped caller's visible set] | unsafe | **AUDIT** | node1 | phase-B/L1-architecture,L2-server-core,L2-server-http,L4-security |
 | [0035](#0035) | S1 | M1 | `chatbox.swift:2107` | /threads hardcodes LIMIT 100 and its text answer hides the truncation [also: GET /threads is permanently capped at the newest 100 with no offset or cursor; ORDER BY threads.last_at has no index; every /threads call scans and sorts the whole threads table; GET /threads silently truncates at a hard-coded 100, ignores --max-rows, and the text form omits the count; GET /threads text form truncates at a hardcoded 100 and never states the matching count] | bug | **START** | node1 | phase-B/L1-architecture,L2-server-http,L3-line-level,L5-performance |
 | [0036](#0036) | S1 | M1 | `chatbox.swift:2135` | Ack reports acknowledgements that did not happen, from an unchecked UPDATE | bug | **START** | node1 | phase-B/L2-server-core |
 | [0037](#0037) | S1 | M1 | `chatbox.swift:2138` | ack reports sqlite3_changes() even when the UPDATE failed, so a failed ack answers 'ok acked N' | bug | **START** | node1 | phase-B/L3-line-level |
@@ -92,6 +92,8 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0084](#0084) | S2 | M4 | `tests/protocol.sh:3748` | The /events max= ceiling is never exercised | test | **START** | node1 | phase-B/L6-tests |
 | [0085](#0085) | S2 | M4 | `tests/protocol.sh:395` | /token?json=1 secret check is vacuous: the JSON form is never asserted | test | **START** | node1 | phase-B/L6-tests |
 | [0086](#0086) | S2 | M4 | `tests/protocol.sh:3967` | fed_refuse decides "refused" with a fixed sleep and never checks the exit status | test | **START** | node1 | phase-B/L6-tests |
+| [0090](#0090) | S2 | M1 | `chatbox.swift:2279` | GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1] | bug | **START** | node1 | audit/0034 follow-up |
+| [0091](#0091) | S2 | M1 | `tests/.scratch/mutate.sh (uncommitted)` | The mutation matrix silently skips cells whose anchor no longer matches the code, and cannot be reproduced from a clone | test | **START** | node1 | audit/0034 run |
 | [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
 | [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **START** | node1 | phase-A |
 | [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **START** | node1 | L0 secret-scan triage |
@@ -461,13 +463,17 @@ CONFIDENCE: high
 - **Severity / category / module:** S1 / unsafe / M1
 - **Location:** `chatbox.swift:2095`
 - **Title:** Scoped credential's /threads count is board-wide, breaking read scoping [also: Scoped GET /threads?json=1 reports the board-wide thread count; GET /threads?json=1 leaks the board-wide thread count to a scoped credential; GET /threads JSON 'matching' counts the whole board, not the scoped caller's visible set]
-- **Status:** START
+- **Status:** AUDIT
 - **Evidence (before):** listThreads scopes the rows (2100-2105 appends `t.id IN (nodeThreadsSQL)` for a non-bootstrap principal) but computes `let matchingThreads = store.threadCount(repo: repo)` (2095), and threadCount (876-880) has no node filter: `SELECT COUNT(*) FROM threads` or `... WHERE repo = ?`. With `json=1` (2110) a scoped token gets `{"shown":1,"matching":<all threads on the board>}` from its own conversation, contradicting README:192-194 ('thread, threads and peers answer for those and nothing else'). | listThreads() computes matchingThreads = store.threadCount(repo: repo) at 2095 and passes it to jsonRows at 2110, so a scoped credential's JSON answer carries "matching": N. Store.threadCount (876-880) is COUNT(*) FROM threads (optionally WHERE repo=?) with no node predicate, while the row query at 2096-2107 is scoped with t.id IN (nodeThreadsSQL). Comparable counts are scoped (agentCount(visibleTo:) 776, deliveryCount(agent:) 806); this one is not. | 2095 computes `matchingThreads = store.threadCount(repo:)` board-wide, and 2110 returns it as `matching` even for a scoped caller, while the rows themselves are scoped at 2100-2105. Probe with 110 threads: a node-a credential participating in 2 got `{"shown": 2, "matching": 110}` from GET /threads?json=1. /peers correctly uses agentCount(visibleTo:); the text form prints only 'threads - 2'. | listThreads computes `let matchingThreads = store.threadCount(repo: repo)` (2095) and returns it via jsonRows(rows, key: "threads", matching: matchingThreads) (2110). threadCount() (876-880) is a bare COUNT(*) over threads with no visibility predicate, while the row query adds `t.id IN (nodeThreadsSQL)` for a scoped principal (2100-2105). listThreads has no bootstrap guard.
 
 WHY IT MATTERS: The machine is the confidentiality boundary, which makes the aggregate part of the contract, not decoration: a compromised or curious machine learns how much conversation the rest of the board holds, and can probe repo keys for board-wide activity without being able to read a single message. The suite tests only that foreign threads are absent, never the count. | A credential bound to one machine learns how many conversations exist board-wide and for any repo key it names, breaking the documented rule that it may read only conversations its machine takes part in. | README:190-193 promises a scoped credential's thread/threads/peers answers 'for those and nothing else'. This is the one scoped read that returns a board-wide (or per-repo) count, disclosing activity that the machine boundary is meant to withhold. | A scoped credential is defined to see only conversations its machine takes part in (comments 2095, 2100-2105; store docs 813-826), yet /threads?json=1 discloses the board-wide thread count and /threads?repo=<any key>&json=1 discloses that repo's count. The wrong 'matching' also contradicts the listing it accompanies.
 
 CONFIDENCE: high
-- **Fix:** Add a scoped count to Store (reuse nodeThreadsSQL with the node bound twice when the principal is not bootstrap) and use it for `matching`, so for a scoped reader shown always equals matching. Add a check that `threads?json=1` under a scoped token reports matching==shown. | Give threadCount a visibleTo/scope argument and apply the same nodeThreadsSQL condition used for the rows, or count the already-scoped query. | Scope the count exactly as the rows are scoped - add the same `t.id IN (nodeThreadsSQL)` predicate for non-bootstrap callers (a scoped threadCount). | Count with the same WHERE clause as the listing (pass who.node into threadCount and apply nodeThreadsSQL), so shown and matching describe the same scoped set.
+- **Fix:** One `WHERE` clause in `listThreads` now builds both the listing and its count: the node scope (`t.id IN (nodeThreadsSQL)`) and the repo filter are appended once, and `matching` is `SELECT COUNT(*) FROM threads t<scope>` with the same binds. `Store.threadCount(repo:)` - the unscoped counter, and its only caller - is deleted, so the two numbers cannot drift apart again.
+- **Evidence (after):** TEST (gate): section 29 now issues a machine of its own (`node-scope-d`), registers two sessions on it, and writes two conversations in `example.test/<run>/scoped-count`: one between those two sessions (C is not in it) and one from that machine to C (C is in it). Checks: the bootstrap's repo-wide count is 2 (the fixture is real), C's repo-filtered `matching` is 1 (it used to be 2), and C's unfiltered `matching` equals its `shown` (it used to be the board total), with a final check that the bootstrap's count is strictly larger than C's so the fixture cannot go vacuous. Suite base cell green at 910 passed / 0 failed; mutant `241-audit0034-boardwidecount` restores the pre-fix expression (`repo.isEmpty ? COUNT(*) FROM threads : ... WHERE repo = ?`) and is red on exactly the three scope checks; 0 false passes. Both strict-concurrency typechecks stay 0/0.
+PHASE-D NOTE: my first version of the fixture reused A and B for the private conversation and had C send to A. It was green on the new checks but turned two *existing* peers checks red (`not a machine it has never spoken to`, `but a stranger is not`) because the fixture gave C a correspondent A's and C's registry checks had assumed away - caught by the base cell, which was RED with 2 failures. The fixture now uses its own machine and its own repo. This is the second time a new check has been wrong in a way only the harness showed; the base cell is not optional.
+AUDIT (gate): re-read cold. The change removes an unscoped counter instead of adding a second code path, and the remaining listing SQL is unchanged apart from where the predicate is built. Every other `matching` in the file was re-checked: inbox counts per agent, messages counts one already-authorized thread, agents uses `agentCount(visibleTo:)` and tokens is bootstrap-only, so `/threads` was the only leaked count.
+- **Notes:** Rejected alternatives: (a) add a `scope` parameter to `Store.threadCount` - it would leave two ways to build the same predicate, which is how the two drifted in the first place; (b) count the already-scoped rows in Swift - the listing is capped at 100, so a count from it would be a lie for a machine in more than 100 conversations; (c) drop `matching` from a scoped answer entirely - the field is what tells a reader the listing was truncated, and removing it for scoped callers would hide truncation from exactly the readers who cannot see the rest.
 
 ### 0035
 
@@ -1209,6 +1215,32 @@ WHY IT MATTERS: These checks protect the security-relevant federation flags (--p
 
 CONFIDENCE: high
 - **Fix:** Replace the fixed sleep with the poll-kill -0 loop used elsewhere and assert the process exit status is 2 as well as the phrase.
+
+### 0090
+
+- **Severity / category / module:** S2 / bug / M1
+- **Location:** `chatbox.swift:2279`
+- **Title:** GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1]
+- **Status:** START
+- **Evidence (before):** `listThreads` returns `(200, "no threads yet\n")` at 2279 when the scoped listing is empty, and `listTokens` returns `(200, "no credentials issued\n")` at 2442 - both *before* the `if !req.p("json").isEmpty` branch that follows them. A caller that asked for JSON gets `no threads yet` and a JSON parse error; `/inbox` is the other way round on purpose and says so in a comment at 1806-1810 ('The JSON form still answers JSON'), and `/peers` answers JSON unconditionally. The `/ui` page happens to survive because it wraps `JSON.parse` in a try/catch and shows an empty board, so the failure is silent there; any other client sees a parse error rather than an empty list.
+
+WHY IT MATTERS: `json=1` is the machine-readable contract of every listing route. A route that answers prose on an empty result makes 'empty' look like 'broken' to its callers, and it is the state a scoped credential is in most often.
+
+CONFIDENCE: high
+- **Fix:** Move the `req.p("json")` check above the empty-result return in both routes and answer `jsonRows([], key:, matching: 0)` for `json=1`, keeping the one-line prose answer for the human form; add suite checks that an empty scoped listing answers parseable JSON with `shown` and `matching` both 0.
+
+### 0091
+
+- **Severity / category / module:** S2 / test / M1
+- **Location:** `tests/.scratch/mutate.sh (uncommitted)`
+- **Title:** The mutation matrix silently skips cells whose anchor no longer matches the code, and cannot be reproduced from a clone
+- **Status:** START
+- **Evidence (before):** The matrix froze the revision and printed `prepared N mutations`, then during the #0034 run reported 11 ANCHOR PROBLEMS (`02-slash404`, `19-ackonwait`, `29-revokenoop`, `34-plaintextnote`, `43-watchrepeats`, `54-stilltouchdead`, `55-nofrac`, `78-noidcheck`, `93-cacertoverhttp`, `178-trk30-migratealways`, `215-trk17-nofedbanner`) - anchors that no longer exist because the audit itself changed those lines (`usage(Self.publicURL)` -> `usage(publicURL)` in #0004, the `finish` signature in #0018, and so on). The check prints them and `sys.exit(1)`s from the Python block, but the surrounding `sh` script keeps going, so the run still ends with a results table and a 'false passes: N' line that counts only the cells that ran. Eleven cells were not executed and nothing in the output says the matrix is incomplete.
+
+WHY IT MATTERS: the matrix is the evidence that the suite catches the bugs it claims to. A cell that quietly stops running is a check that stopped existing, and the run that reports it looks exactly like a clean one. The harness is also gitignored, so a fresh clone cannot reproduce the matrix at all - the one artifact that makes the test suite's value checkable is the one artifact not in the repository.
+
+CONFIDENCE: high
+- **Fix:** Make the anchor check fatal (a non-zero exit before any cell runs, and no results table), repair the 11 stale anchors against the current code, and commit the harness into the repository (with the frozen-revision logic intact) so a fresh clone can reproduce the matrix; record in AUDIT/environment.md how to run it.
 
 ### 0011
 

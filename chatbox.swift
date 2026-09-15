@@ -961,12 +961,6 @@ final class Store: @unchecked Sendable {
         """, [id])
     }
 
-    func threadCount(repo: String) -> Int {
-        repo.isEmpty
-            ? (Int(scalar("SELECT COUNT(*) FROM threads")) ?? 0)
-            : (Int(scalar("SELECT COUNT(*) FROM threads WHERE repo = ?", [repo])) ?? 0)
-    }
-
     func messageCount(thread id: String) -> Int {
         Int(scalar("SELECT COUNT(*) FROM messages WHERE thread_id = ?", [id])) ?? 0
     }
@@ -2264,10 +2258,12 @@ final class Chatbox: @unchecked Sendable {
             guard let key = canonicalRepoKey(repoRaw) else { return (400, "error: '\(oneLine(repoRaw))' is not a valid repo key\n") }
             repo = key
         }
-        let matchingThreads = store.threadCount(repo: repo)
-        var sql = "SELECT t.id, t.repo, t.subject, t.created_at, t.last_at, (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n FROM threads t"
-        var binds: [String?] = []
+        // One `WHERE` clause decides both what is listed and what `matching` counts. The count is an
+        // answer about other machines' mail just as much as the rows are: it used to be a board-wide
+        // (or repo-wide) `COUNT(*)`, so a credential scoped to one machine was told how many
+        // conversations exist that it may not read — a number it could watch grow.
         var conditions: [String] = []
+        var binds: [String?] = []
         if !repo.isEmpty { conditions.append("t.repo = ?"); binds.append(repo) }
         if !who.isBootstrap {
             // Only the conversations this machine takes part in. The bootstrap credential lists
@@ -2275,8 +2271,10 @@ final class Chatbox: @unchecked Sendable {
             conditions.append("t.id IN (\(store.nodeThreadsSQL))")
             binds.append(who.node); binds.append(who.node)
         }
-        if !conditions.isEmpty { sql += " WHERE " + conditions.joined(separator: " AND ") }
-        sql += " ORDER BY t.last_at DESC LIMIT 100"
+        let scope = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
+        let matchingThreads = Int(store.scalar("SELECT COUNT(*) FROM threads t" + scope, binds)) ?? 0
+        let sql = "SELECT t.id, t.repo, t.subject, t.created_at, t.last_at, (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n FROM threads t"
+            + scope + " ORDER BY t.last_at DESC LIMIT 100"
         let rows = store.rows(sql, binds)
         if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }
         if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }
