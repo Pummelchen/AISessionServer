@@ -70,6 +70,33 @@ jobs:
           set -eu
           CHATBOX_TOKEN="$(cat tests/.scratch/token)" sh tests/protocol.sh
 
+      - name: Backups — a verified copy, and the copies that are not one
+        run: |
+          set -eu
+          # The documented procedure, end to end, against the board the suite just wrote to.
+          rm -f tests/.scratch/backup.sqlite
+          ./chatbox --db tests/.scratch/ci.sqlite --backup tests/.scratch/backup.sqlite
+          ./chatbox --db tests/.scratch/ci.sqlite --verify-backup tests/.scratch/backup.sqlite
+          # What the incident left behind: an empty file, and a valid database with no tables.
+          : > tests/.scratch/zero.sqlite
+          if ./chatbox --verify-backup tests/.scratch/zero.sqlite 2>/dev/null; then
+            echo "::error::an empty file passed as a backup"; exit 1
+          fi
+          sqlite3 tests/.scratch/notables.sqlite "PRAGMA user_version=0;"
+          if ./chatbox --verify-backup tests/.scratch/notables.sqlite 2>/dev/null; then
+            echo "::error::an empty 4 KB database passed as a backup"; exit 1
+          fi
+          # A copy that is a valid board but older than the one it names. Only the comparison
+          # can see this, which is why --backup always makes one.
+          sqlite3 tests/.scratch/backup.sqlite "DELETE FROM messages;"
+          if ./chatbox --db tests/.scratch/ci.sqlite --verify-backup tests/.scratch/backup.sqlite 2>/dev/null; then
+            echo "::error::a stale copy passed verification"; exit 1
+          fi
+          # And it is never silently replaced.
+          if ./chatbox --db tests/.scratch/ci.sqlite --backup tests/.scratch/backup.sqlite 2>/dev/null; then
+            echo "::error::an existing backup was overwritten"; exit 1
+          fi
+
       - name: Server log
         if: always()
         run: cat tests/.scratch/server.log || true

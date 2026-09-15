@@ -61,6 +61,7 @@ C2="it-$RUN-cred2-session"
 C3="it-$RUN-cred3-session"
 C4="it-$RUN-cred4-session"
 C5="it-$RUN-cred2-legacy"
+C6="it-$RUN-ack-all"
 SB="it-$RUN-stale"
 SS="it-$RUN-stale-sender"
 SB2="it-$RUN-fixture-ok"
@@ -299,6 +300,24 @@ if [ "$auth_open" = 0 ]; then
     "$(curl -sS --max-time 20 "$URL/health")" "unauthorized"
   equals "wrong query token is rejected" \
     "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/health?token=not-the-token")" "401"
+  # A credential that differs from the real one in exactly one character, at either end. How long
+  # the comparison *takes* is not observable through curl — the noise is orders of magnitude larger
+  # than the signal — but what the comparison *covers* is: a helper that compared only a prefix of
+  # the secret, or that accepted any string of the right shape, accepts one of these.
+  case "$TOKEN" in
+    *z) token_tail="${TOKEN%?}y" ;;
+    *)  token_tail="${TOKEN%?}z" ;;
+  esac
+  case "$TOKEN" in
+    z*) token_head="y${TOKEN#?}" ;;
+    *)  token_head="z${TOKEN#?}" ;;
+  esac
+  equals "a token differing only in its last character is rejected" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/health?token=$token_tail")" "401"
+  equals "a token differing only in its first character is rejected" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/health?token=$token_head")" "401"
+  equals "and the real one still works, so those two are not vacuous" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/health?token=$TOKEN")" "200"
   equals "wrong bearer token is rejected" \
     "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -H 'Authorization: Bearer nope' "$URL/health")" "401"
   equals "a bad token is rejected on another route too" \
@@ -668,26 +687,40 @@ contains "the sender still holds deliveries it should have" "$(get /inbox "id=$A
 # ---------------------------------------------------------------------------
 # 8. Read cursors and acknowledgements
 # ---------------------------------------------------------------------------
-# Ack scoping: C was never sent MID, so acking it must not touch B's delivery.
-contains "acking a message you were not sent is accepted" \
-  "$(post /ack --data-urlencode "id=$C" --data-urlencode "message=$MID")" "for $C"
+# Ack scoping: C was never sent MID, so acking it must not touch B's delivery. The count is the
+# rows actually stamped, which for C is none — `ok acked 1` here would be an acknowledgement of
+# a message this session was never sent.
+equals "acking a message you were not sent reports no acknowledgement" \
+  "$(post /ack --data-urlencode "id=$C" --data-urlencode "message=$MID")" "ok acked 0 for $C"
 contains "another session's ack does not clear your inbox" "$(get /inbox "id=$B")" "$subj"
 
-contains "ack by message id" \
-  "$(post /ack --data-urlencode "id=$B" --data-urlencode "message=$MID")" "for $B"
+equals "ack by message id counts the one delivery it stamped" \
+  "$(post /ack --data-urlencode "id=$B" --data-urlencode "message=$MID")" "ok acked 1 for $B"
 lacks "an acked message leaves the unread inbox" "$(get /inbox "id=$B")" "$subj"
 contains "an acked message stays in the full inbox" "$(get /inbox "id=$B&all=1")" "$subj"
 
-# Acking B's whole thread must not mark A's delivery of the reply as read.
-contains "ack by thread id" \
-  "$(post /ack --data-urlencode "id=$B" --data-urlencode "thread=$TID")" "ok acked"
+# Acking B's whole thread must not mark A's delivery of the reply as read. B holds deliveries for
+# two of the thread's three messages (it sent the third), so the count is exactly 2 — not the
+# thread's message count, which is what it used to report.
+equals "ack by thread id counts only that session's deliveries" \
+  "$(post /ack --data-urlencode "id=$B" --data-urlencode "thread=$TID")" "ok acked 2 for $B"
 contains "acking a thread does not clear another participant" \
   "$(get /inbox "id=$A")" "reply for $RUN"
 
-contains "ack by thread clears it for that participant" \
-  "$(post /ack --data-urlencode "id=$A" --data-urlencode "thread=$TID")" "ok acked"
+equals "ack by thread counts the other participant's one delivery" \
+  "$(post /ack --data-urlencode "id=$A" --data-urlencode "thread=$TID")" "ok acked 1 for $A"
 lacks "the thread is now read for that participant" "$(get /inbox "id=$A")" "reply for $RUN"
 contains "the thread is still there with all=1" "$(get /inbox "id=$A&all=1")" "reply for $RUN"
+
+# `all=1` counts what it actually stamped: two unread deliveries, then none, so a second ack
+# cannot report work it did not do.
+post /register --data-urlencode "id=$C6" --data-urlencode "node=node-ack" >/dev/null
+post /message --data-urlencode "from=$A" --data-urlencode "to=$C6" --data-urlencode "body=ack-all one for $RUN" >/dev/null
+post /message --data-urlencode "from=$A" --data-urlencode "to=$C6" --data-urlencode "body=ack-all two for $RUN" >/dev/null
+equals "ack all counts the deliveries it stamped" \
+  "$(post /ack --data-urlencode "id=$C6" --data-urlencode "all=1")" "ok acked 2 for $C6"
+equals "and a second ack all reports nothing left to do" \
+  "$(post /ack --data-urlencode "id=$C6" --data-urlencode "all=1")" "ok acked 0 for $C6"
 
 # ---------------------------------------------------------------------------
 # 9. Long-poll inbox (wait=)
@@ -2828,6 +2861,242 @@ if [ -n "${CHATBOX_DB:-}" ] && [ -f "$CHATBOX_DB" ] && command -v sqlite3 >/dev/
   fi
 else
   printf '  skip  the liveness stamp either side of a refusal (needs CHATBOX_DB and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 21. A backup you have not read is not a backup (TRK-25)
+# The SQLite file is the service. The trap that produced two 4 KB "backups" on node1 is a copy of
+# the main file while the committed rows are still in `-wal`: the copy is a valid-looking empty
+# database. `--backup` copies a *live* board with `VACUUM INTO`, which folds the WAL in, and then
+# verifies the copy against the board it came from — because a structurally valid copy can still
+# be missing rows, and only a comparison can see that. Both ends are exercised: a real backup
+# passes, and every copy that is not one — empty, table-less, truncated, text, stale, or created
+# by hand from the main file — fails loudly and non-zero.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  bdir="$SCRATCH/backup-${RUN}"
+  rm -rf "$bdir"; mkdir -p "$bdir"
+  bport="${CHATBOX_BACKUP_PORT:-8796}"
+  bdb="$bdir/board.sqlite"
+  btok="$bdir/token"
+  printf '%s\n' "$TOKEN" > "$btok"
+  "$CHATBOX_BIN" --port "$bport" --db "$bdb" --token-file "$btok" > "$bdir/server.log" 2>&1 &
+  bpid=$!
+  bready=0
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$bpid" 2>/dev/null; then break; fi
+    if curl -fsS "http://127.0.0.1:$bport/health?token=$TOKEN" >/dev/null 2>&1; then bready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$bready" = 1 ]; then
+    bk() { curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      "http://127.0.0.1:$bport/$1" "${@:2}"; }
+    # A board with something in it, written just now, so its rows are still in the WAL.
+    bk register --data-urlencode "id=it-$RUN-bk-a" --data-urlencode "node=node-bk" \
+      --data-urlencode "repos=example.test/$RUN/bk" >/dev/null
+    bk register --data-urlencode "id=it-$RUN-bk-b" --data-urlencode "node=node-bk" >/dev/null
+    bk message --data-urlencode "from=it-$RUN-bk-a" --data-urlencode "to=it-$RUN-bk-b" \
+      --data-urlencode "body=backup-$RUN" >/dev/null
+    bsig="select (select count(*) from agents)||'/'||(select count(*) from messages)||'/'||(select count(*) from deliveries)"
+    bsrc="$(sqlite3 "$bdb" "$bsig;")"
+    equals "the backup fixture has rows to copy" "$bsrc" "2/1/1"
+
+    # The incident itself, measured rather than assumed: the main file is still a 4 KB header
+    # and the rows are in `-wal`, so a hand copy of it is not a database. If a checkpoint has
+    # already folded them in, the fixture did not reproduce the trap and the checks that depend
+    # on it say so instead of passing for the wrong reason.
+    cp "$bdb" "$bdir/hand.sqlite"
+    if sqlite3 "$bdir/hand.sqlite" "select count(*) from messages;" >/dev/null 2>&1; then
+      printf '  skip  the hand copy of a live WAL database is empty (this board had checkpointed)\n'
+    else
+      ok "the hand copy of the live main file is not a database"
+      bhand="$("$CHATBOX_BIN" --verify-backup "$bdir/hand.sqlite" 2>&1)"; bhandrc=$?
+      equals "and verification refuses it" "$bhandrc" "1"
+      contains "and says why" "$bhand" "not a usable board"
+    fi
+
+    # A real backup of a live board, verified against the board it came from.
+    bout="$("$CHATBOX_BIN" --db "$bdb" --backup "$bdir/good.sqlite" 2>&1)"; brc=$?
+    equals "a backup of a live board succeeds" "$brc" "0"
+    contains "it names the board it copied" "$bout" "source: $bdb"
+    contains "it names the copy" "$bout" "backup: $bdir/good.sqlite"
+    contains "and says the copy was verified against the source" "$bout" "(verified equal to the source)"
+    equals "the copy holds the rows that were only in the WAL" \
+      "$(sqlite3 "$bdir/good.sqlite" "$bsig;")" "$bsrc"
+    contains "verification accepts the copy" \
+      "$("$CHATBOX_BIN" --verify-backup "$bdir/good.sqlite" 2>&1)" "backup ok"
+    contains "and accepts it against its source" \
+      "$("$CHATBOX_BIN" --db "$bdb" --verify-backup "$bdir/good.sqlite" 2>&1)" "compared with: $bdb"
+
+    # The copy is never silently replaced: overwriting yesterday's only good backup is worse
+    # than an error message.
+    bagain="$("$CHATBOX_BIN" --db "$bdb" --backup "$bdir/good.sqlite" 2>&1)"; bagainrc=$?
+    if [ "$bagainrc" -ne 0 ]; then
+      ok "an existing backup is not overwritten"
+    else
+      no "an existing backup is not overwritten" "it exited 0: $(snip "$bagain")"
+    fi
+    contains "and the refusal says why" "$bagain" "already exists"
+
+    # A structurally valid copy that is simply older: only the comparison can see it, so both
+    # halves are asserted — accepted alone, refused against its source.
+    cp "$bdir/good.sqlite" "$bdir/stale.sqlite"
+    sqlite3 "$bdir/stale.sqlite" "DELETE FROM messages;" >/dev/null 2>&1
+    contains "a copy that is merely valid passes the structural check" \
+      "$("$CHATBOX_BIN" --verify-backup "$bdir/stale.sqlite" 2>&1)" "backup ok"
+    bstale="$("$CHATBOX_BIN" --db "$bdb" --verify-backup "$bdir/stale.sqlite" 2>&1)"; bstalertc=$?
+    equals "but is refused when compared with the board it names" "$bstalertc" "1"
+    contains "and the refusal names the table and both counts" "$bstale" \
+      "messages: 0 in the copy, 1 in $bdb"
+
+    # Empty and short copies, which is what the incident left behind.
+    : > "$bdir/zero.sqlite"
+    bzero="$("$CHATBOX_BIN" --verify-backup "$bdir/zero.sqlite" 2>&1)"; bzerorc=$?
+    equals "a zero-byte file is refused" "$bzerorc" "1"
+    contains "and is named as unusable" "$bzero" "not a usable board"
+    sqlite3 "$bdir/notables.sqlite" "PRAGMA user_version=0;" >/dev/null 2>&1
+    bnt="$("$CHATBOX_BIN" --verify-backup "$bdir/notables.sqlite" 2>&1)"; bntrc=$?
+    equals "a valid but table-less 4 KB database is refused" "$bntrc" "1"
+    contains "and is named as unusable too" "$bnt" "not a usable board"
+    head -c 1024 "$bdir/good.sqlite" > "$bdir/short.sqlite"
+    bshort="$("$CHATBOX_BIN" --verify-backup "$bdir/short.sqlite" 2>&1)"; bshortrc=$?
+    equals "a truncated copy is refused" "$bshortrc" "1"
+    contains "and is named as unusable as well" "$bshort" "not a usable board"
+    printf 'this is not a database\n' > "$bdir/text.sqlite"
+    equals "a text file is refused" \
+      "$("$CHATBOX_BIN" --verify-backup "$bdir/text.sqlite" >/dev/null 2>&1; echo $?)" "1"
+
+    # Verification reads, and never creates what it was asked to check.
+    bmiss="$("$CHATBOX_BIN" --verify-backup "$bdir/absent.sqlite" 2>&1)"; bmissrc=$?
+    equals "a missing copy is refused" "$bmissrc" "1"
+    contains "and the refusal says it does not exist" "$bmiss" "does not exist"
+    if [ -e "$bdir/absent.sqlite" ]; then
+      no "verifying a missing file does not create it" "the file now exists"
+    else
+      ok "verifying a missing file does not create it"
+    fi
+
+    # Usage: an operator mode that guesses which board to copy is worse than one that refuses.
+    bnodbp="$("$CHATBOX_BIN" --backup "$bdir/guess.sqlite" 2>&1)"; bnodbrc=$?
+    equals "a backup without an explicit board is refused" "$bnodbrc" "2"
+    contains "and says it will not guess" "$bnodbp" "refusing to guess which board"
+    bnosrc="$("$CHATBOX_BIN" --db "$bdir/nosuch.sqlite" --backup "$bdir/none.sqlite" 2>&1)"; bnosrcrc=$?
+    equals "a board that does not exist is refused" "$bnosrcrc" "1"
+    contains "and the refusal names the path" "$bnosrc" "$bdir/nosuch.sqlite does not exist"
+    if [ -e "$bdir/none.sqlite" ]; then
+      no "and nothing was created at the destination" "the file now exists"
+    else
+      ok "and nothing was created at the destination"
+    fi
+    bnotboard="$("$CHATBOX_BIN" --db "$bdir/text.sqlite" --backup "$bdir/fromtext.sqlite" 2>&1)"; bnotboardrc=$?
+    equals "a source that is not a board is refused" "$bnotboardrc" "1"
+    contains "and says it is not a board" "$bnotboard" "is not a usable board"
+    equals "the two modes are not combinable" \
+      "$("$CHATBOX_BIN" --db "$bdb" --backup "$bdir/never.sqlite" --verify-backup "$bdir/good.sqlite" \
+          >/dev/null 2>&1; echo $?)" "2"
+  else
+    no "the backup fixture server started" "no answer on $bport (is the port taken?)"
+  fi
+  kill "$bpid" 2>/dev/null
+  wait "$bpid" 2>/dev/null
+else
+  printf '  skip  backup verification (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 22. An inbox that is truncated says so (TRK-21)
+# `GET /inbox` carries at most 200 messages, newest first. A session that falls behind therefore
+# stops being told about its older unread mail — silently, which is the one thing a durable
+# delivery queue cannot do. The answer now states how many deliveries match and how many of them
+# it is showing, in the text and in the JSON form, so a reader can tell "that is everything" from
+# "that is a page".
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_DB:-}" ] && [ -f "$CHATBOX_DB" ] && command -v sqlite3 >/dev/null 2>&1; then
+  BULK="it-$RUN-bulk"
+  SMALL="it-$RUN-small-inbox"
+  QUIET="it-$RUN-quiet-inbox"
+
+  # Two messages: the answer must state the count and say nothing about a page it is not showing.
+  post /message --data-urlencode "from=$A" --data-urlencode "to=$SMALL" --data-urlencode "body=small-$RUN" >/dev/null
+  post /message --data-urlencode "from=$A" --data-urlencode "to=$SMALL" --data-urlencode "body=small2-$RUN" >/dev/null
+  smallinbox="$(get /inbox "id=$SMALL")"
+  contains "an inbox that fits states its count" "$smallinbox" "inbox for $SMALL — 2 message(s) unread"
+  lacks "and does not claim to be hiding anything" "$smallinbox" "older one(s) are not"
+
+  # A backlog larger than the cap, written straight to the store so the fixture is deterministic
+  # and does not cost 205 round trips.
+  bthread="$(sqlite3 "$CHATBOX_DB" "INSERT INTO threads (repo,subject,created_at,created_by,last_at) VALUES ('example.test/$RUN/bulk','bulk $RUN','2020-01-01T00:00:00Z','bulk','2020-01-01T00:00:00Z'); SELECT last_insert_rowid();")"
+  sqlite3 "$CHATBOX_DB" "
+    INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,recipients)
+    WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<205)
+    SELECT $bthread,'2020-01-01T00:00:00Z','bulk','example.test/$RUN/bulk','bulk','bulk-'||i,'$BULK' FROM c;
+    INSERT INTO deliveries (message_id,agent,created_at)
+    SELECT id,'$BULK','2020-01-01T00:00:00Z' FROM messages WHERE sender='bulk';" >/dev/null 2>&1
+  equals "the bulk fixture holds 205 deliveries" \
+    "$(sqlite3 "$CHATBOX_DB" "select count(*) from deliveries where agent='$BULK';")" "205"
+
+  capped="$(get /inbox "id=$BULK")"
+  contains "a full page states how many it is showing" "$capped" \
+    "inbox for $BULK — 200 of 205 message(s) unread"
+  contains "and how many are not listed" "$capped" "5 older one(s) are not"
+  equals "and the page really holds the cap, no more" \
+    "$(printf '%s\n' "$capped" | grep -c '^  from: ')" "200"
+  cappedj="$(get /inbox "id=$BULK&json=1")"
+  contains "the json form states what is shown" "$cappedj" '"shown": 200'
+  contains "and what matched" "$cappedj" '"matching": 205'
+  contains "and still carries the messages" "$cappedj" '"messages": ['
+  equals "and all of them" "$(printf '%s\n' "$cappedj" | grep -c '"acked"')" "200"
+
+  # The cap is a window, not a loss: everything is still there, and acking the backlog clears it.
+  post /ack --data-urlencode "id=$BULK" --data-urlencode "all=1" >/dev/null
+  equals "the whole backlog is ackable in one call" "$(get /inbox "id=$BULK")" "inbox for $BULK: empty"
+  contains "and all=1 counts the same rows" "$(get /inbox "id=$BULK&all=1")" \
+    "inbox for $BULK — 200 of 205 message(s) (including read)"
+
+  # An empty inbox still answers JSON when JSON was asked for, with the counts it has.
+  emptyj="$(get /inbox "id=$QUIET&json=1")"
+  contains "an empty inbox answers json" "$emptyj" '"shown": 0'
+  contains "with a matching count of zero" "$emptyj" '"matching": 0'
+  contains "and an empty message list" "$emptyj" '"messages": ['
+else
+  printf '  skip  the inbox cap report (needs CHATBOX_DB and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 24. Exactly Content-Length bytes are the body (TRK-23)
+# A request that sent *more* than it declared had the surplus folded into its parameters, so bytes
+# belonging to no request could set one; a request that sent *less* was answered with nothing at
+# all, and the sender could not tell a truncated report from a slow server. Both need a raw socket:
+# curl has no way to declare one length and send another.
+# ---------------------------------------------------------------------------
+cbhost="${URL#*://}"; cbhost="${cbhost%%/*}"; cbport="${cbhost##*:}"
+if command -v nc >/dev/null 2>&1 && [ -n "$cbport" ] && [ "$cbport" -eq "$cbport" ] 2>/dev/null; then
+  # A body that stops short of what it announced: the server must say so, and store nothing.
+  msgs_before24="$(get /health | sed -n 's/^messages: //p')"
+  tbody="POST /message?token=$TOKEN HTTP/1.1\r\nHost: chatbox\r\nContent-Length: 60\r\n\r\nfrom=x&body=short"
+  truncated24="$(printf "$tbody" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
+  contains "a body shorter than Content-Length is answered" "$truncated24" "400 Bad Request"
+  contains "and the answer says nothing was stored" "$truncated24" "nothing was stored"
+  if [ -n "$msgs_before24" ]; then
+    equals "a truncated request stores no message" \
+      "$(get /health | sed -n 's/^messages: //p')" "$msgs_before24"
+  else
+    no "a truncated request stores no message" "the message count could not be read"
+  fi
+
+  # Exactly the declared bytes are the body, and not one more: the surplus is neither body nor
+  # parameter. `from=exact&body=ok` is 18 bytes; the `&to=phantom` behind it belongs to nothing.
+  oversend="POST /message?token=$TOKEN HTTP/1.1\r\nHost: chatbox\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 18\r\n\r\nfrom=exact&body=ok&to=phantom"
+  surplus24="$(printf "$oversend" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
+  contains "a request that sends more than it declared is answered" "$surplus24" "ok posted"
+  contains "the declared bytes are the body it stored" "$surplus24" "delivered_to: (nobody)"
+  lacks "and the surplus is not a parameter" "$surplus24" "phantom"
+  if [ -n "${CHATBOX_DB:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+    equals "the stored row holds the declared body and nothing after it" \
+      "$(sqlite3 "$CHATBOX_DB" "select count(*) from messages where sender='exact' and body='ok' and recipients='';")" "1"
+  fi
+else
+  printf '  skip  raw Content-Length handling (needs nc and a URL with an explicit port)\n'
 fi
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,11 @@
 // Run:   ./chatbox --port 8787 --db ~/chatbox.sqlite [--token SECRET] [--open]
 //        [--stale-after SECONDS]   (default 604800 = 7 days; 0 disables)
 //
+// Operator modes, which run and exit rather than listen:
+//   ./chatbox --db <path> --prune <days> [--prune-dry-run]
+//   ./chatbox --db <path> --backup <copy>       (copies a live board and verifies the copy)
+//   ./chatbox --verify-backup <copy> [--db <path>]
+//
 // Every response is plain text by default (readable by any model); add ?json=1
 // for structured output.
 
@@ -26,6 +31,10 @@ private let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 // serial queue and every other request is answered normally while it waits.
 private let longPollInterval: TimeInterval = 0.25
 private let maxWaitSeconds = 300
+/// How many messages one inbox answer may carry. The cap is deliberate — a session that falls
+/// behind must not be handed an unbounded body — but it is never *silent*: the answer states how
+/// many deliveries match and how many of them it is showing.
+private let inboxLimit = 200
 /// How often a held waiter refreshes `last_seen`, at most. It is capped by the
 /// staleness window: refreshing every 60s would report a live waiter as stale
 /// whenever the window is shorter than that.
@@ -52,6 +61,22 @@ private func isoDaysAgo(_ days: Int) -> String {
 /// force, and a slow KDF would only make every request expensive.
 private func sha256Hex(_ s: String) -> String {
     SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+/// Compare two secrets without letting the clock say how much of one was right.
+///
+/// `==` on `String` stops at the first differing byte, so the time a wrong credential takes to be
+/// refused is proportional to the prefix it guessed correctly — a byte-at-a-time oracle that is
+/// only as private as the network is quiet. Both sides are hashed first so the comparison is
+/// fixed-width (32 bytes, whatever the secrets' lengths), and the loop XORs every byte into an
+/// accumulator with no early return, so the work is the same whether the first byte differs or
+/// the last.
+private func secretsMatch(_ a: String, _ b: String) -> Bool {
+    let x = Array(SHA256.hash(data: Data(a.utf8)))
+    let y = Array(SHA256.hash(data: Data(b.utf8)))
+    var diff: UInt8 = 0
+    for i in 0..<x.count { diff |= x[i] ^ y[i] }
+    return diff == 0
 }
 
 /// A repo key names one repository. Wildcards and whitespace are never valid, and
@@ -442,13 +467,6 @@ final class Store: @unchecked Sendable {
         !rows("SELECT 1 FROM tokens WHERE id = ? LIMIT 1", [id]).isEmpty
     }
 
-    func unreadCount(forAgent agent: String) -> Int {
-        Int(scalar("""
-        SELECT COUNT(*) FROM deliveries
-        WHERE agent = ? AND (acked_at IS NULL OR acked_at = '')
-        """, [agent])) ?? 0
-    }
-
     func revokeToken(_ id: String, at: String) {
         run("UPDATE tokens SET revoked_at=? WHERE id=? AND (revoked_at IS NULL OR revoked_at='')", [at, id])
     }
@@ -649,9 +667,18 @@ final class Store: @unchecked Sendable {
                d.acked_at AS acked
         FROM deliveries d JOIN messages m ON m.id = d.message_id
         WHERE d.agent = ? \(includeAcked ? "" : "AND (d.acked_at IS NULL OR d.acked_at = '')")
-        ORDER BY m.id DESC LIMIT 200
+        ORDER BY m.id DESC LIMIT \(inboxLimit)
         """
         return rows(sql, [agent])
+    }
+
+    /// How many deliveries match the same question `deliveries` answers, so a full page can say
+    /// what it left out instead of dropping the oldest unread mail without a word.
+    func deliveryCount(forAgent agent: String, includeAcked: Bool) -> Int {
+        Int(scalar("""
+        SELECT COUNT(*) FROM deliveries d JOIN messages m ON m.id = d.message_id
+        WHERE d.agent = ? \(includeAcked ? "" : "AND (d.acked_at IS NULL OR d.acked_at = '')")
+        """, [agent])) ?? 0
     }
 
     func thread(_ id: String) -> [[String: String]] {
@@ -783,9 +810,12 @@ final class Chatbox: @unchecked Sendable {
         if req.tokenConflicts {
             return .denied(400, "error: ?token= and the Authorization header disagree — send one credential\n")
         }
-        if token == nil || token == "open" { return .ok(.bootstrap) }
+        // The bootstrap secret is the one comparison an attacker can drive byte by byte, so it goes
+        // through the constant-time helper rather than `==`. "open" is a literal, not a secret.
+        guard let expected = token else { return .ok(.bootstrap) }
+        if expected == "open" { return .ok(.bootstrap) }
         let presented = req.token ?? ""
-        if !presented.isEmpty, presented == token { return .ok(.bootstrap) }
+        if !presented.isEmpty, secretsMatch(presented, expected) { return .ok(.bootstrap) }
         guard !presented.isEmpty else {
             return .denied(401, "unauthorized: pass ?token= or Authorization: Bearer\n")
         }
@@ -1149,14 +1179,35 @@ final class Chatbox: @unchecked Sendable {
         if let rejection = mayAct(as: id, who) { return rejection }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
         let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
-        if rows.isEmpty { return (200, "inbox for \(id): empty\n") }
+        if rows.isEmpty && req.p("json").isEmpty {
+            // The one-line status the client prints unframed, because it is the server talking
+            // about the inbox rather than a peer talking to the session. The JSON form still
+            // answers JSON — with the counts it has, which are zero.
+            return (200, "inbox for \(id): empty\n")
+        }
         return (200, renderInbox(req, id: id, rows: rows))
     }
 
     func renderInbox(_ req: Request, id: String, rows: [[String: String]]) -> String {
-        if !req.p("json").isEmpty { return jsonArray(rows) }
         let all = !req.p("all").isEmpty
-        var out = "inbox for \(id) — \(rows.count) message(s)\(all ? " (including read)" : " unread")\n"
+        // The listing is capped, so a session that falls behind would otherwise stop being told
+        // about its older unread mail without a word — the opposite of what a durable delivery
+        // model promises. Both answers state how many deliveries there are and how many of them
+        // are in front of the reader.
+        let matching = store.deliveryCount(forAgent: id, includeAcked: all)
+        let shown = rows.count
+        if !req.p("json").isEmpty {
+            // An object rather than the array every other route returns: this is the one answer
+            // that has to say how much of itself it is showing.
+            let messages = jsonArray(rows).trimmingCharacters(in: .whitespacesAndNewlines)
+            return "{\"shown\": \(shown), \"matching\": \(matching), \"messages\": \(messages)}\n"
+        }
+        var out = "inbox for \(id) — \(shown)\(matching > shown ? " of \(matching)" : "") message(s)"
+            + (all ? " (including read)" : " unread") + "\n"
+        if matching > shown {
+            out += "note: the \(shown) newest are listed, \(matching - shown) older one(s) are not — "
+                + "ack what you have read and ask again, or open a thread: GET /thread?id=<thread>\n"
+        }
         for r in rows {
             let unread = (r["acked"] ?? "").isEmpty
             out += "\n[\(r["id"] ?? "")]\(unread ? " UNREAD" : " read  ") thread \(r["thread"] ?? "")  \(r["at"] ?? "")\n"
@@ -1316,23 +1367,29 @@ final class Chatbox: @unchecked Sendable {
         guard validId(id) else { return (400, "error: id must be a single line, without control characters\n") }
         if let rejection = mayAct(as: id, who) { return rejection }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
+        // The number reported is the number of delivery rows the statement actually stamped —
+        // never the number of messages the request mentioned. `ack?thread=N` used to count every
+        // message in the thread, so a session holding one of them was told `ok acked 3`, and
+        // `ack?message=N` claimed one whatever the store held: acknowledgements that never
+        // happened, reported by the one answer a caller can check.
         var n = 0
         if !req.p("message").isEmpty {
             store.run("UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=?", [nowISO(), id, req.p("message")])
-            n = 1
+            n = Int(store.changedRows())
         } else if !req.p("all").isEmpty {
-            n = store.unreadCount(forAgent: id)
             store.run("""
             UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at='')
             """, [nowISO(), id])
+            n = Int(store.changedRows())
         } else if !req.p("thread").isEmpty {
-            let msgs = store.thread(req.p("thread"))
-            for m in msgs {
-                store.run("UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=?", [nowISO(), id, m["id"] ?? ""])
-                n += 1
-            }
+            // One statement for the whole thread rather than one per message: the count is then
+            // what the ack changed, and a long thread is not a long list of statements.
+            store.run("""
+            UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id IN (SELECT id FROM messages WHERE thread_id=?)
+            """, [nowISO(), id, req.p("thread")])
+            n = Int(store.changedRows())
         } else {
-            return (400, "error: pass message=<id> or thread=<id>\n")
+            return (400, "error: pass message=<id>, thread=<id> or all=1\n")
         }
         return (200, "ok acked \(n) for \(id)\n")
     }
@@ -1591,7 +1648,18 @@ final class Chatbox: @unchecked Sendable {
                 self.dispatch(req, conn: conn)
                 return
             }
-            if error != nil || isComplete { conn.cancel(); return }
+            if error != nil || isComplete {
+                // The peer has stopped sending and the buffer still does not hold a request. If it
+                // announced a body and did not send all of it, say so: a client that gets nothing
+                // back cannot tell a truncated request from a server that is still thinking, and
+                // this is exactly the case where it needs to know the message was not stored.
+                if let promised = self.bodyShortfall(buf) {
+                    self.truncatedBody(conn, promised: promised)
+                    return
+                }
+                conn.cancel()
+                return
+            }
             self.receive(conn, buffer: buf)
         }
     }
@@ -1611,6 +1679,27 @@ final class Chatbox: @unchecked Sendable {
             }
         }
         return 0
+    }
+
+    /// The `Content-Length` a request promised when its body is still incomplete, or nil when
+    /// there is nothing to complain about: no header block, no declared length, or a body that
+    /// arrived in full. Only asked once the peer has stopped sending, because until then a short
+    /// body is simply a body that has not finished arriving.
+    private func bodyShortfall(_ buffer: Data) -> Int? {
+        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+        let promised = declaredLength(buffer) ?? 0
+        return buffer.count - headerEnd.upperBound < promised ? promised : nil
+    }
+
+    /// A body that stops before the length it announced is a request that was never made, and the
+    /// sender is the one party who cannot tell that from a slow server. Nothing is stored.
+    private func truncatedBody(_ conn: NWConnection, promised: Int) {
+        FileHandle.standardError.write("chatbox: body shorter than Content-Length -> 400\n".data(using: .utf8)!)
+        respond(conn, status: 400, body: """
+        error: the body is shorter than the \(promised) bytes Content-Length announced — \
+        nothing was stored. Send exactly the bytes you declare.
+
+        """)
     }
 
     /// Answer rather than drop the connection: an oversized report is an ordinary mistake,
@@ -1635,7 +1724,8 @@ final class Chatbox: @unchecked Sendable {
 /// encryption on. A flag nobody recognises now stops the server instead.
 /// Flags that carry a value.
 let valueFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--stale-after",
-                              "--max-body", "--tls-identity", "--tls-password-file", "--prune"]
+                              "--max-body", "--tls-identity", "--tls-password-file", "--prune",
+                              "--backup", "--verify-backup"]
 /// Flags that are their own value. A boolean flag at the end of the line is complete, and one
 /// that is handed a value is a mistake worth naming.
 let boolFlags: Set<String> = ["--prune-dry-run"]
@@ -1696,6 +1786,87 @@ func argPresent(_ name: String) -> Bool {
     CommandLine.arguments.contains { $0 == name || $0.hasPrefix(name + "=") }
 }
 
+// ---- reading a board that is *not* this process's database ----
+//
+// The backup mode checks a file the server has not opened, and it must never create or modify
+// what it is checking: verification that writes is not verification. So it opens read-only, and
+// a file that is not a database at all — or an empty one, which is what a hand copy of a WAL
+// database looks like — fails here rather than being reported as a good backup.
+
+/// The tables a usable board has. A copy missing any of them is not a backup of anything.
+let boardTables = ["agents", "threads", "messages", "deliveries", "tokens"]
+
+/// One text value, or nil when the statement cannot even be prepared or stepped.
+func sqliteText(_ db: OpaquePointer?, _ sql: String) -> String? {
+    var st: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(st) }
+    guard sqlite3_step(st) == SQLITE_ROW, let c = sqlite3_column_text(st, 0) else { return nil }
+    return String(cString: c)
+}
+
+/// Row counts for every board table, or nil when the file cannot be read as a board. An empty
+/// file, a 4 KB header, a truncated copy and a plain text file all fail the same way — which is
+/// the point: none of them is a backup, and each one used to look like one.
+func boardCounts(_ path: String) -> [String: Int]? {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_close(db) }
+    // Integrity first: a half-copied file can open and still be unreadable.
+    guard sqliteText(db, "PRAGMA integrity_check") == "ok" else { return nil }
+    var out: [String: Int] = [:]
+    for table in boardTables {
+        guard let n = sqliteText(db, "SELECT COUNT(*) FROM \(table)") else { return nil }
+        out[table] = Int(n)
+    }
+    return out
+}
+
+/// The `agents=3 threads=5 …` line, shared by both modes so the two outputs cannot drift.
+func boardCountsLine(_ counts: [String: Int]) -> String {
+    boardTables.map { "\($0)=\(counts[$0] ?? 0)" }.joined(separator: " ")
+}
+
+/// Bytes on disk, or `?` when the file cannot be measured. The size is reported because the
+/// whole trap is a copy whose size looked plausible.
+func fileSize(_ path: String) -> String {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+          let n = attrs[.size] as? NSNumber else { return "?" }
+    return "\(n.intValue)"
+}
+
+/// Check a copy, and — when the caller says which board it came from — that it still holds the
+/// same rows. Structural checks alone cannot see a *stale* copy: a copy taken before the last
+/// few messages is a perfectly valid database. Only a comparison can, which is why `--backup`
+/// always makes one, and why `--verify-backup` makes it when `--db` is given.
+func verifyBoard(_ path: String, against sourcePath: String?) -> String? {
+    let shown = NSString(string: path).expandingTildeInPath
+    // Opened read-only *before* anything is said about the file: a verification that creates the
+    // copy it was asked to check is not a verification. Only when that read fails does the
+    // absence get its own message.
+    guard let counts = boardCounts(shown) else {
+        if !FileManager.default.fileExists(atPath: shown) {
+            return "\(shown) does not exist — a backup you have not read is not a backup"
+        }
+        return "\(shown) is not a usable board — it is empty, truncated, or not a SQLite database"
+             + " (a hand copy of a WAL database looks exactly like this: its rows live in -wal)"
+    }
+    if let sourcePath = sourcePath {
+        let source = NSString(string: sourcePath).expandingTildeInPath
+        guard let sourceCounts = boardCounts(source) else {
+            return "\(source) is not a usable board, so there is nothing to compare \(shown) with"
+        }
+        let differing = boardTables.filter { counts[$0] != sourceCounts[$0] }
+        if !differing.isEmpty {
+            let detail = differing.map {
+                "\($0): \(counts[$0] ?? 0) in the copy, \(sourceCounts[$0] ?? 0) in \(source)"
+            }
+            return "\(shown) is out of date — " + detail.joined(separator: "; ")
+        }
+    }
+    return nil
+}
+
 checkArguments(CommandLine.arguments)
 
 let port = UInt16(argValue("--port", "8787")) ?? 8787
@@ -1719,6 +1890,98 @@ if !tokenFile.isEmpty && tokenFromFile.isEmpty {
     exit(1)
 }
 let token = !tokenArg.isEmpty ? tokenArg : (tokenFromFile.isEmpty ? nil : tokenFromFile)
+
+// ---- operator mode: backup, and exit ----
+//
+// Deliberately before `Store` is opened: opening a store *creates* the schema, so a backup that
+// opened the source first would happily "back up" a board that did not exist and call the empty
+// result verified.
+//
+// The SQLite file is the service, and copying it by hand is the trap that produced two 4 KB
+// backups on node1: in WAL mode committed rows live in `-wal` until a checkpoint, so a `cp` of
+// the main file copies an empty database that looks plausible. `VACUUM INTO` writes a
+// consistent, compacted copy of a live database, folds the WAL in, and refuses an existing
+// destination rather than quietly replacing a good backup with today's.
+let backupRaw = argValue("--backup", "")
+let verifyRaw = argValue("--verify-backup", "")
+if argPresent("--backup") && backupRaw.isEmpty {
+    FileHandle.standardError.write("chatbox: --backup needs a destination path\n".data(using: .utf8)!)
+    exit(2)
+}
+if argPresent("--verify-backup") && verifyRaw.isEmpty {
+    FileHandle.standardError.write("chatbox: --verify-backup needs a path to check\n".data(using: .utf8)!)
+    exit(2)
+}
+if !backupRaw.isEmpty && !verifyRaw.isEmpty {
+    FileHandle.standardError.write("chatbox: --backup and --verify-backup do different things — give one of them\n".data(using: .utf8)!)
+    exit(2)
+}
+if !verifyRaw.isEmpty {
+    // `--db` is optional here and only means "and compare against this board": the default is
+    // `~/chatbox.sqlite`, and silently comparing a copy the operator named against whatever
+    // board happens to live in the home directory is how a verified backup becomes a mystery.
+    let against = argPresent("--db") ? dbPath : nil
+    if let problem = verifyBoard(verifyRaw, against: against) {
+        FileHandle.standardError.write("chatbox: \(problem)\n".data(using: .utf8)!)
+        exit(1)
+    }
+    let shown = NSString(string: verifyRaw).expandingTildeInPath
+    print("backup ok: \(shown) (\(fileSize(shown)) bytes)")
+    if let counts = boardCounts(shown) { print(boardCountsLine(counts)) }
+    if let against = against { print("compared with: \(NSString(string: against).expandingTildeInPath)") }
+    exit(0)
+}
+if !backupRaw.isEmpty {
+    // An explicit --db, because the default is `~/chatbox.sqlite` and a backup of the wrong
+    // board is indistinguishable from a backup of an empty one.
+    guard argPresent("--db") else {
+        FileHandle.standardError.write("chatbox: --backup needs an explicit --db <path> — refusing to guess which board to copy\n".data(using: .utf8)!)
+        exit(2)
+    }
+    let sourcePath = NSString(string: dbPath).expandingTildeInPath
+    let destPath = NSString(string: backupRaw).expandingTildeInPath
+    guard FileManager.default.fileExists(atPath: sourcePath) else {
+        FileHandle.standardError.write("chatbox: \(sourcePath) does not exist — nothing to back up\n".data(using: .utf8)!)
+        exit(1)
+    }
+    guard let sourceCounts = boardCounts(sourcePath) else {
+        FileHandle.standardError.write("chatbox: \(sourcePath) is not a usable board — refusing to copy it as if it were\n".data(using: .utf8)!)
+        exit(1)
+    }
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(sourcePath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        FileHandle.standardError.write("chatbox: cannot open \(sourcePath)\n".data(using: .utf8)!)
+        exit(1)
+    }
+    defer { sqlite3_close(db) }
+    sqlite3_busy_timeout(db, 5000)
+    // `VACUUM INTO` reads a consistent snapshot, so it is safe against a live board, and it
+    // refuses a destination that already exists — overwriting yesterday's only good backup with
+    // a half-written file is worse than an error message.
+    var st: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "VACUUM INTO ?", -1, &st, nil) == SQLITE_OK else {
+        FileHandle.standardError.write("chatbox: cannot prepare the copy of \(sourcePath)\n".data(using: .utf8)!)
+        exit(1)
+    }
+    sqlite3_bind_text(st, 1, destPath, -1, TRANSIENT)
+    let rc = sqlite3_step(st)
+    sqlite3_finalize(st)
+    if rc != SQLITE_DONE {
+        let reason = String(cString: sqlite3_errmsg(db))
+        FileHandle.standardError.write("chatbox: the copy to \(destPath) failed: \(reason) — nothing was verified\n".data(using: .utf8)!)
+        exit(1)
+    }
+    // The copy is verified in the same command, against the board it came from: a backup nobody
+    // read is not a backup.
+    if let problem = verifyBoard(destPath, against: sourcePath) {
+        FileHandle.standardError.write("chatbox: \(problem) — the copy is not usable\n".data(using: .utf8)!)
+        exit(1)
+    }
+    print("source: \(sourcePath) (\(fileSize(sourcePath)) bytes)")
+    print("backup: \(destPath) (\(fileSize(destPath)) bytes)")
+    print(boardCountsLine(sourceCounts) + "  (verified equal to the source)")
+    exit(0)
+}
 
 let store = Store(path: dbPath)
 let staleAfterRaw = argValue("--stale-after", "604800")
