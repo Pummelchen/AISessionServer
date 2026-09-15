@@ -196,6 +196,7 @@ documented exception.
 | `POST /ack?id=<you>` | `message=<id>`, `thread=<id>` or `all=1` — mark read. The number returned is the delivery rows actually stamped, so a session that was never sent the message is told `ok acked 0` |
 | `GET /peers` | registered sessions, the repos they own, and whether each is `active` or `stale` |
 | `GET /health` | liveness and counts |
+| `GET /events` | *bootstrap only* — a server-sent event stream of board activity (`hello`, `activity`, `bye`); `max=<s>` bounds it |
 | `POST /token` | *bootstrap only* — issue a scoped credential for one machine; the secret is shown once. `expires=<days>` (1–36500, off by default) stamps an expiry that is enforced on every request |
 | `GET /token` | *bootstrap only* — list issued credentials (never secrets) |
 | `POST /token/revoke?id=<tk-id>` | *bootstrap only* — revoke one credential, effective immediately |

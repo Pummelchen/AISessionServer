@@ -734,6 +734,16 @@ final class Store: @unchecked Sendable {
         return out
     }
 
+    /// The three board-wide counts, in one query, for the events feed.
+    func boardCounts() -> (agents: Int, threads: Int, messages: Int) {
+        let r = rows("""
+        SELECT (SELECT COUNT(*) FROM agents) AS a,
+               (SELECT COUNT(*) FROM threads) AS t,
+               (SELECT COUNT(*) FROM messages) AS m
+        """).first ?? [:]
+        return (Int(r["a"] ?? "") ?? 0, Int(r["t"] ?? "") ?? 0, Int(r["m"] ?? "") ?? 0)
+    }
+
     func agentCount(visibleTo node: String?) -> Int {
         guard let node = node else { return Int(scalar("SELECT COUNT(*) FROM agents")) ?? 0 }
         return Int(scalar("SELECT COUNT(*) FROM agents a WHERE \(visibleAgentsWhere)",
@@ -1057,6 +1067,10 @@ final class Chatbox: @unchecked Sendable {
             let wait = waitSeconds(req)
             if wait > 0 { beginInboxWait(req, who: who, seconds: wait, conn: conn); return }
         }
+        if req.method == "GET", req.path == "/events" {
+            beginEvents(req, who: who, conn: conn)
+            return
+        }
         let (status, body) = handle(req, who)
         finish(req, conn: conn, status: status, body: body)
     }
@@ -1094,6 +1108,7 @@ final class Chatbox: @unchecked Sendable {
           read      GET  /thread?id=<thread-id>
           ack       POST /ack?id=<you>&message=<message-id>   (or &thread=<id>, or &all=1 for everything unread)
           peers     GET  /peers                     (who owns what)
+          events    GET  /events                    (SSE: board activity, bootstrap only)
           health    GET  /health
 
         Credentials — issuing is restricted to the bootstrap token:
@@ -1469,6 +1484,92 @@ final class Chatbox: @unchecked Sendable {
         return out
     }
 
+    // ---------- change feed (SSE) ----------
+
+    /// `GET /events` — a server-sent event stream of what the board is doing, so a dashboard or a
+    /// session can watch instead of polling. It holds no state of its own: each tick asks the
+    /// database what the counts are and reports a change. Bootstrap only, deliberately: the feed is
+    /// board-wide, and a scoped credential is scoped precisely so it cannot see the whole board —
+    /// a session that wants its own mail uses `inbox --wait`, which is what that route is for.
+    func beginEvents(_ req: Request, who: Principal, conn: NWConnection) {
+        guard who.isBootstrap else {
+            finish(req, conn: conn, status: 403,
+                   body: "forbidden: the board-wide feed needs the bootstrap credential — a session watches its own inbox with GET /inbox?id=<you>&wait=<s>\n")
+            return
+        }
+        let seconds = cappedSeconds(req, default: 300, ceiling: 3600)
+        // Headers first, and the connection stays open: this is the one route whose answer is not
+        // a body that ends.
+        var head = "HTTP/1.1 200 OK\r\n"
+        head += "Content-Type: text/event-stream; charset=utf-8\r\n"
+        head += "Cache-Control: no-cache\r\n"
+        head += "Connection: close\r\n\r\n"
+        conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
+        FileHandle.standardError.write("chatbox: GET /events -> 200 (stream, up to \(seconds)s)\n".data(using: .utf8)!)
+        let start = boardState()
+        sendEvent(conn, name: "hello", data: eventData(start))
+        // A disconnect has to end the stream: without this the tick would keep querying and sending
+        // into a socket nobody is reading until the deadline.
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 1024) { _, _, isComplete, error in
+            if isComplete || error != nil { conn.cancel() }
+        }
+        let deadline = Date().addingTimeInterval(TimeInterval(seconds))
+        pollEvents(conn, last: start, deadline: deadline, nextKeepAlive: Date().addingTimeInterval(15))
+    }
+
+    /// One tick: report a change, keep the connection warm, or end at the deadline.
+    private func pollEvents(_ conn: NWConnection, last: BoardState, deadline: Date, nextKeepAlive: Date) {
+        if case .cancelled = conn.state { return }
+        if case .failed = conn.state { return }
+        let now = Date()
+        if now >= deadline {
+            // Sent with a completion, so the end of the stream is delivered rather than raced by
+            // the cancel.
+            conn.send(content: Data("event: bye\\ndata: {\"reason\":\"deadline\"}\\n\\n".utf8),
+                      completion: .contentProcessed { _ in conn.cancel() })
+            return
+        }
+        let current = boardState()
+        // Compared on the counts alone: the timestamp changes every tick, and a feed that reported
+        // activity four times a second would be a feed nobody could use.
+        if current != last {
+            sendEvent(conn, name: "activity", data: eventData(current))
+            queue.asyncAfter(deadline: .now() + 0.25) {
+                self.pollEvents(conn, last: current, deadline: deadline, nextKeepAlive: nextKeepAlive)
+            }
+            return
+        }
+        var nextKeep = nextKeepAlive
+        if now >= nextKeepAlive {
+            // A comment line: SSE clients ignore it, and it is what stops an idle proxy from
+            // deciding the connection is dead.
+            conn.send(content: Data(": keep-alive\n\n".utf8), completion: .contentProcessed { _ in })
+            nextKeep = now.addingTimeInterval(15)
+        }
+        queue.asyncAfter(deadline: .now() + 0.5) {
+            self.pollEvents(conn, last: last, deadline: deadline, nextKeepAlive: nextKeep)
+        }
+    }
+
+    private struct BoardState: Equatable {
+        let agents: Int
+        let threads: Int
+        let messages: Int
+    }
+
+    private func boardState() -> BoardState {
+        let c = store.boardCounts()
+        return BoardState(agents: c.agents, threads: c.threads, messages: c.messages)
+    }
+
+    private func eventData(_ state: BoardState) -> String {
+        "{\"agents\":\(state.agents),\"threads\":\(state.threads),\"messages\":\(state.messages),\"at\":\"\(nowISO())\"}"
+    }
+
+    private func sendEvent(_ conn: NWConnection, name: String, data: String) {
+        conn.send(content: Data("event: \(name)\ndata: \(data)\n\n".utf8), completion: .contentProcessed { _ in })
+    }
+
     // ---------- long-poll inbox ----------
 
     /// `wait=<seconds>` — 0 when absent, zero, negative or unparseable. Capped so
@@ -1476,6 +1577,12 @@ final class Chatbox: @unchecked Sendable {
     func waitSeconds(_ req: Request) -> Int {
         guard let raw = Int(req.p("wait")), raw > 0 else { return 0 }
         return min(raw, maxWaitSeconds)
+    }
+
+    /// How long a stream may run, from `max=` — the same rule as `wait=`, and the same reason.
+    func cappedSeconds(_ req: Request, default fallback: Int, ceiling: Int) -> Int {
+        guard let raw = Int(req.p("max")), raw > 0 else { return fallback }
+        return min(raw, ceiling)
     }
 
     /// Hold the request open until the session has something to read, or until the

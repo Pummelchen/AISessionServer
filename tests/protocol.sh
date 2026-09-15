@@ -3728,6 +3728,67 @@ contains "and lists every thread" "$(get /threads)" "[$SCOPE_TID]"
 contains "and sees the whole registry" "$(get /peers)" "it-$RUN-scope-c"
 
 # ---------------------------------------------------------------------------
+# 30. A change feed on the wire (TRK-18)
+# A dashboard or a session that wants to watch the board live had to poll it. `GET /events` is a
+# server-sent event stream instead: `hello` with the counts on connect, an `activity` event when
+# they change, a comment every fifteen seconds so a proxy does not decide the connection is dead,
+# and a `bye` at the deadline so a client knows to reconnect. It holds no state — each tick asks the
+# database what the counts are — and it is bootstrap-only, because a board-wide feed is the
+# operator's view: a session that wants its own mail uses `inbox --wait`, which is what that route
+# is for.
+# ---------------------------------------------------------------------------
+if command -v curl >/dev/null 2>&1; then
+  ev_head="$SCRATCH/events-${RUN}.headers"
+  ev_body="$SCRATCH/events-${RUN}.body"
+  curl -sS -N -D "$ev_head" --max-time 2 "$(url_for /events)" > "$ev_body" 2>/dev/null
+  contains "the feed announces itself as an event stream" "$(cat "$ev_head")" "Content-Type: text/event-stream"
+  contains "and opens with a hello" "$(cat "$ev_body")" "event: hello"
+  contains "carrying the board's counts" "$(cat "$ev_body")" '"messages"'
+  equals "an unauthenticated feed is refused" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$URL/events")" "401"
+
+  # The feed is the operator's view, so a scoped credential is refused with the route that *is* for
+  # it rather than being handed the whole board.
+  evtok="$(post /token --data-urlencode "node=node-events" --data-urlencode "namespaces=*")"
+  EVTOK="$(field "$evtok" secret)"
+  if [ -n "$EVTOK" ]; then
+    equals "a scoped credential is refused the board-wide feed" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$URL/events?token=$EVTOK")" "403"
+    contains "and is pointed at its own inbox instead" \
+      "$(curl -sS --max-time 5 "$URL/events?token=$EVTOK")" "inbox?id=<you>&wait="
+  else
+    no "a credential for the events fixture was issued" "$(snip "$evtok")"
+  fi
+
+  # A change is reported once — no more, and no less. The board is quiet first, so the only change
+  # in the window is the message this check sends.
+  ev_act="$SCRATCH/events-act-${RUN}.body"
+  ( curl -sS -N --max-time 5 "$(url_for /events)" > "$ev_act" 2>/dev/null ) &
+  ev_pid=$!
+  sleep 1
+  post /message --data-urlencode "from=$A" --data-urlencode "to=$B" \
+    --data-urlencode "body=events-$RUN" >/dev/null
+  sleep 1
+  wait "$ev_pid" 2>/dev/null
+  equals "a change on the board is reported once" "$(grep -c 'event: activity' "$ev_act")" "1"
+  contains "and the event carries the new count" "$(cat "$ev_act")" '"messages"'
+  equals "a quiet board is not reported as activity" "$(grep -c 'event: activity' "$ev_body")" "0"
+
+  # The stream has a deadline, says why it ended, and ends when it says it will.
+  ev_t0=$(date +%s)
+  curl -sS -N --max-time 12 "$(url_for /events "max=2")" > "$SCRATCH/events-bye-${RUN}.body" 2>/dev/null
+  ev_t1=$(date +%s)
+  contains "the stream ends with a bye at its deadline" "$(cat "$SCRATCH/events-bye-${RUN}.body")" "event: bye"
+  if [ "$((ev_t1 - ev_t0))" -ge 1 ] && [ "$((ev_t1 - ev_t0))" -le 6 ]; then
+    ok "and it ends when it said it would"
+  else
+    no "and it ends when it said it would" "it took $((ev_t1 - ev_t0))s for max=2"
+  fi
+else
+  printf '  skip  the change feed (needs curl)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
