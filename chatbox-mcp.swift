@@ -42,13 +42,31 @@ func fail(id: Any?, code: Int, _ message: String) {
 // a bearer header). The client's own `curl` dependency is deliberately not used: an MCP server is
 // launched by an application that may have a different PATH.
 
+/// One field of a query string. `URLComponents.queryItems` leaves `+` raw, and this server decodes
+/// `+` as a space — which is what form encoding says a `+` in a query means — so every argument
+/// containing one arrived with a space in it, silently, on every tool. Everything outside the
+/// unreserved set is escaped here instead.
+func queryEncode(_ s: String) -> String {
+    var out = ""
+    for byte in Array(s.utf8) {
+        switch byte {
+        case 0x41...0x5A, 0x61...0x7A, 0x30...0x39, 0x2D, 0x2E, 0x5F, 0x7E:
+            out.append(Character(UnicodeScalar(byte)))
+        default:
+            out += String(format: "%%%02X", byte)
+        }
+    }
+    return out
+}
+
 func call(_ method: String, _ path: String, _ params: [String: String]) -> (status: Int, body: String) {
-    var items: [URLQueryItem] = []
-    for (k, v) in params where !v.isEmpty { items.append(URLQueryItem(name: k, value: v)) }
-    if !configToken.isEmpty { items.append(URLQueryItem(name: "token", value: configToken)) }
-    var comps = URLComponents(string: configURL + path)
-    comps?.queryItems = items
-    guard let url = comps?.url else { return (0, "error: CHATBOX_URL is not a usable URL") }
+    var fields: [(String, String)] = []
+    for (k, v) in params where !v.isEmpty { fields.append((k, v)) }
+    if !configToken.isEmpty { fields.append(("token", configToken)) }
+    let query = fields.map { "\(queryEncode($0.0))=\(queryEncode($0.1))" }.joined(separator: "&")
+    guard let url = URL(string: query.isEmpty ? configURL + path : configURL + path + "?" + query) else {
+        return (0, "error: CHATBOX_URL is not a usable URL")
+    }
     var req = URLRequest(url: url)
     req.httpMethod = method
     req.timeoutInterval = 60

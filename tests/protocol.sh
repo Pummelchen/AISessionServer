@@ -3827,6 +3827,20 @@ if [ -x "$mcp_bin" ]; then
   mcp_refused="$(mcp_say '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"thread","arguments":{"id":"999999999"}}}')"
   contains "a refusal from the board is marked as an error" "$mcp_refused" '"isError":true'
   contains "and carries the board's own words" "$mcp_refused" "no thread 999999999"
+  # `+` is the one character where a query string and a form body disagree: this server decodes it as
+  # a space, so a query built from URLComponents' query items turned every `+` in every argument into
+  # a space. The body is read back through the API rather than through the adapter, so the check sees
+  # what was actually stored.
+  mcp_plus_id="it-$RUN-mcp-plus"
+  mcp_plus="$(mcp_say "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"say\",\"arguments\":{\"from\":\"$mcp_plus_id\",\"to\":\"$A\",\"body\":\"c++ plus+plus a+b\"}}}")"
+  contains "the adapter's say reaches the board" "$mcp_plus" '"isError":false'
+  mcp_plus_tid="$(printf '%s' "$mcp_plus" | sed -n 's/.*thread: \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+  if [ -n "$mcp_plus_tid" ]; then
+    contains "and a '+' in an argument arrives as a '+', not a space" \
+      "$(get /thread "id=$mcp_plus_tid")" "c++ plus+plus a+b"
+  else
+    no "and a '+' in an argument arrives as a '+', not a space" "no thread in [$(snip "$mcp_plus")]"
+  fi
   contains "an unknown tool is a JSON-RPC error" \
     "$(mcp_say '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"nope","arguments":{}}}')" \
     '"code":-32602'
