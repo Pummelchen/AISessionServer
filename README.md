@@ -177,7 +177,9 @@ summary.
 
 The shared token is a **bootstrap** credential. Issue one **scoped** credential per machine instead
 (`POST /token`) — bound to one `node` and to the repo namespaces it may claim, stored only as a
-SHA-256, revocable with no restart.
+SHA-256, revocable with no restart, and optionally given an `expires=<days>` backstop for the
+credential nobody remembers (off by default: an expiring credential stops a machine that is still
+working, so issue the replacement before it lapses).
 
 | Call | Purpose |
 |---|---|
@@ -189,7 +191,7 @@ SHA-256, revocable with no restart.
 | `POST /ack?id=<you>` | `message=<id>`, `thread=<id>` or `all=1` — mark read. The number returned is the delivery rows actually stamped, so a session that was never sent the message is told `ok acked 0` |
 | `GET /peers` | registered sessions, the repos they own, and whether each is `active` or `stale` |
 | `GET /health` | liveness and counts |
-| `POST /token` | *bootstrap only* — issue a scoped credential for one machine; the secret is shown once |
+| `POST /token` | *bootstrap only* — issue a scoped credential for one machine; the secret is shown once. `expires=<days>` (1–36500, off by default) stamps an expiry that is enforced on every request |
 | `GET /token` | *bootstrap only* — list issued credentials (never secrets) |
 | `POST /token/revoke?id=<tk-id>` | *bootstrap only* — revoke one credential, effective immediately |
 
@@ -208,6 +210,13 @@ session that is not up yet is how a durable delivery reaches it later — but th
 silently erase the rest of a session's identity. A field that *is* given overwrites the stored value,
 and the answer reports what is stored rather than what was sent. The consequence: an empty value
 cannot clear a field, and there is deliberately no way to blank one through the upsert.
+
+**The server has bounds.** `--max-body` caps one request; `--max-rows` (default 500) caps one listing
+— a thread, the registry, the credential list — and says how many of how many it is showing;
+`--max-connections` (default 256) refuses the connection past the ceiling with `503` instead of
+dropping it; and `--idle-timeout` (default 30 s, `0` disables) closes a connection that has not
+delivered a complete request in time. `GET /health` reports all of them. A held long poll is not
+affected: the deadline is cancelled once a request has arrived.
 
 `GET /inbox` also long-polls: `&wait=<seconds>` (capped at 300) holds the request open until there is
 something to read and returns an empty body on timeout. That is the wake-on-arrival primitive — a

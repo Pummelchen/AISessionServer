@@ -57,6 +57,14 @@ private func isoDaysAgo(_ days: Int) -> String {
     return f.string(from: Date().addingTimeInterval(-Double(days) * 86400))
 }
 
+/// An ISO-8601 stamp `days` from now, for a credential's expiry. Compared as a string, like every
+/// other timestamp here, which is why the format has to match `nowISO` exactly.
+private func isoDaysAhead(_ days: Int) -> String {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime]
+    return f.string(from: Date().addingTimeInterval(Double(days) * 86400))
+}
+
 /// Credentials are stored only as a SHA-256 of the secret. The secrets are 192 bits
 /// of randomness, so a fast hash is the right tool — there is nothing to brute
 /// force, and a slow KDF would only make every request expensive.
@@ -388,6 +396,9 @@ final class Store: @unchecked Sendable {
           id TEXT PRIMARY KEY, hash TEXT NOT NULL, node TEXT, namespaces TEXT,
           note TEXT, created_at TEXT, last_used TEXT, revoked_at TEXT);
         """)
+        // A credential may carry an expiry. A board that predates the column gets it here: the
+        // alter is idempotent, so a restart neither fails nor rewrites anything.
+        addColumn("tokens", "expires_at", "TEXT")
         exec("CREATE INDEX IF NOT EXISTS idx_tokens_hash ON tokens(hash);")
         exec("CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_id);")
     }
@@ -468,15 +479,24 @@ final class Store: @unchecked Sendable {
 
     // MARK: credentials
 
+    /// Add a column when the table does not have it yet. `ALTER TABLE … ADD COLUMN` is the one
+    /// schema change SQLite does in place, and this is what makes an existing board gain the
+    /// column on the next start without a migration step for the operator to remember.
+    private func addColumn(_ table: String, _ column: String, _ decl: String) {
+        let have = rows("PRAGMA table_info(\(table))").compactMap { $0["name"] }
+        if !have.contains(column) { exec("ALTER TABLE \(table) ADD COLUMN \(column) \(decl);") }
+    }
+
     func tokenByHash(_ hash: String) -> [String: String]? {
         rows("""
-        SELECT id, node, namespaces, last_used, revoked_at FROM tokens WHERE hash = ? LIMIT 1
+        SELECT id, node, namespaces, last_used, revoked_at, expires_at FROM tokens WHERE hash = ? LIMIT 1
         """, [hash]).first
     }
 
-    func addToken(id: String, hash: String, node: String, namespaces: String, note: String, at: String) {
-        run("INSERT INTO tokens (id,hash,node,namespaces,note,created_at) VALUES (?,?,?,?,?,?)",
-            [id, hash, node, namespaces, note, at])
+    func addToken(id: String, hash: String, node: String, namespaces: String, note: String,
+                  at: String, expiresAt: String) {
+        run("INSERT INTO tokens (id,hash,node,namespaces,note,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
+            [id, hash, node, namespaces, note, at, expiresAt.isEmpty ? nil : expiresAt])
     }
 
     func tokenExists(_ id: String) -> Bool {
@@ -493,7 +513,7 @@ final class Store: @unchecked Sendable {
 
     func tokensListing(limit: Int) -> [[String: String]] {
         rows("""
-        SELECT id, node, namespaces, note, created_at, last_used, revoked_at
+        SELECT id, node, namespaces, note, created_at, last_used, revoked_at, expires_at
         FROM tokens ORDER BY created_at, id LIMIT \(limit)
         """)
     }
@@ -883,6 +903,12 @@ final class Chatbox: @unchecked Sendable {
         }
         if !(row["revoked_at"] ?? "").isEmpty {
             return .denied(401, "unauthorized: this credential has been revoked\n")
+        }
+        // An expiry is a backstop for the credential nobody remembers, so it is checked the same
+        // way revocation is: on every request, with the date in the answer and no grace period.
+        let expiresAt = row["expires_at"] ?? ""
+        if !expiresAt.isEmpty, expiresAt <= nowISO() {
+            return .denied(401, "unauthorized: this credential expired at \(expiresAt) — issue another\n")
         }
         let id = row["id"] ?? ""
         let now = nowISO()
@@ -1553,10 +1579,22 @@ final class Chatbox: @unchecked Sendable {
             }
             if !namespaces.contains(canon) { namespaces.append(canon) }
         }
+        // An optional expiry, in days. 0 or absent means "until revoked by hand", which is what
+        // every credential was before this existed — the point of the option is the credential
+        // nobody remembers, not a new default.
+        let expiresRaw = req.p("expires")
+        var expiresAt = ""
+        if !expiresRaw.isEmpty {
+            guard let days = Int(expiresRaw), days > 0, days <= 36500 else {
+                return (400, "error: expires must be a number of days between 1 and 36500 — got '\(oneLine(expiresRaw))'\n")
+            }
+            expiresAt = isoDaysAhead(days)
+        }
         let secret = randomHex(24)
         let id = "tk-" + randomHex(6)
         store.addToken(id: id, hash: sha256Hex(secret), node: node,
-                       namespaces: namespaces.joined(separator: ","), note: req.p("note"), at: nowISO())
+                       namespaces: namespaces.joined(separator: ","), note: req.p("note"),
+                       at: nowISO(), expiresAt: expiresAt)
         // CodeQL flags this response as cleartext transmission of sensitive data,
         // and without TLS it is right: the secret travels in the body. Loopback never
         // leaves the machine and a TLS listener is encrypted, so the warning is for
@@ -1573,6 +1611,7 @@ final class Chatbox: @unchecked Sendable {
         id: \(id)
         node: \(node)
         namespaces: \(namespaces.isEmpty ? "(none — this credential may claim no repos)" : namespaces.joined(separator: ","))
+        expires: \(expiresAt.isEmpty ? "never (until revoked)" : expiresAt)
         secret: \(secret)
         \(exposure)
         The secret is shown once and never stored — only its SHA-256 is. Put it in
@@ -1595,9 +1634,13 @@ final class Chatbox: @unchecked Sendable {
         }
         for r in rows {
             let revoked = !(r["revoked_at"] ?? "").isEmpty
-            out += "\n\(r["id"] ?? "")  \(revoked ? "REVOKED" : "active")  node: \(r["node"] ?? "-")\n"
+            let expires = r["expires_at"] ?? ""
+            let expired = !expires.isEmpty && expires <= nowISO()
+            let state = revoked || expired ? (revoked ? "REVOKED" : "EXPIRED") : "active"
+            out += "\n\(r["id"] ?? "")  \(state)  node: \(r["node"] ?? "-")\n"
             out += "  namespaces: \((r["namespaces"] ?? "").isEmpty ? "(none)" : oneLine(r["namespaces"]!))\n"
             out += "  issued: \(r["created_at"] ?? "-")   last used: \((r["last_used"] ?? "").isEmpty ? "never" : r["last_used"]!)\n"
+            out += "  expires: \(expires.isEmpty ? "never (until revoked)" : expires)\n"
             if !(r["note"] ?? "").isEmpty { out += "  note: \(r["note"]!)\n" }
             if revoked { out += "  revoked: \(r["revoked_at"]!)\n" }
         }

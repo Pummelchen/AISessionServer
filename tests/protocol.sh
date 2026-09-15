@@ -3502,6 +3502,50 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 28. An optional expiry on a credential (TRK-28)
+# A credential was valid until somebody revoked it by hand. Rotation works, but it needs somebody to
+# remember, and the credential nobody remembers is the one that matters: `created_at` and
+# `last_used` were recorded and nothing aged out. `expires=<days>` is the backstop — off by default,
+# because a machine that stops talking is an operational event, not a surprise to spring on a
+# deployment that never asked for it.
+# ---------------------------------------------------------------------------
+tok28="$(post /token --data-urlencode "node=node-expiry" --data-urlencode "namespaces=*")"
+TOK28="$(field "$tok28" secret)"
+ID28="$(field "$tok28" id)"
+if [ -n "$TOK28" ]; then
+  ok "a credential without an expiry is issued"
+else
+  no "a credential without an expiry is issued" "$(snip "$tok28")"
+fi
+contains "and says it never expires" "$tok28" "expires: never (until revoked)"
+
+tok28b="$(post /token --data-urlencode "node=node-expiry-2" --data-urlencode "expires=30")"
+TOK28B="$(field "$tok28b" secret)"
+ID28B="$(field "$tok28b" id)"
+contains "a credential can be issued with an expiry" "$tok28b" "expires: 20"
+contains "the refusal for a bad expiry names the flag" \
+  "$(post /token --data-urlencode "node=node-expiry-3" --data-urlencode "expires=soon")" "expires must be a number of days"
+equals "an expiry of zero is refused rather than read as never" \
+  "$(post /token --data-urlencode "node=node-expiry-4" --data-urlencode "expires=0")" \
+  "error: expires must be a number of days between 1 and 36500 — got '0'"
+
+if [ -n "$TOK28B" ] && [ -n "$CHATBOX_DB" ] && command -v sqlite3 >/dev/null 2>&1; then
+  contains "the listing reports the expiry date" "$(get /token)" "$(sqlite3 "$CHATBOX_DB" "select expires_at from tokens where id='$ID28B';")"
+  # Backdated rather than waited for: the check is that the *server* refuses it, not that a clock
+  # moved. The date is put in the past in the store, which is the same state a month would reach.
+  sqlite3 "$CHATBOX_DB" "UPDATE tokens SET expires_at='2001-01-01T00:00:00Z' WHERE id='$ID28B';" >/dev/null 2>&1
+  expired28="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/health?token=$TOK28B")"
+  equals "an expired credential is refused" "$expired28" "401"
+  expiredbody="$(curl -sS --max-time 20 "$URL/health?token=$TOK28B")"
+  contains "and the refusal names the date it expired" "$expiredbody" "expired at 2001-01-01T00:00:00Z"
+  contains "and the listing marks it expired, not active" "$(get /token)" "EXPIRED"
+  equals "while the credential with no expiry still works" \
+    "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$URL/health?token=$TOK28")" "200"
+else
+  printf '  skip  the expired-credential checks (needs a secret, CHATBOX_DB and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
