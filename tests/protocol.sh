@@ -2575,9 +2575,14 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
     cp "$pdb" "$legacy_pdb" >/dev/null 2>&1
     sqlite3 "$legacy_pdb" "CREATE TABLE legacy_tokens AS SELECT id,hash,node,namespaces,note,created_at,last_used,revoked_at FROM tokens; DROP TABLE tokens; ALTER TABLE legacy_tokens RENAME TO tokens;" >/dev/null 2>&1
     if [ -f "$legacy_pdb" ] && [ "$(sqlite3 "$legacy_pdb" "select count(*) from pragma_table_info('tokens') where name='expires_at';")" = "0" ]; then
-      legacy_before="$(cksum "$legacy_pdb")"
+      # Compared as *schema and rows*, not as file bytes: the board runs in WAL mode, so a write
+      # lands in the -wal and the main file can be byte-identical while the database has changed —
+      # which is exactly how the first cut of this check passed a dry run that migrated.
+      legacy_schema="$(sqlite3 "$legacy_pdb" ".schema" | cksum)"
+      legacy_rows="$(sqlite3 "$legacy_pdb" "select count(*) from messages;")"
       "$CHATBOX_BIN" --db "$legacy_pdb" --prune 365 --prune-dry-run >/dev/null 2>&1
-      equals "a dry run leaves the file byte-for-byte alone" "$(cksum "$legacy_pdb")" "$legacy_before"
+      equals "a dry run leaves the schema alone" "$(sqlite3 "$legacy_pdb" ".schema" | cksum)" "$legacy_schema"
+      equals "and the rows alone" "$(sqlite3 "$legacy_pdb" "select count(*) from messages;")" "$legacy_rows"
       "$CHATBOX_BIN" --db "$legacy_pdb" --prune 365 >/dev/null 2>&1
       equals "while a real prune migrates the board it is about to change" \
         "$(sqlite3 "$legacy_pdb" "select count(*) from pragma_table_info('tokens') where name='expires_at';")" "1"
