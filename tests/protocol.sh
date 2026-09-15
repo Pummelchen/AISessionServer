@@ -3913,6 +3913,45 @@ if [ -x "$mcp_bin" ]; then
   mcp_pair="$(printf '%s\n%s\n' '{"jsonrpc":"2.0","id":10,"method":"ping"}' \
     '{"jsonrpc":"2.0","id":11,"method":"ping"}' | mcp_session | grep -c '"id":1[01]')"
   equals "two requests get two replies" "$mcp_pair" "2"
+
+  # A long poll must not be cut off by the adapter's own HTTP client: `wait` is advertised up to 300s
+  # and the server deliberately sends nothing until it has something to report, so a flat 60s client
+  # deadline turned every wait over a minute into a transport error that looked like a dead server.
+  # The endpoint below accepts and never answers, so the only thing that ends the call is the
+  # adapter's own deadline; `wait=1` makes it 21s when the deadline is sized from the wait, and 60s
+  # when it is a flat minute. (This is the one deliberately slow check in the suite: about 21s.)
+  if command -v nc >/dev/null 2>&1; then
+    mcpblack="${CHATBOX_MCP_BLACKHOLE_PORT:-9410}"
+    # Held for longer than the flat minute this check is there to rule out: with a shorter hold the
+    # *fixture* would close the connection first, the call would fail early, and the check would pass
+    # against a flat-deadline client — measured (29s), which is how this check first came out green on
+    # the mutant. The holder is proved alive before the call is made, so a port that was never bound
+    # fails the check instead of passing it.
+    sleep 90 | nc -k -l "$mcpblack" >/dev/null 2>&1 &
+    mcpblackpid=$!
+    sleep 0.5
+    if kill -0 "$mcpblackpid" 2>/dev/null; then
+      ok "the never-answering endpoint is holding its port"
+    else
+      no "the never-answering endpoint is holding its port" "nc exited on port $mcpblack"
+    fi
+    mcp_t0="$(date +%s)"
+    mcp_slow="$(printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"inbox\",\"arguments\":{\"id\":\"$A\",\"wait\":\"1\"}}}" \
+      | CHATBOX_URL="http://127.0.0.1:$mcpblack" CHATBOX_TOKEN="$TOKEN" "$mcp_bin" 2>/dev/null)"
+    mcp_t1="$(date +%s)"
+    kill "$mcpblackpid" 2>/dev/null
+    wait "$mcpblackpid" 2>/dev/null
+    mcp_elapsed=$((mcp_t1 - mcp_t0))
+    contains "a call the server never answers is reported as an error" "$mcp_slow" '"isError":true'
+    if [ "$mcp_elapsed" -lt 40 ]; then
+      ok "and the adapter's deadline comes from the wait it was given (${mcp_elapsed}s for wait=1)"
+    else
+      no "and the adapter's deadline comes from the wait it was given" \
+        "wait=1 took ${mcp_elapsed}s: the client is still using a flat deadline"
+    fi
+  else
+    printf '  skip  the adapter deadline (needs nc)\n'
+  fi
 else
   printf '  skip  the MCP adapter (needs chatbox-mcp next to CHATBOX_BIN, or CHATBOX_MCP)\n'
 fi

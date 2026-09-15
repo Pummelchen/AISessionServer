@@ -77,9 +77,15 @@ func call(_ method: String, _ path: String, _ params: [String: String]) -> (stat
     guard let url = URL(string: query.isEmpty ? configURL + path : configURL + path + "?" + query) else {
         return (0, "error: CHATBOX_URL is not a usable URL")
     }
+    // A long poll is meant to be held open: the server sends nothing at all until it has something
+    // to report, so the client's own deadline has to outlast the wait it asked for. A flat 60s turned
+    // every advertised wait over a minute (`wait` is documented up to 300) into a transport error
+    // that looked like a dead server. Sized like the CLI's transport timeout: the wait plus a margin.
+    let waitSeconds = Int(params["wait"] ?? "") ?? 0
+    let deadline = waitSeconds > 0 ? TimeInterval(waitSeconds + 20) : 60
     var req = URLRequest(url: url)
     req.httpMethod = method
-    req.timeoutInterval = 60
+    req.timeoutInterval = deadline
     let sem = DispatchSemaphore(value: 0)
     // The completion is `@Sendable` and cannot write into captured `var`s; a `Mutex`-guarded box is
     // `Sendable` because its contents are, so the two values cross without an unsafe annotation.
@@ -94,9 +100,9 @@ func call(_ method: String, _ path: String, _ params: [String: String]) -> (stat
         sem.signal()
     }
     task.resume()
-    if sem.wait(timeout: .now() + 70) == .timedOut {
+    if sem.wait(timeout: .now() + deadline + 10) == .timedOut {
         task.cancel()
-        return (0, "error: the chatbox server did not answer within 70s")
+        return (0, "error: the chatbox server did not answer within \(Int(deadline))s")
     }
     return outcome.value
 }
