@@ -20,7 +20,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0001](#0001) | S1 | M1 | `chatbox.swift (whole file)` | Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors) | unsafe | **START** | node1 | phase-A baseline |
 | [0002](#0002) | S1 | M1 | `chatbox.swift:1062,1070` | Static ISO8601DateFormatter instances are shared mutable state (not Sendable) | unsafe | **DONE** | node1 | phase-A baseline |
 | [0003](#0003) | S1 | M1 | `chatbox.swift:1238` | `Chatbox.publicURL` is a mutable static global | unsafe | **DONE** | node1 | phase-A baseline |
-| [0004](#0004) | S1 | M1 | `chatbox.swift:27,3215,3217,3221` | Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code | unsafe | **START** | node1 | phase-A baseline |
+| [0004](#0004) | S1 | M1 | `chatbox.swift:27,3215,3217,3221` | Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code | unsafe | **AUDIT** | node1 | phase-A baseline |
 | [0005](#0005) | S1 | M1 | `chatbox.swift:2464,1155-1180,1700-1745,1600-1660` | Non-Sendable captures and captured-var mutation across @Sendable closures (DispatchWorkItem, URLSession completion, waiters, event poll) | unsafe | **START** | node1 | phase-A baseline |
 | [0015](#0015) | S1 | M1 | `chatbox.swift:896,373` | `@unchecked Sendable` on Chatbox and Store suppresses all concurrency checking | unsafe | **START** | node1 | L2 |
 | [0024](#0024) | S1 | M3 | `chatbox-cli.sh:817` | a failed --exec or print spins the wake loop with no backoff | bug | **START** | node1 | phase-B/M3-client |
@@ -283,10 +283,12 @@ AUDIT (gate): re-read cold. `publicURL` is now a `let` on the instance, passed t
 - **Severity / category / module:** S1 / unsafe / M1
 - **Location:** `chatbox.swift:27,3215,3217,3221`
 - **Title:** Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code
-- **Status:** START
+- **Status:** AUDIT
 - **Evidence (before):** chatbox.swift:3215:22 error: main actor-isolated var 'peerURL' can not be referenced from a nonisolated context (x2); 3217/3221 'tlsIdentity'; 27:1 'TRANSIENT'.
-- **Fix:** Move startup configuration into a `Sendable` struct (or make the file a library with an explicit entry point) so the listener/shutdown code receives immutable config instead of reaching for globals. TRANSIENT (sqlite destructor sentinel) becomes a nonisolated immutable constant.
-- **Notes:** Root cause is that top-level code in a single-file executable is implicitly @MainActor under Swift 6 mode.
+- **Fix:** Derive SQLite's `SQLITE_TRANSIENT` where it is used (a non-Sendable C function pointer cannot be a shared global) and make the `@Sendable` startup banner read the board's stored configuration (`server.*`) instead of main-actor-isolated top-level `var`s.
+- **Evidence (after):** TEST (gate): the strict-concurrency typecheck goes from 7 primary errors / 10 warnings to **2 / 10** — the two `main actor-isolated var 'peerURL'`, both `'tlsIdentity'` and the `main actor-isolated let 'TRANSIENT'` errors are gone (AUDIT/baseline/strict-concurrency-after-0004.txt). The only errors left are #0005's `DispatchWorkItem` capture and the `@preconcurrency` hint that is attached to it — deliberately NOT silenced, since adding `@preconcurrency` would downgrade Sendable checking to warnings. The documented build keeps compiling with 0 warnings. Banner text is unchanged: the suite's existing checks on `auth:`, `bounds:`, `federation:`, `transport:` and the per-address URLs all still pass; base cell green at 905 passed / 0 failed, relative cell green, 0 false passes. No new runtime check was added because this task's property is a compiler property; the existing banner checks are the regression guard and they exercise the rewritten lines.
+AUDIT (gate): re-read cold. `TRANSIENT` became `transientDestructor()` (a C function pointer is not Sendable, so it cannot be a shared global) and both `sqlite3_bind_text` call sites use it — the SQLite bind semantics are unchanged (SQLITE_TRANSIENT still tells sqlite3 to copy). The `@Sendable` banner closure now reads the board's own stored configuration instead of top-level `var`s, which removes the second source of truth as well as the error; the values it prints are the same fields the listener was built from. No `@unchecked Sendable`, no `nonisolated(unsafe)`, no lowered strictness.
+- **Notes:** Rejected alternatives: (a) `nonisolated(unsafe)` on TRANSIENT/tlsIdentity/peerURL - the forbidden escape hatch; (b) `@preconcurrency import Dispatch` - it would turn the remaining Sendable errors into warnings, i.e. lowering strictness, which is not a fix; (c) making the top-level `var`s `let`s by restructuring the startup into functions - a larger change than needed once the banner reads the instance, and it would move code without fixing anything else.
 
 ### 0005
 

@@ -28,7 +28,12 @@ import Foundation
 import Network
 import SQLite3
 
-private let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+/// SQLite's `SQLITE_TRANSIENT`: the destructor that tells sqlite3 to copy the bytes it was handed.
+/// A C function pointer is not `Sendable`, so it cannot be a shared global under Swift 6 — it is
+/// derived at the one place that binds text.
+private func transientDestructor() -> sqlite3_destructor_type {
+    unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+}
 
 // Long-poll tuning. A held inbox request is served by re-checking on this
 // interval rather than by blocking, so a waiter never occupies the server's
@@ -465,7 +470,7 @@ final class Store: @unchecked Sendable {
             return nil
         }
         for (i, v) in binds.enumerated() {
-            if let v = v { sqlite3_bind_text(st, Int32(i + 1), v, -1, TRANSIENT) }
+            if let v = v { sqlite3_bind_text(st, Int32(i + 1), v, -1, transientDestructor()) }
             else { sqlite3_bind_null(st, Int32(i + 1)) }
         }
         return st
@@ -3041,7 +3046,7 @@ if !backupRaw.isEmpty {
         FileHandle.standardError.write("chatbox: cannot prepare the copy of \(sourcePath)\n".data(using: .utf8)!)
         exit(1)
     }
-    sqlite3_bind_text(st, 1, destPath, -1, TRANSIENT)
+    sqlite3_bind_text(st, 1, destPath, -1, transientDestructor())
     let rc = sqlite3_step(st)
     sqlite3_finalize(st)
     if rc != SQLITE_DONE {
@@ -3340,18 +3345,21 @@ listener.stateUpdateHandler = { state in
         print("db: \(dbPath)")
         // Before anything reads a key: a board that has been running has keys written under the old
 // rules, and they have to mean the same thing as the new ones or mail goes missing.
-let migratedKeys = store.migrateRepoKeys()
-let boardIsOpen = token == nil || token == "open"
-print("auth: \(boardIsOpen ? "OPEN (no token)" : "token required")")
-let idleBanner = idleTimeout == 0 ? "no idle deadline" : "\(idleTimeout)s idle deadline"
-print("bounds: \(maxRows) rows per listing, \(maxConnections) connections, \(idleBanner)")
-print("federation: \(peerURL.isEmpty ? "off — this board is '\(serverID)' and forwards nothing" : "forwarding to \(peerURL) as '\(serverID)', at most \(maxHops) hops accepted")")
-        print("staleness: \(staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(staleAfter))")
-        print("transport: \(tlsIdentity == nil ? "plain HTTP — the token crosses the network in the clear" : "TLS")")
-        print("max request: \(maxBody) bytes")
+        let migratedKeys = store.migrateRepoKeys()
+        // The board's own configuration, read from the board: this closure is `@Sendable`, and a
+        // top-level `var` is main-actor isolated, so reaching for `peerURL`/`tlsIdentity` here was
+        // both a concurrency error and a second source of truth. `server` is the one source.
+        let boardIsOpen = server.token == nil || server.token == "open"
+        print("auth: \(boardIsOpen ? "OPEN (no token)" : "token required")")
+        let idleBanner = server.idleTimeout == 0 ? "no idle deadline" : "\(server.idleTimeout)s idle deadline"
+        print("bounds: \(server.maxRows) rows per listing, \(server.maxConnections) connections, \(idleBanner)")
+        print("federation: \(server.peerURL.isEmpty ? "off — this board is '\(server.serverID)' and forwards nothing" : "forwarding to \(server.peerURL) as '\(server.serverID)', at most \(server.maxHops) hops accepted")")
+        print("staleness: \(server.staleAfter == 0 ? "off" : "a session unheard from for " + humanSeconds(server.staleAfter))")
+        print("transport: \(server.tlsEnabled ? "TLS" : "plain HTTP — the token crosses the network in the clear")")
+        print("max request: \(server.maxBody) bytes")
         if migratedKeys.changed > 0 { print("normalised: \(migratedKeys.changed) stored repo key(s) rewritten to the canonical form") }
         if migratedKeys.left > 0 { print("normalised: \(migratedKeys.left) stored key(s) are not usable keys and were left alone — see Protocol") }
-        for a in addrs { print("  \(tlsIdentity == nil ? "http" : "https")://\(a):\(port)/") }
+        for a in addrs { print("  \(server.tlsEnabled ? "https" : "http")://\(a):\(port)/") }
         // stdout is block-buffered when redirected to a file, and this process never
         // exits, so without a flush the banner never reaches chatbox.log.
         fflush(stdout)
