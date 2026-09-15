@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 69 | done: 23 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
+**Open: 68 | done: 24 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -31,7 +31,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0029](#0029) | S1 | M1 | `chatbox.swift:1279` | /health answers 200 with empty counters when the store cannot be read, and omits uptime/build/db state | bug | **DONE** | node1 | phase-B/L7-ops |
 | [0030](#0030) | S1 | M1 | `chatbox.swift:1358` | register and token issuance report success when the store write failed [also: Registration reports success without checking its write] | bug | **START** | node1 | phase-B/L1-architecture,L2-server-core |
 | [0031](#0031) | S1 | M1 | `chatbox.swift:1509` | Reply resolution loads every message of the thread, bodies included, with no bound | perf | **START** | node1 | phase-B/L5-performance |
-| [0032](#0032) | S1 | M1 | `chatbox.swift:1551` | Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row] | bug | **START** | node1 | phase-B/L2-server-core,L3-line-level |
+| [0032](#0032) | S1 | M1 | `chatbox.swift:1551` | Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row] | bug | **DONE** | node1 | phase-B/L2-server-core,L3-line-level |
 | [0033](#0033) | S1 | M1 | `chatbox.swift:1902` | SSE 'bye' frame is built with a doubled backslash, so the documented bye event is never delivered [also: SSE deadline frame uses literal backslash-n, so the bye event is never terminated] | bug | **DONE** | node1 | phase-B/L2-server-http,L3-line-level |
 | [0034](#0034) | S1 | M1 | `chatbox.swift:2095` | Scoped credential's /threads count is board-wide, breaking read scoping [also: Scoped GET /threads?json=1 reports the board-wide thread count; GET /threads?json=1 leaks the board-wide thread count to a scoped credential; GET /threads JSON 'matching' counts the whole board, not the scoped caller's visible set] | unsafe | **DONE** | node1 | phase-B/L1-architecture,L2-server-core,L2-server-http,L4-security |
 | [0035](#0035) | S1 | M1 | `chatbox.swift:2107` | /threads hardcodes LIMIT 100 and its text answer hides the truncation [also: GET /threads is permanently capped at the newest 100 with no offset or cursor; ORDER BY threads.last_at has no index; every /threads call scans and sorts the whole threads table; GET /threads silently truncates at a hard-coded 100, ignores --max-rows, and the text form omits the count; GET /threads text form truncates at a hardcoded 100 and never states the matching count] | bug | **START** | node1 | phase-B/L1-architecture,L2-server-http,L3-line-level,L5-performance |
@@ -449,13 +449,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S1 / bug / M1
 - **Location:** `chatbox.swift:1551`
 - **Title:** Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row]
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** message() stores the row with a checked runReporting (1529-1545) but then loops store.run("INSERT OR IGNORE INTO deliveries (message_id,agent,created_at,node) VALUES (?,?,?,?)") at 1550-1554 and discards the -1 Store.run returns on failure (468-477). The reply at 1637-1645 prints delivered_to: <recipients>; nothing re-reads deliveries before answering. A write failure leaves the message stored with no delivery row for a listed recipient. | Lines 1550-1554: `for r in recipients { store.run("INSERT OR IGNORE INTO deliveries (message_id,agent,created_at,node) VALUES (?,?,?,?)", [String(msgId), r, nowISO(), store.nodeOf(r) ?? ""]) }`. Store.run is @discardableResult and returns -1 when sqlite3_prepare_v2/step fails (453-477). The 200 body at 1637-1644 builds `delivered_to:` from the in-memory `recipients` array, not from the rows the store actually holds.
 
 WHY IT MATTERS: The durable-delivery contract is that a stored message is routed to each recipient; a failed insert loses the report for that session while the sender is told it was delivered, so nobody retries. | If the delivery insert fails (disk full, I/O error, lock past busy_timeout), the message is stored but no recipient can ever read it, while the sender is told `delivered_to: <recipient>` with 200. The one caller who could detect the lost delivery is told the opposite.
 
 CONFIDENCE: high
 - **Fix:** Insert each delivery with runReporting and, when changes==0 or rc!=SQLITE_DONE, fail the send (or mark that recipient not delivered) instead of listing it as delivered. | Check the write: use runReporting (or test run's return) for each delivery insert and either answer 500 'stored but not delivered' or report the recipients that really got a row, as deliveryCount() already can.
+- **Evidence (after):** Covered by #0020, which is this same defect found in an earlier pass: the send path is one `BEGIN IMMEDIATE`/`COMMIT` transaction, every write is checked with `runReporting`, a refused delivery rolls the whole message back and answers 500, and `delivered_to` is built from the delivery rows that exist (`recipientsWithDelivery(message:)`) rather than from the recipient list the route intended. The suite's blocked-writes section forces the refusal with a `BEFORE INSERT ON deliveries` trigger and asserts the 500, the rolled-back message and the absent delivery row; matrix cell `227-audit0020-txignored` is red. Closed as the duplicate it is - a second fix for the same line would be a second code path for one invariant.
+- **Commit:** `b54abc9`
+- **Notes:** Duplicate of #0020 (`chatbox.swift:1550`, DONE at b54abc9). `delivered_to` is the part this entry adds in its title; it is fixed in the same commit, because building the answer from the intended recipient list is what made a refused insert invisible.
 
 ### 0033
 

@@ -555,14 +555,14 @@
       "file_line": "chatbox.swift:1551",
       "title": "Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row]",
       "category": "bug",
-      "status": "START",
+      "status": "DONE",
       "host_used": "node1",
       "discovered_by": "phase-B/L2-server-core,L3-line-level",
       "evidence_before": "message() stores the row with a checked runReporting (1529-1545) but then loops store.run(\"INSERT OR IGNORE INTO deliveries (message_id,agent,created_at,node) VALUES (?,?,?,?)\") at 1550-1554 and discards the -1 Store.run returns on failure (468-477). The reply at 1637-1645 prints delivered_to: <recipients>; nothing re-reads deliveries before answering. A write failure leaves the message stored with no delivery row for a listed recipient. | Lines 1550-1554: `for r in recipients { store.run(\"INSERT OR IGNORE INTO deliveries (message_id,agent,created_at,node) VALUES (?,?,?,?)\", [String(msgId), r, nowISO(), store.nodeOf(r) ?? \"\"]) }`. Store.run is @discardableResult and returns -1 when sqlite3_prepare_v2/step fails (453-477). The 200 body at 1637-1644 builds `delivered_to:` from the in-memory `recipients` array, not from the rows the store actually holds.\n\nWHY IT MATTERS: The durable-delivery contract is that a stored message is routed to each recipient; a failed insert loses the report for that session while the sender is told it was delivered, so nobody retries. | If the delivery insert fails (disk full, I/O error, lock past busy_timeout), the message is stored but no recipient can ever read it, while the sender is told `delivered_to: <recipient>` with 200. The one caller who could detect the lost delivery is told the opposite.\n\nCONFIDENCE: high",
       "fix_summary": "Insert each delivery with runReporting and, when changes==0 or rc!=SQLITE_DONE, fail the send (or mark that recipient not delivered) instead of listing it as delivered. | Check the write: use runReporting (or test run's return) for each delivery insert and either answer 500 'stored but not delivered' or report the recipients that really got a row, as deliveryCount() already can.",
-      "evidence_after": "",
-      "commit": "",
-      "notes": "",
+      "evidence_after": "Covered by #0020, which is this same defect found in an earlier pass: the send path is one `BEGIN IMMEDIATE`/`COMMIT` transaction, every write is checked with `runReporting`, a refused delivery rolls the whole message back and answers 500, and `delivered_to` is built from the delivery rows that exist (`recipientsWithDelivery(message:)`) rather than from the recipient list the route intended. The suite's blocked-writes section forces the refusal with a `BEFORE INSERT ON deliveries` trigger and asserts the 500, the rolled-back message and the absent delivery row; matrix cell `227-audit0020-txignored` is red. Closed as the duplicate it is - a second fix for the same line would be a second code path for one invariant.",
+      "commit": "b54abc9",
+      "notes": "Duplicate of #0020 (`chatbox.swift:1550`, DONE at b54abc9). `delivered_to` is the part this entry adds in its title; it is fixed in the same commit, because building the answer from the intended recipient list is what made a refused insert invisible.",
       "blocked_reason": ""
     },
     {
