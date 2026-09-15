@@ -27,6 +27,7 @@ import CryptoKit
 import Foundation
 import Network
 import SQLite3
+import Synchronization
 
 /// SQLite's `SQLITE_TRANSIENT`: the destructor that tells sqlite3 to copy the bytes it was handed.
 /// A C function pointer is not `Sendable`, so it cannot be a shared global under Swift 6 — it is
@@ -337,11 +338,43 @@ private func oneLine(_ s: String) -> String {
 
 /// Shared between the connection watcher and the poll loop. Both run on the
 /// server's serial queue, so no locking is needed.
-final class Waiter {
+final class Waiter: Sendable {
     /// The peer has finished sending. It may still be reading (a half-close is
     /// legitimate), so the request is still answered — but it is no longer evidence
     /// that anyone is there, so `last_seen` stops being refreshed.
-    var peerGone = false
+    ///
+    /// Set from the connection's receive handler and read by the poll loop, which are separate
+    /// `@Sendable` closures: the flag goes through a lock so the type can be `Sendable` without an
+    /// unsafe annotation. Both sides already run on the serial queue; the lock is what tells the
+    /// compiler so.
+    private let gone = Mutex(false)
+    var peerGone: Bool {
+        get { gone.withLock { $0 } }
+        set { gone.withLock { $0 = newValue } }
+    }
+}
+
+/// A one-way "the deadline no longer applies" flag, shared between the accept deadline and the
+/// receive loop. The deadline is a `DispatchWorkItem`, which is not `Sendable` — so the two sides
+/// agree through this instead of through the work item, and the work item is only ever *executed*.
+final class Deadline: Sendable {
+    private let done = Mutex(false)
+    var isCancelled: Bool { done.withLock { $0 } }
+    func cancel() { done.withLock { $0 = true } }
+}
+
+/// What a `URLSession` completion reported: the status, the body and (for a refusal) the Location.
+/// The completion is `@Sendable` and cannot write into captured `var`s, so it stores them here —
+/// `Mutex` is `Sendable` when its value is, which is what makes this legal without an unsafe
+/// annotation.
+final class HTTPOutcome: Sendable {
+    private let state = Mutex<(status: Int, body: String, location: String)>((0, "", ""))
+
+    func store(status: Int, body: String, location: String) {
+        state.withLock { $0 = (status, body, location) }
+    }
+
+    var value: (status: Int, body: String, location: String) { state.withLock { $0 } }
 }
 
 /// A compact duration for operator-facing text, floored: `7d`, `3h`, `90s` -> `1m`.
@@ -1227,10 +1260,11 @@ final class Chatbox: @unchecked Sendable {
             // than a guess. The connection stays open until then, exactly as the long-poll path
             // keeps one — the accept deadline was cancelled when the request arrived.
             let base = answer.body
+            let finalReq = req
             forwardQueue.async {
                 let note = self.forwardMessage(plan)
                 self.queue.async {
-                    self.finish(req, conn: conn, status: answer.status, body: base + note,
+                    self.finish(finalReq, conn: conn, status: answer.status, body: base + note,
                                 headers: answer.headers)
                 }
             }
@@ -1842,16 +1876,18 @@ final class Chatbox: @unchecked Sendable {
         if !peerToken.isEmpty { req.setValue("Bearer \(peerToken)", forHTTPHeaderField: "Authorization") }
         req.httpBody = Data(encoded.utf8)
         let sem = DispatchSemaphore(value: 0)
-        var status = 0
-        var answer = ""
-        var redirectedTo = ""
+        let outcome = HTTPOutcome()
         let task = forwardSession.dataTask(with: req) { data, response, error in
+            var status = 0
+            var location = ""
+            var body = ""
             if let http = response as? HTTPURLResponse {
                 status = http.statusCode
-                redirectedTo = http.value(forHTTPHeaderField: "Location") ?? ""
+                location = http.value(forHTTPHeaderField: "Location") ?? ""
             }
-            if let data = data, let text = String(data: data, encoding: .utf8) { answer = text }
-            if let error = error { answer = "error: \(error.localizedDescription)" }
+            if let data = data, let text = String(data: data, encoding: .utf8) { body = text }
+            if let error = error { body = "error: \(error.localizedDescription)" }
+            outcome.store(status: status, body: body, location: location)
             sem.signal()
         }
         task.resume()
@@ -1859,6 +1895,7 @@ final class Chatbox: @unchecked Sendable {
             task.cancel()
             return "forward failed: \(peerURL) did not answer within 10s\nthe message is stored here; the peer can be retried by hand\n"
         }
+        let (status, answer, redirectedTo) = outcome.value
         // A redirect is not a delivery, and this board does not follow one: a peer that moved is
         // named rather than guessed at, because the alternative is a 2xx somewhere else reported as
         // "forwarded".
@@ -2016,13 +2053,13 @@ final class Chatbox: @unchecked Sendable {
             }
             return
         }
-        var nextKeep = nextKeepAlive
-        if now >= nextKeepAlive {
+        let keep = now >= nextKeepAlive
+        if keep {
             // A comment line: SSE clients ignore it, and it is what stops an idle proxy from
             // deciding the connection is dead.
             conn.send(content: Data(": keep-alive\n\n".utf8), completion: .contentProcessed { _ in })
-            nextKeep = now.addingTimeInterval(15)
         }
+        let nextKeep = keep ? now.addingTimeInterval(15) : nextKeepAlive
         queue.asyncAfter(deadline: .now() + 0.5) {
             self.pollEvents(conn, last: last, deadline: deadline, nextKeepAlive: nextKeep)
         }
@@ -2129,11 +2166,11 @@ final class Chatbox: @unchecked Sendable {
         // fresh — otherwise a long wait would make it look stale. Once the peer has
         // finished sending there is no evidence it is still there, so it stops being
         // refreshed and the session ages normally.
-        var touch = nextTouch
-        if !waiter.peerGone, Date() >= nextTouch {
+        let refresh = !waiter.peerGone && Date() >= nextTouch
+        if refresh {
             store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
-            touch = Date().addingTimeInterval(longPollTouchInterval(staleAfter))
         }
+        let touch = refresh ? Date().addingTimeInterval(longPollTouchInterval(staleAfter)) : nextTouch
 
         // Wait for something *unread*. `all=1` widens the payload once there is
         // something to report; it must not itself satisfy the wait, or a session
@@ -2572,7 +2609,11 @@ final class Chatbox: @unchecked Sendable {
         // its deadline, and a strong reference would keep every finished connection object alive
         // that long (and, before this, kept a failed handshake's socket open long enough for the
         // peer to hang instead of being told no).
+        // The deadline fires unless the request has arrived; `deadline.cancel()` is what the
+        // receive loop calls instead of cancelling the work item, which it cannot hold.
+        let deadline = Deadline()
         let idle = DispatchWorkItem { [weak self, weak conn] in
+            guard !deadline.isCancelled else { return }
             guard let self = self, let conn = conn, self.liveConnections.contains(identity) else { return }
             FileHandle.standardError.write("chatbox: idle connection closed after \(self.idleTimeout)s\n".data(using: .utf8)!)
             conn.cancel()
@@ -2583,16 +2624,16 @@ final class Chatbox: @unchecked Sendable {
         conn.stateUpdateHandler = { state in
             switch state {
             case .ready:
-                self.receive(conn, buffer: Data(), idle: idle)
+                self.receive(conn, buffer: Data(), deadline: deadline)
             case .failed:
-                idle.cancel()
+                deadline.cancel()
                 self.liveConnections.remove(identity)
                 // A failed connection is still a live socket until it is cancelled: leaving it
                 // there makes a peer that failed the handshake wait for the deadline instead of
                 // being told no.
                 conn.cancel()
             case .cancelled:
-                idle.cancel()
+                deadline.cancel()
                 self.liveConnections.remove(identity)
             default:
                 break
@@ -2601,7 +2642,7 @@ final class Chatbox: @unchecked Sendable {
         conn.start(queue: queue)
     }
 
-    private func receive(_ conn: NWConnection, buffer: Data, idle: DispatchWorkItem) {
+    private func receive(_ conn: NWConnection, buffer: Data, deadline: Deadline) {
         // Never read far past the cap: the point of the limit is the memory, so the read
         // itself is bounded by it rather than by whatever the peer decides to send.
         conn.receive(minimumIncompleteLength: 1, maximumLength: min(131_072, self.maxBody + 1)) { data, _, isComplete, error in
@@ -2620,7 +2661,7 @@ final class Chatbox: @unchecked Sendable {
             if let req = self.parse(buf) {
                 // The request has arrived, so the accept deadline has done its job. Anything the
                 // connection does from here — a long poll included — is the server's own time.
-                idle.cancel()
+                deadline.cancel()
                 self.dispatch(req, conn: conn)
                 return
             }
@@ -2636,7 +2677,7 @@ final class Chatbox: @unchecked Sendable {
                 conn.cancel()
                 return
             }
-            self.receive(conn, buffer: buf, idle: idle)
+            self.receive(conn, buffer: buf, deadline: deadline)
         }
     }
 

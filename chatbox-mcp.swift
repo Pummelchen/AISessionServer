@@ -12,6 +12,7 @@
 // stdout except protocol messages: anything a human needs to see goes to stderr.
 
 import Foundation
+import Synchronization
 
 let configURL = ProcessInfo.processInfo.environment["CHATBOX_URL"] ?? "http://127.0.0.1:8787"
 let configToken = ProcessInfo.processInfo.environment["CHATBOX_TOKEN"] ?? ""
@@ -26,6 +27,15 @@ func emit(_ object: [String: Any]) {
           var text = String(data: data, encoding: .utf8) else { return }
     text += "\n"
     FileHandle.standardOutput.write(text.data(using: .utf8)!)
+}
+
+/// What one HTTP call reported. See the note in `call`: a completion handler is `@Sendable`.
+final class HTTPOutcome: Sendable {
+    private let state = Mutex<(status: Int, body: String)>((0, ""))
+
+    func store(status: Int, body: String) { state.withLock { $0 = (status, body) } }
+
+    var value: (status: Int, body: String) { state.withLock { $0 } }
 }
 
 func reply(id: Any?, _ result: [String: Any]) {
@@ -71,12 +81,16 @@ func call(_ method: String, _ path: String, _ params: [String: String]) -> (stat
     req.httpMethod = method
     req.timeoutInterval = 60
     let sem = DispatchSemaphore(value: 0)
-    var status = 0
-    var body = ""
+    // The completion is `@Sendable` and cannot write into captured `var`s; a `Mutex`-guarded box is
+    // `Sendable` because its contents are, so the two values cross without an unsafe annotation.
+    let outcome = HTTPOutcome()
     let task = URLSession.shared.dataTask(with: req) { data, response, error in
+        var status = 0
+        var body = ""
         if let http = response as? HTTPURLResponse { status = http.statusCode }
         if let data = data, let text = String(data: data, encoding: .utf8) { body = text }
         if let error = error { body = "error: \(error.localizedDescription)" }
+        outcome.store(status: status, body: body)
         sem.signal()
     }
     task.resume()
@@ -84,7 +98,7 @@ func call(_ method: String, _ path: String, _ params: [String: String]) -> (stat
         task.cancel()
         return (0, "error: the chatbox server did not answer within 70s")
     }
-    return (status, body)
+    return outcome.value
 }
 
 // ---------------------------------------------------------------- the tools
