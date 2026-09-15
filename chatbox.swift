@@ -555,6 +555,13 @@ final class Store: @unchecked Sendable {
         return (r.rc, r.changes)
     }
 
+    /// The recipients that actually have a delivery row for one message, in the order the rows were
+    /// written. A route's `delivered_to` comes from here rather than from the list it intended, so a
+    /// delivery that was refused can never be reported as one.
+    func recipientsWithDelivery(message id: String) -> [String] {
+        rows("SELECT agent FROM deliveries WHERE message_id = ? ORDER BY rowid", [id]).compactMap { $0["agent"] }
+    }
+
     func tokenExists(_ id: String) -> Bool {
         !rows("SELECT 1 FROM tokens WHERE id = ? LIMIT 1", [id]).isEmpty
     }
@@ -1363,16 +1370,17 @@ final class Chatbox: @unchecked Sendable {
         }
         let ts = nowISO()
         let existing = store.scalar("SELECT id FROM agents WHERE id = ?", [id])
+        var wrote: (rc: Int32, changes: Int32, id: Int64) = (SQLITE_DONE, 0, 0)
         if existing.isEmpty {
-            store.run("INSERT INTO agents (id,node,agent,harness,session,ip,repos,note,registered_at,last_seen) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                      [id, node, agent, harness, session, ip, effectiveRepos, note, ts, ts])
+            wrote = store.runReporting("INSERT INTO agents (id,node,agent,harness,session,ip,repos,note,registered_at,last_seen) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                       [id, node, agent, harness, session, ip, effectiveRepos, note, ts, ts])
         } else {
             // An omitted (empty) field keeps the stored value — the rule `repos` already followed,
             // now applied to all of them. The update used to write node, agent, harness, session,
             // ip and note unconditionally, so a session that re-registered only to add a repo
             // silently lost the rest of its identity, and because /peers prints the harness line
             // only when a field is set, the loss was invisible in the default view.
-            store.run("""
+            wrote = store.runReporting("""
             UPDATE agents SET
               node    = CASE WHEN ?='' THEN node    ELSE ? END,
               agent   = CASE WHEN ?='' THEN agent   ELSE ? END,
@@ -1388,6 +1396,13 @@ final class Chatbox: @unchecked Sendable {
         }
         // The answer reports what is *stored*, not what was sent: with an omitted field preserved,
         // echoing the request would say "session: " while the session was still on the board.
+        // A registration that was not written must not be answered as one: the upsert's result was
+        // discarded, so a refused INSERT still produced "ok registered" with the empty identity the
+        // re-read found.
+        guard wrote.rc == SQLITE_DONE else {
+            FileHandle.standardError.write("chatbox: the registration of \(id) failed: \(store.lastError())\n".data(using: .utf8)!)
+            return (500, "error: the registration was not stored — \(oneLine(id)) is not registered (\(oneLine(store.lastError())))\n")
+        }
         let stored = store.rows("""
         SELECT node, agent, harness, session, ip, repos FROM agents WHERE id = ?
         """, [id]).first ?? [:]
@@ -1483,29 +1498,52 @@ final class Chatbox: @unchecked Sendable {
         // so a caller cannot squat on one and claim a conversation that somebody else
         // has not started. Whether the thread still exists *when the message is stored*
         // is settled by the insert itself, below.
-        var threadId: Int64
+        // The reply's target is resolved *before* the transaction opens, because every refusal in
+        // this block is a validation that has written nothing: a transaction left open by an early
+        // return is how a board wedges itself — the next send answers "cannot start a transaction
+        // within a transaction" and every message after it fails. A reply is a *join*: without the
+        // 403, read scoping would be decorative, since a credential could name any sequential thread
+        // id, post a line into it and read the whole history it just joined.
+        var replyThreadId: Int64 = 0
         var effRepo = canonicalRepo
-        if threadIn.isEmpty {
-            threadId = store.run("INSERT INTO threads (repo,subject,created_at,created_by,last_at) VALUES (?,?,?,?,?)",
-                                 [effRepo, subject, nowISO(), from, nowISO()])
-        } else {
+        if !threadIn.isEmpty {
             guard let t = Int64(threadIn), t > 0 else {
                 return Reply(400, "error: thread must be a positive integer, not '\(oneLine(threadIn))'\n")
             }
-            // A reply is a *join*. Without this, read scoping is decorative: a credential could
-            // name any sequential thread id, post a line into it, and read the whole history it
-            // just joined — and the refusal would still tell it who the participants are.
             if !who.isBootstrap, !store.node(who.node, participatesIn: String(t)) {
                 return Reply(403, "forbidden: this credential may reply only to a conversation its machine takes part in\n")
             }
-            threadId = t
+            replyThreadId = t
             // a reply inherits the thread's repo so routing stays consistent
             if effRepo.isEmpty { effRepo = store.scalar("SELECT repo FROM threads WHERE id = ?", [String(t)]) }
             // A thread stored before the send path validated its key must not become a
             // way to echo that key back: it is dropped rather than repeated.
             if !effRepo.isEmpty { effRepo = canonicalRepoKey(effRepo) ?? "" }
         }
-        guard threadId > 0 else { return Reply(500, "error: could not open thread\n") }
+
+        // Everything from here to the commit is one write. A send that cannot deliver to everyone it
+        // names is rolled back and refused, because the alternative is a message the sender is told
+        // was delivered while no delivery row exists — the report is then unreachable and permanent,
+        // and `--prune` deliberately never removes a message with no deliveries, so nothing recovers
+        // it. One statement runs per connection at a time and this whole function runs on the serial
+        // queue, so the transaction cannot interleave with another request.
+        let began = store.runReporting("BEGIN IMMEDIATE", [])
+        guard began.rc == SQLITE_DONE else {
+            FileHandle.standardError.write("chatbox: could not begin the send transaction: \(store.lastError())\n".data(using: .utf8)!)
+            return Reply(500, "error: the message could not be stored — nothing was written\n")
+        }
+
+        var threadId: Int64
+        if threadIn.isEmpty {
+            threadId = store.run("INSERT INTO threads (repo,subject,created_at,created_by,last_at) VALUES (?,?,?,?,?)",
+                                 [effRepo, subject, nowISO(), from, nowISO()])
+        } else {
+            threadId = replyThreadId
+        }
+        guard threadId > 0 else {
+            store.run("ROLLBACK", [])
+            return Reply(500, "error: could not open thread — nothing was written\n")
+        }
 
         // resolve recipients: explicit, else thread participants plus the repo's owners
         var recipients: [String] = []
@@ -1546,6 +1584,7 @@ final class Chatbox: @unchecked Sendable {
             // thread" would be a lie, and its advice ("send without thread=") would open a
             // duplicate thread. Only a statement that ran and matched no row means the thread is
             // gone, which is the case answering 404 protects.
+            store.run("ROLLBACK", [])
             if attempt.rc != SQLITE_DONE {
                 FileHandle.standardError.write("chatbox: the message insert failed: \(store.lastError())\n".data(using: .utf8)!)
                 return Reply(500, "error: the message could not be stored — nothing was written\n")
@@ -1554,14 +1593,37 @@ final class Chatbox: @unchecked Sendable {
         }
 
         // keep the sender's liveness fresh, once the message is known to be stored
-        store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), from])
+        let touched = store.runReporting("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), from])
+        guard touched.rc == SQLITE_DONE else {
+            store.run("ROLLBACK", [])
+            FileHandle.standardError.write("chatbox: the sender's liveness stamp failed: \(store.lastError())\n".data(using: .utf8)!)
+            return Reply(500, "error: the message could not be stored — nothing was written\n")
+        }
 
         for r in recipients {
-            store.run("""
+            let delivery = store.runReporting("""
             INSERT OR IGNORE INTO deliveries (message_id,agent,created_at,node) VALUES (?,?,?,?)
             """, [String(msgId), r, nowISO(), store.nodeOf(r) ?? ""])
+            guard delivery.rc == SQLITE_DONE else {
+                store.run("ROLLBACK", [])
+                FileHandle.standardError.write("chatbox: the delivery to \(r) failed: \(store.lastError())\n".data(using: .utf8)!)
+                return Reply(500, "error: the message could not be delivered to \(oneLine(r)) — nothing was written\n")
+            }
         }
-        store.run("UPDATE threads SET last_at=? WHERE id=?", [nowISO(), String(threadId)])
+        let stamped = store.runReporting("UPDATE threads SET last_at=? WHERE id=?", [nowISO(), String(threadId)])
+        guard stamped.rc == SQLITE_DONE else {
+            store.run("ROLLBACK", [])
+            FileHandle.standardError.write("chatbox: the thread stamp failed: \(store.lastError())\n".data(using: .utf8)!)
+            return Reply(500, "error: the message could not be stored — nothing was written\n")
+        }
+        let committed = store.runReporting("COMMIT", [])
+        guard committed.rc == SQLITE_DONE else {
+            store.run("ROLLBACK", [])
+            FileHandle.standardError.write("chatbox: the send transaction would not commit: \(store.lastError())\n".data(using: .utf8)!)
+            return Reply(500, "error: the message could not be stored — nothing was written\n")
+        }
+        // The answer reports the delivery rows that exist, not the list this route intended.
+        let delivered = store.recipientsWithDelivery(message: String(msgId))
 
         // A report sent to a machine that has gone away is still stored, but the
         // sender deserves to know nobody is likely to read it.
@@ -1574,7 +1636,7 @@ final class Chatbox: @unchecked Sendable {
         let now = Date()
         let visibleToSender = scopedSender ? store.visibleAgentIds(forNode: who.node) : []
         // A recipient nobody is listening for: gone quiet, or never registered at all.
-        let unseen = recipients.filter {
+        let unseen = delivered.filter {
             scopedSender ? !visibleToSender.contains($0) : isStale(store.lastSeen(of: $0), now: now)
         }
         func unseenLabel(_ id: String) -> String {
@@ -1586,7 +1648,7 @@ final class Chatbox: @unchecked Sendable {
             let seen = store.lastSeen(of: id)
             return seen.isEmpty ? "never registered" : ageDescription(seen, now: now)
         }
-        let deliveredTo = recipients.map { r in
+        let deliveredTo = delivered.map { r in
             unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r
         }.joined(separator: ", ")
 
@@ -1625,7 +1687,7 @@ final class Chatbox: @unchecked Sendable {
         if !unseen.isEmpty {
             let who = unseen.map { "\($0) (\(unseenReason($0)))" }.joined(separator: ", ")
             // Only claim nobody will read it when nobody is left to.
-            let everyone = unseen.count == recipients.count
+            let everyone = unseen.count == delivered.count
             // A scoped sender gets the same warning without the board's own numbers: "no sign of X
             // inside the 7d window" is a statement about the registry, which is what the scope
             // exists to withhold.
@@ -1648,7 +1710,7 @@ final class Chatbox: @unchecked Sendable {
         message: \(msgId)
         thread: \(threadId)
         repo: \(effRepo.isEmpty ? "-" : effRepo)
-        delivered_to: \(recipients.isEmpty ? "(nobody)" : deliveredTo)
+        delivered_to: \(delivered.isEmpty ? "(nobody)" : deliveredTo)
         at: \(nowISO())
         \(note)\(forwardNote)
         """, forward: plan)

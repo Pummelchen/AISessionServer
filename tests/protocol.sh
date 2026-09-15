@@ -3188,6 +3188,37 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
       --data-urlencode "id=$btid" "http://127.0.0.1:$bport/token/revoke")"
     contains "and the revocation works once the store is willing" "$brev2" "ok revoked"
 
+    # The send path is one write. A delivery the store refuses used to be ignored: the message was
+    # stored, the sender was told `delivered_to`, and no delivery row existed — unreachable mail that
+    # `--prune` deliberately never removes, announced as a delivery. A registration whose INSERT was
+    # refused was answered "ok registered" with the empty identity a re-read found.
+    txsent="$(bk message --data-urlencode "from=it-$RUN-bk-a" --data-urlencode "to=it-$RUN-bk-b" \
+      --data-urlencode "body=tx-$RUN")"
+    contains "the transaction fixture sends a message" "$txsent" "ok posted"
+    sqlite3 "$bdb" "CREATE TRIGGER IF NOT EXISTS block_delivery_insert BEFORE INSERT ON deliveries BEGIN SELECT RAISE(ABORT,'blocked by the suite'); END;" >/dev/null 2>&1
+    txstatus="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "from=it-$RUN-bk-a" --data-urlencode "to=it-$RUN-bk-b" \
+      --data-urlencode "body=tx-blocked-$RUN" "http://127.0.0.1:$bport/message")"
+    equals "a delivery the store refuses is a 500" "$txstatus" "500"
+    equals "and the message it could not deliver was rolled back" \
+      "$(sqlite3 "$bdb" "select count(*) from messages where body='tx-blocked-$RUN';")" "0"
+    equals "and no delivery row was orphaned by it" \
+      "$(sqlite3 "$bdb" "select count(*) from deliveries d where not exists (select 1 from messages m where m.id=d.message_id);")" "0"
+    sqlite3 "$bdb" "DROP TRIGGER IF EXISTS block_delivery_insert;" >/dev/null 2>&1
+    txsent2="$(bk message --data-urlencode "from=it-$RUN-bk-a" --data-urlencode "to=it-$RUN-bk-b" \
+      --data-urlencode "body=tx-after-$RUN")"
+    contains "and the send works once the store is willing" "$txsent2" "ok posted"
+    sqlite3 "$bdb" "CREATE TRIGGER IF NOT EXISTS block_agent_insert BEFORE INSERT ON agents BEGIN SELECT RAISE(ABORT,'blocked by the suite'); END;" >/dev/null 2>&1
+    txreg="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=it-$RUN-bk-blocked" --data-urlencode "node=node-bk" "http://127.0.0.1:$bport/register")"
+    equals "a registration the store refuses is a 500" "$txreg" "500"
+    equals "and the refused registration stored nothing" \
+      "$(sqlite3 "$bdb" "select count(*) from agents where id='it-$RUN-bk-blocked';")" "0"
+    sqlite3 "$bdb" "DROP TRIGGER IF EXISTS block_agent_insert;" >/dev/null 2>&1
+    txreg2="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=it-$RUN-bk-blocked" --data-urlencode "node=node-bk" "http://127.0.0.1:$bport/register")"
+    equals "and registration works once the store is willing" "$txreg2" "200"
+
     # A structurally valid copy that is simply older: only the comparison can see it, so both
     # halves are asserted — accepted alone, refused against its source.
     cp "$bdir/good.sqlite" "$bdir/stale.sqlite"
