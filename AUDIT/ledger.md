@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 66 | done: 26 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
+**Open: 64 | done: 28 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -29,7 +29,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0027](#0027) | S1 | M2 | `chatbox-mcp.swift:47` | MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)] | bug | **DONE** | node1 | phase-B/L1-architecture,L3-line-level |
 | [0028](#0028) | S1 | M2 | `chatbox-mcp.swift:54` | inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)] | bug | **DONE** | node1 | phase-B/L3-line-level,M2-mcp-and-placeholders |
 | [0029](#0029) | S1 | M1 | `chatbox.swift:1279` | /health answers 200 with empty counters when the store cannot be read, and omits uptime/build/db state | bug | **DONE** | node1 | phase-B/L7-ops |
-| [0030](#0030) | S1 | M1 | `chatbox.swift:1358` | register and token issuance report success when the store write failed [also: Registration reports success without checking its write] | bug | **START** | node1 | phase-B/L1-architecture,L2-server-core |
+| [0030](#0030) | S1 | M1 | `chatbox.swift:1358` | register and token issuance report success when the store write failed [also: Registration reports success without checking its write] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-core |
 | [0031](#0031) | S1 | M1 | `chatbox.swift:1509` | Reply resolution loads every message of the thread, bodies included, with no bound | perf | **START** | node1 | phase-B/L5-performance |
 | [0032](#0032) | S1 | M1 | `chatbox.swift:1551` | Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row] | bug | **DONE** | node1 | phase-B/L2-server-core,L3-line-level |
 | [0033](#0033) | S1 | M1 | `chatbox.swift:1902` | SSE 'bye' frame is built with a doubled backslash, so the documented bye event is never delivered [also: SSE deadline frame uses literal backslash-n, so the bye event is never terminated] | bug | **DONE** | node1 | phase-B/L2-server-http,L3-line-level |
@@ -37,7 +37,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0035](#0035) | S1 | M1 | `chatbox.swift:2107` | /threads hardcodes LIMIT 100 and its text answer hides the truncation [also: GET /threads is permanently capped at the newest 100 with no offset or cursor; ORDER BY threads.last_at has no index; every /threads call scans and sorts the whole threads table; GET /threads silently truncates at a hard-coded 100, ignores --max-rows, and the text form omits the count; GET /threads text form truncates at a hardcoded 100 and never states the matching count] | bug | **START** | node1 | phase-B/L1-architecture,L2-server-http,L3-line-level,L5-performance |
 | [0036](#0036) | S1 | M1 | `chatbox.swift:2135` | Ack reports acknowledgements that did not happen, from an unchecked UPDATE | bug | **DONE** | node1 | phase-B/L2-server-core |
 | [0037](#0037) | S1 | M1 | `chatbox.swift:2138` | ack reports sqlite3_changes() even when the UPDATE failed, so a failed ack answers 'ok acked N' | bug | **DONE** | node1 | phase-B/L3-line-level |
-| [0038](#0038) | S1 | M1 | `chatbox.swift:2232` | A credential's secret is returned even when the token INSERT did not store it | bug | **START** | node1 | phase-B/L2-server-core |
+| [0038](#0038) | S1 | M1 | `chatbox.swift:2232` | A credential's secret is returned even when the token INSERT did not store it | bug | **DONE** | node1 | phase-B/L2-server-core |
 | [0039](#0039) | S1 | M1 | `chatbox.swift:2406` | Request log records no time, peer, principal or route context; credential issue/revoke unaudited [also: Request target control bytes are echoed into logs and the 404 body (log injection)] | bug | **START** | node1 | phase-B/L3-line-level,L7-ops |
 | [0040](#0040) | S1 | M1 | `chatbox.swift:2431` | Connections refused at the ceiling get no idle deadline and are not counted, so stalled TLS handshakes accumulate without bound | unsafe | **START** | node1 | phase-B/L2-server-http |
 | [0041](#0041) | S1 | M1 | `chatbox.swift:2810` | `--port` and `--stale-after` silently fall back to their defaults on an unparseable value [also: --port and --stale-after silently substitute the default for an unusable value] | logic | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L7-ops |
@@ -423,13 +423,16 @@ AUDIT (gate): re-read cold. The fix is additive at the route and subtractive now
 - **Severity / category / module:** S1 / bug / M1
 - **Location:** `chatbox.swift:1358`
 - **Title:** register and token issuance report success when the store write failed [also: Registration reports success without checking its write]
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** 1358 stores registration with `store.run(INSERT INTO agents ...)` and 2232 stores a credential with `store.addToken(...)`; neither result is checked and both answer 200 (`ok registered`, `ok credential issued` + secret) unconditionally. With an ABORT trigger on agents, POST /register returned 'ok registered' with empty node/repos while the session was absent from /peers; with one on tokens, POST /token returned a secret while GET /token listed only the pre-existing credential, so it can never authenticate. | register() calls store.run("INSERT INTO agents (id,node,...)") at 1358-1359 and store.run("UPDATE agents SET ...") at 1366-1378, ignoring the -1 Store.run returns on failure (468-477), then re-reads with store.rows (1382-1384) and unconditionally returns 200 "ok registered" plus that row. On a failed write the SELECT returns nothing, so the answer reads "node:   agent:   repos: (none declared)", and owners(ofRepo:) (730-736) will never route mail to the id.
 
 WHY IT MATTERS: A failed write becomes a success answer: a session that is not on the board later fails with 403, and an operator configures a machine with a credential that was never stored. Errors must not be reported as success on write paths. | The session believes it registered and owns its repos; messages to those repos are then stored with no owner and no delivery, and the failure is invisible to both sides.
 
 CONFIDENCE: high
 - **Fix:** Use runReporting/changedRows (as the /message insert does at 1540) for both writes and answer 500 with store.lastError() when the store reports no change. | Check the INSERT/UPDATE result with runReporting and return 500 "not registered" when the row was not stored, instead of echoing the registry.
+- **Evidence (after):** Covered by two earlier passes over the same two writes. `register()` now runs its INSERT (and the follow-up UPDATE) through `runReporting` and answers **500** `the registration was not stored — <id> is not registered (<sqlite error>)` unless the row was written (#0020, b54abc9); `createToken()` answers **500** `the credential was not stored — nothing was issued` and prints no secret unless `stored.rc == SQLITE_DONE && stored.changes == 1` (#0022, 599a87d). The suite forces both refusals with `BEFORE INSERT` triggers on `agents` and `tokens` and asserts the 500, the absent row and the absent secret, and the matrix cells for both fixes are red. Nothing was changed for this entry: the two writes it names are the two writes those tasks fixed.
+- **Commit:** `b54abc9`
+- **Notes:** Duplicate of #0020 (registration, DONE at b54abc9) and #0022 (credential issuance, DONE at 599a87d). The "also:" half of the title - 'Registration reports success without checking its write' - is the same finding again from a different pass. One fix per defect: no code changed here.
 
 ### 0031
 
@@ -550,13 +553,16 @@ CORRECTION (Phase C, reproduced 2026-09-16): the claim in this entry that the fa
 - **Severity / category / module:** S1 / bug / M1
 - **Location:** `chatbox.swift:2232`
 - **Title:** A credential's secret is returned even when the token INSERT did not store it
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** createToken() calls store.addToken(...) at 2232-2234, which is run("INSERT INTO tokens (id,hash,node,namespaces,note,created_at,expires_at) VALUES (?,?,?,?,?,?,?)") (547-551) with the result discarded, then unconditionally returns 200 "ok credential issued ... secret: <secret>". If the INSERT failed (busy/disk/read-only) or the 48-bit id collided with the PRIMARY KEY, no row matches sha256Hex(secret), and authorize() answers "unauthorized: unknown token" (1118-1120).
 
 WHY IT MATTERS: The board hands a machine a credential that can never authenticate and records no failure, so the first request from that machine fails 401 with no board-side explanation.
 
 CONFIDENCE: high
 - **Fix:** Check addToken's result with runReporting; on failure return 500 without printing a secret, and retry once when the error is a PRIMARY KEY collision.
+- **Evidence (after):** Covered by #0022: `createToken()` builds the response only after `guard stored.rc == SQLITE_DONE, stored.changes == 1`, and on failure writes the SQLite error to the server log and answers **500** without a secret. The suite asserts exactly this with a `BEFORE INSERT ON tokens` trigger (`an issuance the store refuses is a 500`, `and it says nothing was issued`, `and no secret is printed for a credential that was not stored`) and then that issuance works once the trigger is dropped, and matrix cell `234-audit0022-issueguard` is red.
+- **Commit:** `599a87d`
+- **Notes:** Duplicate of #0022 (`chatbox.swift:2418`, DONE at 599a87d). Its suggested retry-on-PRIMARY-KEY-collision was NOT adopted, deliberately: the id is 48 random bits, a collision is now a 500 that says the row was not stored rather than a printed unusable secret, and a retry loop would be a new failure path that no deterministic test can exercise (the suite can force a refusal, not a collision). If a collision ever happened, the operator sees the 500 and issues again - which is the same action the retry would have taken, with one fewer code path.
 
 ### 0039
 
