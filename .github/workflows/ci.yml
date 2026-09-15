@@ -23,7 +23,7 @@ concurrency:
 jobs:
   build-and-test:
     name: build + protocol tests
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 15
 
     steps:
