@@ -3713,6 +3713,39 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
     contains "and so does the credential list" "$botokens" "credentials — 3 of 5"
     contains "naming what it left out" "$botokens" "2 more are issued than are shown"
 
+    # The conversation list is bounded by --max-rows too, and says so. It was hard-coded to the
+    # newest 100 while every other listing obeyed the bound, and its text answer printed the page
+    # size alone, so a truncated list was indistinguishable from a complete one.
+    for i in 1 2 3 4; do
+      bo message --data-urlencode "from=bo" --data-urlencode "to=bo-agent-$i" \
+        --data-urlencode "subject=boundthread-$i-$RUN" --data-urlencode "body=bt-$i-$RUN" >/dev/null
+    done
+    bthreads_total="$(sqlite3 "$bodb" "select count(*) from threads;")"
+    bothreads="$(bog threads)"
+    if [ "$bthreads_total" -gt 3 ]; then
+      contains "a conversation list longer than the bound says how many of how many" \
+        "$bothreads" "threads — 3 of $bthreads_total"
+      contains "and names what it left out" \
+        "$bothreads" "$((bthreads_total - 3)) older one(s) are not shown"
+      contains "and the flag that would show them" "$bothreads" "--max-rows"
+    else
+      no "a conversation list longer than the bound says how many of how many" \
+         "the board has only $bthreads_total thread(s)"
+    fi
+    equals "and lists exactly the bound" "$(printf '%s\n' "$bothreads" | grep -c '^\[[0-9]')" "3"
+    bothreads_json="$(bog threads "json=1")"
+    contains "the threads json states what it shows" "$bothreads_json" '"shown": 3'
+    contains "and what it matched" "$bothreads_json" "\"matching\": $bthreads_total"
+
+    # The served page re-reads this listing every five seconds per open tab, so the query must not
+    # scan and sort the whole table: the plan is checked, not a stopwatch. Both forms, because the
+    # repo filter and the ordering have to come from one index or the sort comes back.
+    threads_query="SELECT t.id, t.repo, t.subject, t.created_at, t.last_at, (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n FROM threads t"
+    equals "the conversation list is served by an index, not a sort" \
+      "$(sqlite3 "$bodb" "EXPLAIN QUERY PLAN $threads_query ORDER BY t.last_at DESC LIMIT 3;" | grep -c 'TEMP B-TREE')" "0"
+    equals "and so is the repo-filtered form" \
+      "$(sqlite3 "$bodb" "EXPLAIN QUERY PLAN $threads_query WHERE t.repo='example.test/r1' ORDER BY t.last_at DESC LIMIT 3;" | grep -c 'TEMP B-TREE')" "0"
+
     # The idle deadline: a connection that sends nothing is closed at the deadline.
     ( sleep 15 | nc -w 12 127.0.0.1 "$boport" >/dev/null 2>&1 ) &
     idle_nc=$!

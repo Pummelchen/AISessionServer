@@ -1086,6 +1086,27 @@ m('253-audit0042-readwrite',
   r'''        Store(path: prunePath, migrating: !dryRun, readOnly: false, queue: chatboxQueue)''')
 
 # AUDIT #0042: two operator modes at once must be refused, not silently serialised.
+# AUDIT #0035: the conversation list is bounded by --max-rows, not by a literal.
+m('255-audit0035-hardcap',
+  r'''            + scope + " ORDER BY t.last_at DESC LIMIT \(maxRows)"''',
+  r'''            + scope + " ORDER BY t.last_at DESC LIMIT 100"''')
+
+# AUDIT #0035: the text answer states how many of how many it is showing.
+m('256-audit0035-hidenote',
+  r'''        var out = "threads\(repo.isEmpty ? "" : " for \(repo)") — \(rows.count)"
+            + (matchingThreads > rows.count ? " of \(matchingThreads)" : "") + "\n"
+        if matchingThreads > rows.count {
+            out += "note: \(matchingThreads - rows.count) older one(s) are not shown — raise --max-rows to see them\n"
+        }''',
+  r'''        var out = "threads\(repo.isEmpty ? "" : " for \(repo)") — \(rows.count)\n"''')
+
+# AUDIT #0035: the listing the served page polls every five seconds must not sort the whole table.
+m('257-audit0035-noindex',
+  r'''        exec("CREATE INDEX IF NOT EXISTS idx_threads_last_at ON threads(last_at DESC);")
+        exec("CREATE INDEX IF NOT EXISTS idx_threads_repo_last ON threads(repo, last_at DESC);")
+''',
+  r'''''')
+
 m('254-audit0042-noconflict',
   r'''let operatorModes = [("--backup", backupRaw), ("--verify-backup", verifyRaw), ("--prune", pruneRaw)]
     .filter { !$0.1.isEmpty }.map { $0.0 }

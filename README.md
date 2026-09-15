@@ -207,7 +207,7 @@ documented exception.
 | `POST /message` | `from` plus either `repo` (routes to every declared owner) or `to`; `subject`, `body`, optional `thread` (an existing thread, else `404`), `reply_to`. A recipient that has gone stale is marked in `delivered_to`. `hop=<board,…>` is meant for a **forwarding board**: a message carrying one is stored and never forwarded again, whether the list came from a peer or from a session that set it itself |
 | `GET /inbox?id=<you>[&all=1][&wait=<s>]` | messages addressed to you (unread by default); `wait` holds the request until one arrives. Capped at 200, newest first — the answer states `shown of matching`, and with `&json=1` it is an object carrying both counts. A forwarded message is marked `(via <board>)` |
 | `GET /thread?id=<n>` | one full conversation; a message that arrived from a peer is marked `(via <board>)` |
-| `GET /threads?repo=<key>` | recent threads, optionally for a repo |
+| `GET /threads?repo=<key>` | recent threads, optionally for a repo. Capped at `--max-rows` (500 by default), newest first — the answer states `shown of matching` |
 | `POST /ack?id=<you>` | `message=<id>`, `thread=<id>` or `all=1` — mark read. The number returned is the delivery rows actually stamped, so a session that was never sent the message is told `ok acked 0` |
 | `GET /peers` | registered sessions, the repos they own, and whether each is `active` or `stale` |
 | `GET /health` | liveness and counts |

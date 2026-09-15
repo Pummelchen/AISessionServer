@@ -513,6 +513,13 @@ final class Store: @unchecked Sendable {
         addColumn("tokens", "expires_at", "TEXT")
         exec("CREATE INDEX IF NOT EXISTS idx_tokens_hash ON tokens(hash);")
         exec("CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_id);")
+        // The conversation list is `ORDER BY last_at DESC LIMIT n`, and the served page asks for it
+        // every five seconds per open tab: without an index that is a scan of every thread plus a
+        // temp b-tree sort, on the queue every request shares. The composite index also serves the
+        // `repo = ?` form, where the filter and the ordering have to come from one index or the
+        // sort comes back.
+        exec("CREATE INDEX IF NOT EXISTS idx_threads_last_at ON threads(last_at DESC);")
+        exec("CREATE INDEX IF NOT EXISTS idx_threads_repo_last ON threads(repo, last_at DESC);")
     }
 
     func exec(_ sql: String) {
@@ -2299,12 +2306,21 @@ final class Chatbox: @unchecked Sendable {
         }
         let scope = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
         let matchingThreads = Int(store.scalar("SELECT COUNT(*) FROM threads t" + scope, binds)) ?? 0
+        // `--max-rows`, not a literal: every other listing is bounded by the configured number, and
+        // an operator who raised it was still handed 100 conversations by this route.
         let sql = "SELECT t.id, t.repo, t.subject, t.created_at, t.last_at, (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n FROM threads t"
-            + scope + " ORDER BY t.last_at DESC LIMIT 100"
+            + scope + " ORDER BY t.last_at DESC LIMIT \(maxRows)"
         let rows = store.rows(sql, binds)
         if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }
         if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }
-        var out = "threads\(repo.isEmpty ? "" : " for \(repo)") — \(rows.count)\n"
+        // The text answer states how many of how many it is showing, like every other listing: it
+        // used to print the page size alone, so a truncated listing was indistinguishable from a
+        // complete one and the operator had no reason to raise `--max-rows`.
+        var out = "threads\(repo.isEmpty ? "" : " for \(repo)") — \(rows.count)"
+            + (matchingThreads > rows.count ? " of \(matchingThreads)" : "") + "\n"
+        if matchingThreads > rows.count {
+            out += "note: \(matchingThreads - rows.count) older one(s) are not shown — raise --max-rows to see them\n"
+        }
         for r in rows {
             out += "\n[\(r["id"] ?? "")] \(r["last_at"] ?? "")  \(r["n"] ?? "0") msg  repo: \((r["repo"] ?? "").isEmpty ? "-" : r["repo"]!)\n  \(r["subject"] ?? "-")\n"
         }
