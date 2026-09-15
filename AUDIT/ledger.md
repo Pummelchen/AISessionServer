@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 62 | done: 30 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
+**Open: 61 | done: 31 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -25,7 +25,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0015](#0015) | S1 | M1 | `chatbox.swift:896,373` | `@unchecked Sendable` on Chatbox and Store suppresses all concurrency checking | unsafe | **DONE** | node1 | L2 |
 | [0024](#0024) | S1 | M3 | `chatbox-cli.sh:817` | a failed --exec or print spins the wake loop with no backoff | bug | **DONE** | node1 | phase-B/M3-client |
 | [0025](#0025) | S1 | M2 | `chatbox-mcp.swift:138` | MCP adapter feeds raw peer text to the model with no untrusted frame [also: MCP adapter returns peer text to the model with no untrusted frame] | unsafe | **START** | node1 | phase-B/L1-architecture,L4-security |
-| [0026](#0026) | S1 | M2 | `chatbox-mcp.swift:191` | JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally) | bug | **AUDIT** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0026](#0026) | S1 | M2 | `chatbox-mcp.swift:191` | JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally) | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0027](#0027) | S1 | M2 | `chatbox-mcp.swift:47` | MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)] | bug | **DONE** | node1 | phase-B/L1-architecture,L3-line-level |
 | [0028](#0028) | S1 | M2 | `chatbox-mcp.swift:54` | inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)] | bug | **DONE** | node1 | phase-B/L3-line-level,M2-mcp-and-placeholders |
 | [0029](#0029) | S1 | M1 | `chatbox.swift:1279` | /health answers 200 with empty counters when the store cannot be read, and omits uptime/build/db state | bug | **DONE** | node1 | phase-B/L7-ops |
@@ -363,7 +363,7 @@ CONFIDENCE: high
 - **Severity / category / module:** S1 / bug / M2
 - **Location:** `chatbox-mcp.swift:191`
 - **Title:** JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally)
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** The switch calls reply()/handleToolCall unconditionally for initialize, ping, tools/list and tools/call (lines 191-206); only the default branch checks isNotification (line 208). With no id in the request, reply() emits id NSNull (line 32), so a notification such as a ping or a tools/list produces an unsolicited response. JSON-RPC 2.0 and MCP require the server to send no reply to a notification.
 
 WHY IT MATTERS: The host receives a response frame it never requested, keyed to a null id; a strict client treats this as a protocol error and the id-keyed stream is polluted. The adapter's own comment (lines 168-169) states the rule it then breaks.
@@ -372,6 +372,7 @@ CONFIDENCE: high
 - **Fix:** Every reply path is gated on `!isNotification`: `initialize`, `ping`, `tools/list` and `tools/call` answer only a message that carried an id, and an id-less `tools/call` is neither answered nor executed. The parse-error response is deliberately unchanged - it still carries `"id":null`, because there is no id to address it to - so the gate is the request/notification distinction, not `id == nil`.
 - **Evidence (after):** TEST (gate): reproduced with the real adapter. Four notifications (`ping`, `tools/list`, `initialize`, `tools/call`) followed by one request produced, on the pre-fix binary, **5 replies, 4 of them keyed `"id":null`**; the fixed binary produced **exactly 1** (the request's, `"id":13`). A `tools/call` notification carrying a real `say` was, pre-fix, executed as well as answered - the message landed on the board (measured `on-board=1`) - while the fixed adapter returns no reply and leaves the board unchanged (`on-board=0`). A line that is not JSON at all is still answered with a null id on both, which is the JSON-RPC parse-error case and the reason the gate cannot simply be `id == nil`. Section 31 adds five checks: four notifications plus one request yield exactly one reply; it is the request's; nothing is answered with a null id; a `tools/call` notification does not change the board; and an unparseable line is still answered. Base cell GREEN at 947 passed / 0 failed; mutant `249-audit0026-notifyreply` (`isNotification = false`, i.e. the pre-fix behaviour of treating every message as a request) is red on exactly the three checks that describe a reply; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.
 AUDIT (gate): re-read cold. `isNotification` was already computed and already used by two branches (the method guard and the default case); this makes the other four branches agree with the comment that has been above them since the adapter was written. The parse-error path is untouched and pinned by a new check, so a future 'simplification' to `if id != nil` inside `reply` breaks a check rather than shipping. No tool, schema, method or error code changed.
+- **Commit:** `ddaaa23`
 - **Notes:** Rejected alternatives: (a) gate `reply`/`fail` on `id == nil` internally - a parse error legitimately answers with a null id, so the two cases are not the same and the check that pins the difference would fail; (b) answer a notification with an error - JSON-RPC 2.0 forbids replying to a notification at all, and a strict host treats the frame as a protocol error; (c) execute an id-less `tools/call` silently - MCP defines `tools/call` as a request, so an id-less one is a client bug, and a board mutation the caller cannot be told about (no reply to fail, no id to correlate) is worse than a no-op; (d) drop the id from the reply so it 'looks like' a notification - a response without an id is not a thing JSON-RPC defines.
 
 ### 0027
