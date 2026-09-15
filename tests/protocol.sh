@@ -3839,6 +3839,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 32. A read-only web view (TRK-16)
+# A human wanting to watch a cross-repo conversation had to read it in a shell. `GET /ui` is one
+# page that reads the API **with the credential it was opened with** — so it needs no rules of its
+# own: a scoped credential opening it sees exactly the conversations its machine takes part in,
+# because the page is just another client. It is deliberately read-only and stateless: one string of
+# HTML, GET requests only, nothing written anywhere.
+# ---------------------------------------------------------------------------
+ui_head="$SCRATCH/ui-${RUN}.headers"
+ui_body="$SCRATCH/ui-${RUN}.body"
+curl -sS -D "$ui_head" --max-time 10 "$(url_for /ui)" > "$ui_body" 2>/dev/null
+contains "the view is served as HTML" "$(cat "$ui_head")" "text/html"
+contains "and is a page" "$(cat "$ui_body")" "<title>chatbox"
+contains "with a thread list" "$(cat "$ui_body")" 'id="threads"'
+contains "and a thread pane" "$(cat "$ui_body")" 'id="thread"'
+contains "it reads the thread list" "$(cat "$ui_body")" "/threads?json=1"
+contains "and reads one thread at a time" "$(cat "$ui_body")" "/thread?id="
+lacks "and it never writes a message" "$(cat "$ui_body")" "/message"
+lacks "and has no write method anywhere" "$(cat "$ui_body")" "'POST'"
+# The shape the page parses is the API's own, counts included, so a page can tell a full listing
+# from a truncated one.
+contains "the listing the page reads is the API's object" "$(get /threads "json=1")" '"threads"'
+contains "with the counts that make truncation visible" "$(get /threads "json=1")" '"matching"'
+# Token-guarded like every other route: the page is not a way around the credential.
+equals "the view needs a credential" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$URL/ui")" "401"
+equals "and a wrong credential is refused" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$URL/ui?token=not-the-token")" "401"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

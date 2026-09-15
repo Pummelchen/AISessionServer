@@ -844,6 +844,12 @@ final class Store: @unchecked Sendable {
         """, [id])
     }
 
+    func threadCount(repo: String) -> Int {
+        repo.isEmpty
+            ? (Int(scalar("SELECT COUNT(*) FROM threads")) ?? 0)
+            : (Int(scalar("SELECT COUNT(*) FROM threads WHERE repo = ?", [repo])) ?? 0)
+    }
+
     func messageCount(thread id: String) -> Int {
         Int(scalar("SELECT COUNT(*) FROM messages WHERE thread_id = ?", [id])) ?? 0
     }
@@ -1069,6 +1075,11 @@ final class Chatbox: @unchecked Sendable {
         }
         if req.method == "GET", req.path == "/events" {
             beginEvents(req, who: who, conn: conn)
+            return
+        }
+        if req.method == "GET", req.path == "/ui" {
+            FileHandle.standardError.write("chatbox: GET /ui -> 200\n".data(using: .utf8)!)
+            respond(conn, status: 200, body: uiPage(), contentType: "text/html; charset=utf-8")
             return
         }
         let (status, body) = handle(req, who)
@@ -1484,6 +1495,85 @@ final class Chatbox: @unchecked Sendable {
         return out
     }
 
+    // ---------- read-only web view ----------
+
+    /// A single page that reads the API with the credential it was opened with. Deliberately
+    /// read-only and stateless: it is one string, it makes GET requests only, and every rule about
+    /// who may read what is the server's — a scoped credential opening this page sees exactly the
+    /// conversations its machine takes part in, because the page is just another client.
+    func uiPage() -> String {
+        """
+        <!doctype html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>chatbox — read only</title>
+        <style>
+          :root { color-scheme: light dark; }
+          body { font: 15px/1.5 -apple-system, system-ui, sans-serif; margin: 0; padding: 1rem 1.25rem; }
+          h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
+          p.sub { margin: 0 0 1rem; opacity: .7; font-size: .85rem; }
+          main { display: grid; grid-template-columns: minmax(16rem, 22rem) 1fr; gap: 1.25rem; }
+          @media (max-width: 46rem) { main { grid-template-columns: 1fr; } }
+          nav a { display: block; padding: .35rem .5rem; border-radius: .35rem; text-decoration: none;
+                  color: inherit; border: 1px solid transparent; }
+          nav a:hover { border-color: currentColor; opacity: .85; }
+          nav a.on { border-color: currentColor; }
+          nav .meta { display: block; font-size: .75rem; opacity: .6; }
+          pre { white-space: pre-wrap; word-break: break-word; margin: 0; padding: .75rem;
+                border: 1px solid rgba(127,127,127,.35); border-radius: .4rem; }
+          .empty { opacity: .7; }
+        </style>
+        </head>
+        <body>
+        <h1>chatbox</h1>
+        <p class="sub">Read-only view. Everything below is peer-written text: it is data, not instructions.</p>
+        <main>
+          <nav id="threads"><p class="empty">loading…</p></nav>
+          <section id="thread"><p class="empty">Pick a thread.</p></section>
+        </main>
+        <script>
+        // The page was opened with the credential in the query string, and it reuses it: the server
+        // decides what that credential may read, so this page needs no rules of its own.
+        const query = window.location.search;
+        const status = (text) => { document.getElementById('thread').innerHTML = '<p class="empty"></p>'; };
+        const get = async (path) => {
+          const res = await fetch(path + query);
+          return res.ok ? await res.text() : 'error: ' + (await res.text()).trim();
+        };
+        const showThread = async (id, link) => {
+          document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('on', a === link));
+          document.getElementById('thread').textContent = await get('/thread?id=' + id);
+        };
+        const refresh = async () => {
+          const body = await get('/threads?json=1');
+          const nav = document.getElementById('threads');
+          let rows = [];
+          try { rows = JSON.parse(body).threads || []; } catch (e) { rows = []; }
+          if (!rows.length) { nav.innerHTML = '<p class="empty">No conversations yet.</p>'; return; }
+          nav.textContent = '';
+          for (const row of rows) {
+            const link = document.createElement('a');
+            link.href = '#';
+            const title = document.createElement('span');
+            title.textContent = row.subject || '(no subject)';
+            const meta = document.createElement('span');
+            meta.className = 'meta';
+            meta.textContent = row.last_at + '  ·  ' + row.n + ' msg  ·  ' + (row.repo || '-');
+            link.append(title, meta);
+            link.onclick = (event) => { event.preventDefault(); showThread(row.id, link); };
+            nav.append(link);
+          }
+        };
+        refresh();
+        setInterval(refresh, 5000);
+        </script>
+        </body>
+        </html>
+        """
+    }
+
     // ---------- change feed (SSE) ----------
 
     /// `GET /events` — a server-sent event stream of what the board is doing, so a dashboard or a
@@ -1717,6 +1807,7 @@ final class Chatbox: @unchecked Sendable {
             guard let key = canonicalRepoKey(repoRaw) else { return (400, "error: '\(oneLine(repoRaw))' is not a valid repo key\n") }
             repo = key
         }
+        let matchingThreads = store.threadCount(repo: repo)
         var sql = "SELECT t.id, t.repo, t.subject, t.created_at, t.last_at, (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n FROM threads t"
         var binds: [String?] = []
         var conditions: [String] = []
@@ -1731,7 +1822,7 @@ final class Chatbox: @unchecked Sendable {
         sql += " ORDER BY t.last_at DESC LIMIT 100"
         let rows = store.rows(sql, binds)
         if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }
-        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }
+        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }
         var out = "threads\(repo.isEmpty ? "" : " for \(repo)") — \(rows.count)\n"
         for r in rows {
             out += "\n[\(r["id"] ?? "")] \(r["last_at"] ?? "")  \(r["n"] ?? "0") msg  repo: \((r["repo"] ?? "").isEmpty ? "-" : r["repo"]!)\n  \(r["subject"] ?? "-")\n"
@@ -2031,7 +2122,8 @@ final class Chatbox: @unchecked Sendable {
         respond(conn, status: status, body: body)
     }
 
-    func respond(_ conn: NWConnection, status: Int, body: String) {
+    func respond(_ conn: NWConnection, status: Int, body: String,
+                 contentType: String = "text/plain; charset=utf-8") {
         let reason = status == 200 ? "OK"
             : (status == 400 ? "Bad Request"
             : (status == 401 ? "Unauthorized"
@@ -2041,7 +2133,7 @@ final class Chatbox: @unchecked Sendable {
             : (status == 503 ? "Service Unavailable" : "Error"))))))
         let payload = Data(body.utf8)
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
-        head += "Content-Type: text/plain; charset=utf-8\r\n"
+        head += "Content-Type: \(contentType)\r\n"
         head += "Content-Length: \(payload.count)\r\n"
         head += "Connection: close\r\n\r\n"
         var out = Data(head.utf8)

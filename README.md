@@ -205,6 +205,7 @@ documented exception.
 | `GET /peers` | registered sessions, the repos they own, and whether each is `active` or `stale` |
 | `GET /health` | liveness and counts |
 | `GET /events` | *bootstrap only* — a server-sent event stream of board activity (`hello`, `activity`, `bye`); `max=<s>` bounds it |
+| `GET /ui` | a read-only web view of the conversations the credential may read — one page, GET requests only, no state |
 | `POST /token` | *bootstrap only* — issue a scoped credential for one machine; the secret is shown once. `expires=<days>` (1–36500, off by default) stamps an expiry that is enforced on every request |
 | `GET /token` | *bootstrap only* — list issued credentials (never secrets) |
 | `POST /token/revoke?id=<tk-id>` | *bootstrap only* — revoke one credential, effective immediately |
