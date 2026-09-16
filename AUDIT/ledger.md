@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 48 | done: 47 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 42 | done: 53 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -50,18 +50,18 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0048](#0048) | S1 | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **DONE** | node1 | phase-B/L6-tests |
 | [0006](#0006) | S2 | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **DONE** | node1 | L0 |
 | [0007](#0007) | S2 | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **START** | node1 | L0 swiftlint baseline |
-| [0008](#0008) | S2 | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **START** | node1 | L0 shellcheck baseline |
-| [0009](#0009) | S2 | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **START** | node1 | L0 shellcheck baseline |
+| [0008](#0008) | S2 | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **DONE** | node1 | L0 shellcheck baseline |
+| [0009](#0009) | S2 | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **DONE** | node1 | L0 shellcheck baseline |
 | [0010](#0010) | S2 | M4 | `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941` | Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329) | test | **START** | node1 | L0 shellcheck baseline |
 | [0014](#0014) | S2 | M1 | `chatbox.swift:2426` | CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change | unsafe | **START** | node1 | L0 |
 | [0049](#0049) | S2 | repo | `.github/workflows/codeql.yml:57` | CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned | test | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0050](#0050) | S2 | repo | `aisessionserver-wiki/Deployment.md:92` | Local test runbook starts the disposable server on the suite's own staleness port | docs | **START** | node1 | phase-B/L7-ops |
 | [0051](#0051) | S2 | repo | `aisessionserver-wiki/Quick-Start.md:255` | Documented local test command silently skips checks and cannot print the promised result | docs | **START** | node1 | phase-B/L7-ops |
-| [0052](#0052) | S2 | M3 | `chatbox-cli.sh:150` | Client puts the credential in curl argv, exposing it to every local user via ps | unsafe | **START** | node1 | phase-B/L4-security |
-| [0053](#0053) | S2 | M3 | `chatbox-cli.sh:29` | ~/.chatbox overrides the environment instead of defaulting to it | logic | **START** | node1 | phase-B/M3-client |
+| [0052](#0052) | S2 | M3 | `chatbox-cli.sh:150` | Client puts the credential in curl argv, exposing it to every local user via ps | unsafe | **DONE** | node1 | phase-B/L4-security |
+| [0053](#0053) | S2 | M3 | `chatbox-cli.sh:29` | ~/.chatbox overrides the environment instead of defaulting to it | logic | **DONE** | node1 | phase-B/M3-client |
 | [0054](#0054) | S2 | M3 | `chatbox-cli.sh:355` | canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls] | logic | **START** | node1 | phase-B/L1-architecture,M3-client |
-| [0055](#0055) | S2 | M3 | `chatbox-cli.sh:686` | GET query strings are concatenated unencoded, so ids with a space or & break the request | bug | **START** | node1 | phase-B/M3-client |
-| [0056](#0056) | S2 | M3 | `chatbox-cli.sh:703` | ack silently drops --all, then the server error names the flag the caller passed | logic | **START** | node1 | phase-B/M3-client |
+| [0055](#0055) | S2 | M3 | `chatbox-cli.sh:686` | GET query strings are concatenated unencoded, so ids with a space or & break the request | bug | **DONE** | node1 | phase-B/M3-client |
+| [0056](#0056) | S2 | M3 | `chatbox-cli.sh:703` | ack silently drops --all, then the server error names the flag the caller passed | logic | **DONE** | node1 | phase-B/M3-client |
 | [0057](#0057) | S2 | M3 | `chatbox-cli.sh:775` | watch delivers the 1200-character inbox preview and then acks it | incomplete | **START** | node1 | phase-B/M3-client |
 | [0058](#0058) | S2 | M2 | `chatbox-mcp.swift:177` | Well-formed non-object JSON is reported as -32700 parse error instead of -32600 Invalid Request | bug | **START** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0059](#0059) | S2 | M2 | `chatbox-mcp.swift:197` | notifications/cancelled is a no-op that can never be observed while a call blocks the read loop | incomplete | **START** | node1 | phase-B/M2-mcp-and-placeholders |
@@ -790,19 +790,24 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 - **Severity / category / module:** S2 / bug / M3
 - **Location:** `chatbox-cli.sh:203`
 - **Title:** Variable interpolated into a printf format string (SC2059)
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** SC2059 (info) 'Don't use variables in the printf format string' - a value containing % is reinterpreted as a directive.
 - **Fix:** Pass the value as an argument to printf '%s' with a fixed format.
-- **Notes:** Also appears twice in tests/protocol.sh.
+- **Evidence (after):** TEST: the check is the standard's own shell checks, run on the client **under test** (`$CLI`, which in a mutation cell is the mutated client): `sh -n`, `dash -n`, and `shellcheck -s sh` with only the documented dynamic `source` (SC1090) filtered out. Before this batch the client had three findings - SC2059 here, SC2094 twice for #0009 - and after it has none, so the section fails on the pre-fix client and passes on the fixed one. Mutant `286-audit0008-printfvar` (`printf "$_fc_seq"`, the pre-fix shape) is red at 1082 / 2. Section 52 also asserts the two shapes are absent from the source, so the pin does not rest on the linter being installed. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.
+- **Commit:** `dfa7174`
+- **Notes:** Also appears twice in tests/protocol.sh, which is task #0010's scope, not this one's. Honest limit, recorded rather than implied away: this one has no behavioural discriminator. `$_fc_seq` is a fixed escape sequence such as `\342\200\213` and contains no `%`, so the pre-fix and the fixed client strip exactly the same characters - the finding is that a stray `%` in a value would be read as a format directive, and the fix removes the class rather than a present-day symptom. The pin is therefore the linter plus the absence of the shape, and `printf '%b'` is the POSIX way to say 'interpret the escapes in this *value*'.
 
 ### 0009
 
 - **Severity / category / module:** S2 / bug / M3
 - **Location:** `chatbox-cli.sh:456,463`
 - **Title:** A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** SC2094 x2 'Make sure not to read and write the same file in the same pipeline'.
 - **Fix:** Read into a variable or write to a temporary file and move it into place atomically; never redirect into a file the same pipeline is reading.
+- **Evidence (after):** TEST: `canon_repos` split the comma list into a temporary file and then read that same file in the loop below it, removing it on the error path - a path both written and read by one shell, and a cleanup that an interrupt skips (the file stayed behind). The list now reaches the loop as a here document, which is the same input and leaves nothing behind; the `rm -f` on the error path is gone with the file. Section 52 runs `shellcheck -s sh` on the client under test (SC2094 twice before, none after) and asserts the temp-file shape (`chatbox-canon.`) is absent from the source. Mutant `287-audit0009-tempfile` (the temp-file form put back, `rm -f` and all) is red at 1082 / 2. The registration path that uses this function is exercised by the existing client sections, so a broken split would be red there too. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.
+- **Commit:** `dfa7174`
+- **Notes:** The comment that said a temp file that could not be written also lands in the 'no repo key' error was removed with the file: there is no file to fail to write any more, and the remaining two ways to reach that error (a list of separators, a claim that vanishes in the split) are still refused with exit 2. A here document expands `$(...)` in the current shell, so the command substitution's failure is not swallowed: `tr` failing leaves the loop reading nothing and the 'contains no repo key' branch refuses it.
 
 ### 0010
 
@@ -872,26 +877,32 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / unsafe / M3
 - **Location:** `chatbox-cli.sh:150`
 - **Title:** Client puts the credential in curl argv, exposing it to every local user via ps
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** http_get/http_get_wait build the URL as `_q="...token=$TOKEN"` (150-151, 158-159) and pass it as a curl argument; http_post does the same with `--data-urlencode "token=$TOKEN"` plus -G (530). The whole command line, secret included, is visible in `ps` for the duration of every request, which is exactly the exposure the server documents: 'a token passed as argv is visible to every local user in ps' (chatbox.swift:2814).
 
 WHY IT MATTERS: Every agent machine leaks its credential to any other local process or user. A scoped secret lets the reader act as that machine's sessions (register, send, read its conversations, ack); if the shared bootstrap secret is in CHATBOX_TOKEN the reader owns the whole board.
 
 CONFIDENCE: high
 - **Fix:** Keep the secret out of argv: write `header = "Authorization: Bearer ..."` (or the token query) into a 0600 mktemp file and call `curl -K file`, or use --netrc-file; unlink it afterwards. Only token length/absence should ever appear on the command line.
+- **Evidence (after):** TEST (gate): a stub `curl` on PATH records every ARGV line it is given, and looks at any config file it is handed with `-K` (its mode and its body). Before: the token was an argument twice over - `token=<secret>` in the URL of every read and `--data-urlencode token=<secret>` in the body of every write - so `ps` showed it to every other user on the machine, which is exactly what chatbox.swift's own documentation warns about for `--token`. After: no ARGV line contains the secret; the request carries `ARGV -K <path>` and the config file is mode **600** with `Authorization: Bearer <secret>` in it; the file is gone once the client exits. The stub also fails like an unreachable server (exit 7) so the check never contacts whatever the URL names. Section 51 pins seven checks on this, including that the stub was reached at all (a `lacks` on an empty recording would pass vacuously). Mutant `282-audit0052-argvtoken` - the credential back on the command line as `-H "Authorization: Bearer $TOKEN"` - is red at 1079 passed / 5 failed. The live checks in the same section (an inbox for an id with a space and an `&`, and `ack --all`) authenticate through the same config file, so a file that curl could not use would be visible there too. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.
+- **Commit:** `dfa7174`
+- **Notes:** If the config file cannot be created the client refuses with exit 2 instead of falling back to the command line: a silent fallback would restore the exposure on exactly the machine where something is wrong, and the operator can set TMPDIR. A token containing a newline is refused for the same reason it could never have worked - it is sent as an HTTP header. The file path comes from `mktemp`, so two clients on one machine do not share it, and the three traps remove it on INT/TERM/HUP as well as on the normal path.
 
 ### 0053
 
 - **Severity / category / module:** S2 / logic / M3
 - **Location:** `chatbox-cli.sh:29`
 - **Title:** ~/.chatbox overrides the environment instead of defaulting to it
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** chatbox-cli.sh:29-31 sources `${CHATBOX_CONFIG:-$HOME/.chatbox}` before reading CHATBOX_URL/TOKEN/CACERT at :33-40, so a file line `export CHATBOX_URL=...` wins over the caller's `CHATBOX_URL=... chatbox say`. The header at :27-28 calls the file 'Per-machine defaults', and every documented precedence rule is 'an explicit flag always wins'. The suite works around it with CHATBOX_CONFIG=/nonexistent (tests/protocol.sh:3362).
 
 WHY IT MATTERS: An operator pointing one command at another board or a rotated token - `CHATBOX_URL=http://staging ... chatbox say` - silently talks to the ~/.chatbox target instead, posting a real message to the wrong server with no warning.
 
 CONFIDENCE: medium
 - **Fix:** Snapshot the environment values before sourcing and restore them after, or source in a subshell and copy only the variables that were unset in the environment.
+- **Evidence (after):** TEST (gate), with the stub transport above: the environment names `http://wanted.invalid:2` and the config file names `http://from-file.invalid:1`; the recorded request is `http://wanted.invalid:2/inbox` and `from-file.invalid` appears nowhere in the recording - before the fix the file was sourced last and won, so `CHATBOX_URL=http://staging chatbox say` posted a real message to the board in ~/.chatbox. The three variables the file may set (URL, TOKEN, CACERT) are each restored from a snapshot taken *before* the source, so a variable the environment did not set still comes from the file. Section 51 pins the URL case; mutant `283-audit0053-filewins` (the restore removed) is red at 1081 / 3. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.
+- **Commit:** `dfa7174`
+- **Notes:** The snapshot uses `${VAR+yes}` rather than `${VAR:-}`, so 'unset' and 'set to empty' stay distinguishable: an environment that sets CHATBOX_URL to the empty string is still an explicit choice, and it is applied rather than replaced by the file. CHATBOX_CONFIG itself is read before the source, because it is what names the file.
 
 ### 0054
 
@@ -911,26 +922,32 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / bug / M3
 - **Location:** `chatbox-cli.sh:686`
 - **Title:** GET query strings are concatenated unencoded, so ids with a space or & break the request
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** chatbox-cli.sh:686 builds `_q="id=$ID"` and :692 `"id=${POS1:-$ID}"`; http_get/http_get_wait splice them raw into `${URL}${1}?${_q}` (151,159). Verified: `curl 'http://127.0.0.1:1/inbox?id=a b&all=1'` exits 3, 'URL rejected: Malformed input'. An `&` or `=` in --id silently rewrites the query instead. The header at line 17 claims 'All values are URL-encoded by curl ... spaces, quotes, & and newlines are safe'.
 
 WHY IT MATTERS: The server accepts ids containing spaces and & (validId rejects only control bytes), so a legitimate id makes inbox/thread/health fail with a bare curl exit code and no framed output - or quietly polls a different query. The client's own documented safety claim is false on every GET path.
 
 CONFIDENCE: high
 - **Fix:** Percent-encode every value before it enters a URL (a small `urlenc` helper), or POST these reads with --data-urlencode as the write paths already do.
+- **Evidence (after):** TEST (gate): with the stub transport, `inbox --id "a b&c"` records `id=a%20b%26c` in the URL where the pre-fix client pasted the value raw (curl exits 3, `URL rejected: Malformed input`, or the `&` starts a different parameter). Against a live fixture board the same id - `it cli <run> a&b`, which the server accepts because `validId` refuses only control bytes - is registered, receives two messages, and `chatbox inbox --id "it cli <run> a&b"` exits **0** with both bodies inside the frame. Section 51 pins the encoding at the stub and the end-to-end case at the board. Mutant `284-audit0055-rawurl` (an identity `urlenc`, i.e. the pre-fix pasting) is red at 1080 / 4. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.
+- **Commit:** `dfa7174`
+- **Notes:** `LC_ALL=C` (already set at the top for the case fold) is what makes the byte-wise loop exact: `?` is one byte, so a multi-byte character is encoded byte by byte, which is what the server's percent-decode expects. The four call sites are inbox, thread, threads and the watch loop; the token is no longer one of the values encoded here, because it is not in the query at all. `+` is encoded as `%2B` rather than left alone, which the server's decoder also accepts.
 
 ### 0056
 
 - **Severity / category / module:** S2 / logic / M3
 - **Location:** `chatbox-cli.sh:703`
 - **Title:** ack silently drops --all, then the server error names the flag the caller passed
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** chatbox-cli.sh:548 handles `--all` for every command, but the ack branch at :703 posts only id/message/thread. `chatbox ack --id X --all` therefore exits 2 with the server's 'error: pass message=<id>, thread=<id> or all=1' - an error naming the very flag that was given. The unknown-flag guard at :585 never sees it, because --all is a recognised flag.
 
 WHY IT MATTERS: The server supports all=1 on /ack (chatbox.swift:2139-2143) as the way to mark a whole inbox read, so the documented server capability is unreachable through the client, and the diagnostic misdirects the caller into re-checking a request that was well formed.
 
 CONFIDENCE: high
 - **Fix:** Add `[ -n "$ALL" ] && set -- "$@" --data-urlencode "all=1"` in the ack branch, or reject --all at parse time for commands that do not use it.
+- **Evidence (after):** TEST (gate): two unread messages are sent to a fixture session, then `chatbox ack --id <that session> --all` exits **0** and answers `ok acked 2 for ...`, and the next inbox answers `empty`. Before the fix the same command exited **2** with the server's `error: pass message=<id>, thread=<id> or all=1` - a refusal naming the flag the caller had passed, because the client parsed `--all` for every command and then posted only id/message/thread. The control in the same section is the ack with none of the three: it still exits 2 and still carries that line, so the fix did not turn every ack into a global one. Section 51 pins three checks plus the control; mutant `285-audit0056-noall` (the pre-fix one-liner) is red at 1081 / 3. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.
+- **Commit:** `dfa7174`
+- **Notes:** `all=1` is sent only when the flag was given, so the server's own precedence (message, then all, then thread) is unchanged and `--message` with `--all` still means the message. The help text already documented `ack --id <you> (--message <id> | --thread <id>)`; it now also names `--all`, which is the third form the server has always accepted. Follow-up 60b430e: the usage line now names `--all` as the third ack form (it listed only --message and --thread); the cells were frozen at dfa7174, whose client is identical but for that help line.
 
 ### 0057
 
