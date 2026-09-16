@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 36 | done: 59 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 34 | done: 61 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -63,9 +63,9 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0055](#0055) | S2 | M3 | `chatbox-cli.sh:686` | GET query strings are concatenated unencoded, so ids with a space or & break the request | bug | **DONE** | node1 | phase-B/M3-client |
 | [0056](#0056) | S2 | M3 | `chatbox-cli.sh:703` | ack silently drops --all, then the server error names the flag the caller passed | logic | **DONE** | node1 | phase-B/M3-client |
 | [0057](#0057) | S2 | M3 | `chatbox-cli.sh:775` | watch delivers the 1200-character inbox preview and then acks it | incomplete | **START** | node1 | phase-B/M3-client |
-| [0058](#0058) | S2 | M2 | `chatbox-mcp.swift:177` | Well-formed non-object JSON is reported as -32700 parse error instead of -32600 Invalid Request | bug | **START** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0058](#0058) | S2 | M2 | `chatbox-mcp.swift:177` | Well-formed non-object JSON is reported as -32700 parse error instead of -32600 Invalid Request | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0059](#0059) | S2 | M2 | `chatbox-mcp.swift:197` | notifications/cancelled is a no-op that can never be observed while a call blocks the read loop | incomplete | **START** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0060](#0060) | S2 | M2 | `chatbox-mcp.swift:91` | Tool schema declares additionalProperties:false but undeclared arguments are forwarded to the server | bug | **START** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0060](#0060) | S2 | M2 | `chatbox-mcp.swift:91` | Tool schema declares additionalProperties:false but undeclared arguments are forwarded to the server | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0061](#0061) | S2 | M1 | `chatbox.swift:1553` | Per-recipient N+1 queries on the send path; recipient count is bounded only by --max-body | perf | **START** | node1 | phase-B/L5-performance |
 | [0062](#0062) | S2 | M1 | `chatbox.swift:1654` | Boolean parameters are true for any non-empty value: all=0 includes read mail and json=0 emits JSON | logic | **DONE** | node1 | phase-B/L2-server-http |
 | [0063](#0063) | S2 | M1 | `chatbox.swift:1748` | Serial forward queue plus a 12 s semaphore wait holds one connection per queued federation forward | perf | **START** | node1 | phase-B/L5-performance |
@@ -980,13 +980,16 @@ CONFIDENCE: medium
 - **Severity / category / module:** S2 / bug / M2
 - **Location:** `chatbox-mcp.swift:177`
 - **Title:** Well-formed non-object JSON is reported as -32700 parse error instead of -32600 Invalid Request
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** The guard at lines 177-181 casts every line to [String: Any]; a valid JSON scalar, string or array (including a JSON-RPC 2.0 batch, which the advertised protocolVersion 2024-11-05 permits) fails the cast and emits fail(id: nil, code: -32700, "parse error") at line 179. JSON-RPC reserves -32700 for JSON that cannot be parsed; a well-formed root of the wrong type is -32600 Invalid Request.
 
 WHY IT MATTERS: A host that batches requests or sends any non-object frame gets a parse-error response it cannot correlate with a request id, instead of the Invalid Request the spec defines, so it cannot tell a malformed envelope from broken JSON.
 
 CONFIDENCE: medium
 - **Fix:** Separate JSONSerialization failure (-32700) from a valid root that is not an object (-32600), and either support arrays per the advertised version or reject them as Invalid Request explicitly.
+- **Evidence (after):** TEST (gate): the adapter under test driven over stdio. Before: every line whose root was not an object answered `-32700 parse error` with a null id, so a host could not tell a malformed envelope from broken JSON, and a top-level array (a JSON-RPC batch) was called unparseable. After: `not json` still answers -32700, while a top-level array, a JSON string root, a number and `null` answer **-32600 Invalid Request**; the JSON-RPC error text says a message is an object. Six checks in the MCP section pin it, mutant `289-audit0058-parseerror` (the single pre-fix branch) is red at 1091 passed / 3 failed, and the hand probe before the cell showed -32700 once and -32600 four times. Base cell GREEN at 1094 passed / 0 failed on e1f7e19 (chatbox.swift sha256 a0752d01a557ba1e); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0 for the adapter.
+- **Commit:** `e1f7e19`
+- **Notes:** `.fragmentsAllowed` is what makes a bare string, number or `null` root reach the type check at all: without it JSONSerialization refuses the fragment and a *well-formed* value would still be answered -32700 - the same defect in a smaller corner. Batching is deliberately **not** implemented: this adapter's documented transport is newline-delimited, one message per line (Architecture), and a JSON-RPC batch needs the replies collected into a single array, a shape this reply path does not have; the refusal is explicit and names the message as Invalid Request rather than pretending the batch was unparseable. Rejected alternative: emitting one response object per batch element on its own line - it would answer a batch with a stream the host did not ask for, which is the class of bug the notification checks already pin.
 
 ### 0059
 
@@ -1006,13 +1009,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / bug / M2
 - **Location:** `chatbox-mcp.swift:91`
 - **Title:** Tool schema declares additionalProperties:false but undeclared arguments are forwarded to the server
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** Tool.schema sets additionalProperties:false (line 91), yet handleToolCall copies every key of the arguments object into args (lines 151-157) and call() puts every non-empty value into the query (line 47). So say with arguments {from,repo,hop} reaches POST /message?from=..&repo=..&hop=.., a parameter no tool advertised; the same holds for all, json and any other server parameter.
 
 WHY IT MATTERS: The published tool contract and the implementation disagree. A host can drive server parameters the schema forbids (for example hop=, which suppresses forwarding, or all=), so the adapter is not the thin unprivileged pass-through it claims to be.
 
 CONFIDENCE: high
 - **Fix:** Drop or reject argument keys not listed in tool.properties before building the request, matching the declared schema.
+- **Evidence (after):** TEST (gate): `tools/call` for `say` with `arguments {"from":"it-x","hop":"board-a"}` answers `-32602 ``unknown argument 'hop' for say``` before any request is made, where the pre-fix adapter forwarded it as `POST /message?...&hop=board-a` - a server parameter no tool advertises, and one that suppresses federation forwarding. A call using only declared keys still reaches the board and answers `"isError":false` in the same run, so the guard did not break the tools. Six checks in the MCP section; mutant `290-audit0060-extraargs` (the guard removed) is red at 1092 passed / 2 failed. Base cell GREEN at 1094 passed / 0 failed on e1f7e19; relative cell GREEN, 0 false passes.
+- **Commit:** `e1f7e19`
+- **Notes:** Refused rather than silently dropped: a host that sends a key the schema forbids has a bug, and dropping the key would hide both the bug and the capability (`hop=` would look accepted and be ignored). The six tools' declared properties were checked tool by tool when the guard was added, so every argument the adapter legitimately builds - including `thread`, `reply_to`, `wait`, `all`, `json` - is declared; `json` is declared on `thread` and `peers`, which is where the adapter passes it through.
 
 ### 0061
 
