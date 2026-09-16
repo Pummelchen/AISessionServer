@@ -593,6 +593,15 @@ final class Store: @unchecked Sendable {
         Int(scalar(sql))
     }
 
+    /// Fold the write-ahead log back into the database file. Called on the way out, so a board that
+    /// is stopped leaves a database a plain `cp` can read - the `-wal` is exactly the file a copy
+    /// tool misses - and so the next start does not recover a log that grew for however long the
+    /// board ran. `TRUNCATE` leaves the log empty rather than merely checkpointed.
+    func checkpointWAL() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        exec("PRAGMA wal_checkpoint(TRUNCATE);")
+    }
+
     /// Rows changed by the most recent `run`. `last_insert_rowid` cannot answer this:
     /// an `INSERT … SELECT … WHERE` that matches nothing leaves it at the previous
     /// row's id, so a caller that needs to know whether the row was really stored has
@@ -1186,6 +1195,18 @@ final class Chatbox: @unchecked Sendable {
     /// Connections that have been accepted and not yet finished. Kept as identities rather than a
     /// count so a connection that reports both `failed` and `cancelled` cannot be subtracted twice.
     private var liveConnections = Set<ObjectIdentifier>()
+
+    /// Set when the process has been asked to stop. The answers that are *held* - a long poll, an
+    /// event stream - check it on their next tick, so a restart ends them with an answer instead of
+    /// a cut socket, and neither can outlive the process that promised to hold it.
+    private var shuttingDown = false
+
+    /// Called on the queue by the signal source, before the listener is cancelled and the log is
+    /// folded back into the database.
+    func requestShutdown() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        shuttingDown = true
+    }
 
     // ---------- presence ----------
     //
@@ -2126,6 +2147,12 @@ final class Chatbox: @unchecked Sendable {
     private func pollEvents(_ conn: NWConnection, last: BoardState, deadline: Date, nextKeepAlive: Date) {
         if case .cancelled = conn.state { return }
         if case .failed = conn.state { return }
+        if shuttingDown {
+            // The same `bye` the deadline sends, with the reason an operator would want: a stream that
+            // simply stopped at a restart reads like a crash.
+            sendEvent(conn, name: "bye", data: "{\"reason\":\"shutdown\"}") { conn.cancel() }
+            return
+        }
         let now = Date()
         if now >= deadline {
             // Sent through the same helper as every other frame, with the cancel in its completion so
@@ -2247,6 +2274,12 @@ final class Chatbox: @unchecked Sendable {
         // abandonment — see beginInboxWait.
         if case .cancelled = conn.state { return }
         if case .failed = conn.state { return }
+        if shuttingDown {
+            // A held poll cannot outlive the board: say so rather than let the socket be cut when the
+            // process exits, so the client can tell a stop from a network failure.
+            finish(req, conn: conn, status: 503, body: "error: the server is shutting down — start it again and ask once more\n")
+            return
+        }
 
         // Re-authorize every tick. A wait can last five minutes, and revoking a
         // credential has to end it rather than let it keep delivering.
@@ -3607,4 +3640,41 @@ listener.stateUpdateHandler = { state in
     }
 }
 listener.start(queue: server.queue)
+
+// A stop has to be a stop. `kill -TERM` (what a supervisor sends), `kill -INT` (Ctrl-C) and any
+// `pkill` all take this path: stop accepting, end the held answers, fold the write-ahead log back
+// into the database, leave a line saying so, and exit 0. Without it the process died where it stood,
+// so a client could not tell "not stored" from "stored but unanswered", a retry duplicated a report,
+// and the `-wal` was left for whoever read the file next.
+//
+// SIGHUP is *ignored* rather than handled: this board writes to the stderr its operator redirected,
+// so rotating that file is `copytruncate` and needs no signal. Dying on `kill -HUP` - which is what
+// logrotate sends by default - was an outage with nothing on the other side of it.
+//
+// `signal(..., SIG_IGN)` first: the dispatch source takes over delivery, and the default disposition
+// must not be able to fire in the window before it does.
+signal(SIGTERM, SIG_IGN)
+signal(SIGINT, SIG_IGN)
+signal(SIGHUP, SIG_IGN)
+let stopSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: server.queue)
+let stopSourceInt = DispatchSource.makeSignalSource(signal: SIGINT, queue: server.queue)
+let hupSource = DispatchSource.makeSignalSource(signal: SIGHUP, queue: server.queue)
+let shutdownHandler: @Sendable () -> Void = {
+    server.requestShutdown()
+    listener.cancel()
+    store.checkpointWAL()
+    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)
+    // The queue is serial, so everything already accepted has run by the time this runs; the held
+    // answers end on their own timers within half a second. This is the grace they get to leave.
+    server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+}
+stopSource.setEventHandler(handler: shutdownHandler)
+stopSourceInt.setEventHandler(handler: shutdownHandler)
+hupSource.setEventHandler {
+    FileHandle.standardError.write("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".data(using: .utf8)!)
+}
+stopSource.resume()
+stopSourceInt.resume()
+hupSource.resume()
+
 dispatchMain()

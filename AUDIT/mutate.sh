@@ -1143,6 +1143,83 @@ m('261-audit0043-splitrecipients',
 # refusal cannot end the record's line. Removing this leaves the refusal as the only defence.
 # AUDIT #0046: the scoped visibility rules must not scan messages/deliveries. This removes all three
 # indexes - the pre-fix schema.
+# AUDIT #0044: a stop has to be a stop. This is the pre-fix state: no signal is handled at all, so
+# SIGTERM kills the process where it stands and SIGHUP takes the board down.
+m('269-audit0044-nosignal',
+  r'''signal(SIGTERM, SIG_IGN)
+signal(SIGINT, SIG_IGN)
+signal(SIGHUP, SIG_IGN)
+let stopSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: server.queue)
+let stopSourceInt = DispatchSource.makeSignalSource(signal: SIGINT, queue: server.queue)
+let hupSource = DispatchSource.makeSignalSource(signal: SIGHUP, queue: server.queue)
+let shutdownHandler: @Sendable () -> Void = {
+    server.requestShutdown()
+    listener.cancel()
+    store.checkpointWAL()
+    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)
+    // The queue is serial, so everything already accepted has run by the time this runs; the held
+    // answers end on their own timers within half a second. This is the grace they get to leave.
+    server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+}
+stopSource.setEventHandler(handler: shutdownHandler)
+stopSourceInt.setEventHandler(handler: shutdownHandler)
+hupSource.setEventHandler {
+    FileHandle.standardError.write("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".data(using: .utf8)!)
+}
+stopSource.resume()
+stopSourceInt.resume()
+hupSource.resume()
+''',
+  r'''''')
+
+# AUDIT #0044: SIGHUP is what logrotate sends; the board must survive it. This keeps everything but
+# the SIGHUP handling.
+m('270-audit0044-nohupignore',
+  r'''signal(SIGTERM, SIG_IGN)
+signal(SIGINT, SIG_IGN)
+signal(SIGHUP, SIG_IGN)
+let stopSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: server.queue)
+let stopSourceInt = DispatchSource.makeSignalSource(signal: SIGINT, queue: server.queue)
+let hupSource = DispatchSource.makeSignalSource(signal: SIGHUP, queue: server.queue)
+let shutdownHandler: @Sendable () -> Void = {
+    server.requestShutdown()
+    listener.cancel()
+    store.checkpointWAL()
+    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)
+    // The queue is serial, so everything already accepted has run by the time this runs; the held
+    // answers end on their own timers within half a second. This is the grace they get to leave.
+    server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+}
+stopSource.setEventHandler(handler: shutdownHandler)
+stopSourceInt.setEventHandler(handler: shutdownHandler)
+hupSource.setEventHandler {
+    FileHandle.standardError.write("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".data(using: .utf8)!)
+}
+stopSource.resume()
+stopSourceInt.resume()
+hupSource.resume()''',
+  r'''signal(SIGTERM, SIG_IGN)
+signal(SIGINT, SIG_IGN)
+let stopSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: server.queue)
+let stopSourceInt = DispatchSource.makeSignalSource(signal: SIGINT, queue: server.queue)
+let shutdownHandler: @Sendable () -> Void = {
+    server.requestShutdown()
+    listener.cancel()
+    store.checkpointWAL()
+    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)
+    server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+}
+stopSource.setEventHandler(handler: shutdownHandler)
+stopSourceInt.setEventHandler(handler: shutdownHandler)
+stopSource.resume()
+stopSourceInt.resume()''')
+
+# AUDIT #0044: the log has to be folded back on the way out, or the stopped board leaves it behind.
+m('271-audit0044-nocheckpoint',
+  r'''    store.checkpointWAL()
+    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)''',
+  r'''    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended — exiting\n".data(using: .utf8)!)''')
+
 m('267-audit0046-noindex',
   '''        exec("CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender);")
         exec("CREATE INDEX IF NOT EXISTS idx_del_node ON deliveries(node, message_id);")

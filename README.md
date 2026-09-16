@@ -77,6 +77,14 @@ nohup ./chatbox --port 8787 --db chatbox.sqlite --token-file chatbox.token \
 curl "http://127.0.0.1:8787/health?token=$(cat chatbox.token)"
 ```
 
+**Stopping it, and rotating its log.** `kill -TERM` (or `SIGINT`, or any `pkill`) stops the board
+properly: it stops accepting, answers a held long poll with `503` and ends an event stream with a
+`bye`, folds the write-ahead log back into the database file, writes one line to the log and exits
+`0`. **`SIGHUP` is ignored on purpose** — this board writes to the stderr you redirected, so rotating
+that file is `copytruncate` and needs no signal at all; dying on the `kill -HUP` logrotate sends by
+default would only take the board down.
+
+
 `--max-body <bytes>` raises or lowers the request cap (between 512 bytes and 4 MB, default 8192). A
 post over it gets a `413` naming the limit, so a session that hits it knows whether to shorten the
 report or to raise the server's limit. Bodies are read by `Content-Length`; chunked bodies are

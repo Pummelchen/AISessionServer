@@ -5380,6 +5380,100 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 46. A stop is a stop
+# `kill -TERM` used to end the process where it stood: a held long poll and an event stream had their
+# sockets cut with no answer, a client could not tell "not stored" from "stored but unanswered" (so a
+# retry duplicated a report), and the write-ahead log was left for whoever read the file next.
+# `kill -HUP` - what logrotate sends by default - killed the board outright.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  sig46port="${CHATBOX_SIGNAL_PORT:-8790}"
+  sig46base="http://127.0.0.1:$sig46port"
+  sig46db="$SCRATCH/signal-${RUN}.sqlite"
+  sig46tok="$SCRATCH/signal-${RUN}.token"
+  sig46log="$SCRATCH/signal-${RUN}.log"
+  sig46pid2=""
+  rm -f "$sig46db" "$sig46db-wal" "$sig46db-shm"
+  printf '%s\n' "$TOKEN" > "$sig46tok"
+  chmod 600 "$sig46tok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$sig46port" --db "$sig46db" --token-file "$sig46tok" > "$sig46log" 2>&1 &
+  sig46pid=$!
+  sig46ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS --max-time 2 "$sig46base/health?token=$TOKEN" >/dev/null 2>&1; then sig46ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$sig46ready" = 1 ]; then
+    # Something in the write-ahead log, so the checkpoint has something to fold back.
+    curl -sS --max-time 10 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=it-$RUN-sig" --data-urlencode "node=n-sig" "$sig46base/register" >/dev/null
+    curl -sS --max-time 10 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "from=it-$RUN-sig" --data-urlencode "to=it-$RUN-sig-peer" \
+      --data-urlencode "body=sig-$RUN" "$sig46base/message" >/dev/null
+    sig46wal="$(wc -c < "$sig46db-wal" 2>/dev/null | tr -d ' ')"
+    if [ "${sig46wal:-0}" -gt 0 ]; then
+      ok "the stop fixture has a write-ahead log to fold back (${sig46wal} bytes)"
+    else
+      no "the stop fixture has a write-ahead log to fold back" "wal=${sig46wal:-absent}"
+    fi
+    # A held long poll and an event stream: the two answers a stop has to end rather than cut.
+    ( curl -sS -o "$SCRATCH/signal-poll-${RUN}.txt" -w '%{http_code}' --max-time 20 \
+        "$sig46base/inbox?id=it-$RUN-sig&wait=30&token=$TOKEN" > "$SCRATCH/signal-poll-${RUN}.code" 2>/dev/null ) &
+    sig46poll=$!
+    ( curl -sS -N --max-time 20 "$sig46base/events?max=30&token=$TOKEN" \
+        > "$SCRATCH/signal-sse-${RUN}.txt" 2>/dev/null ) &
+    sig46sse=$!
+    sleep 1
+    kill -TERM "$sig46pid" 2>/dev/null
+    wait "$sig46pid" 2>/dev/null; sig46rc=$?
+    equals "a stop exits cleanly" "$sig46rc" "0"
+    contains "and says so in the log" "$(tail -n 5 "$sig46log")" "shutdown:"
+    equals "a held long poll is answered rather than cut" "$(cat "$SCRATCH/signal-poll-${RUN}.code")" "503"
+    contains "with a line the client can act on" "$(cat "$SCRATCH/signal-poll-${RUN}.txt")" "shutting down"
+    equals "and an event stream ends with a bye" "$(grep -c 'event: bye' "$SCRATCH/signal-sse-${RUN}.txt")" "1"
+    contains "saying why" "$(cat "$SCRATCH/signal-sse-${RUN}.txt")" '"reason":"shutdown"'
+    equals "the write-ahead log is folded back into the database" \
+      "$(wc -c < "$sig46db-wal" 2>/dev/null | tr -d ' ')" "0"
+    wait "$sig46poll" "$sig46sse" 2>/dev/null
+
+    # The data has to still be there: a checkpoint that lost a committed write would be worse than
+    # leaving the log.
+    "$CHATBOX_BIN" --port "$sig46port" --db "$sig46db" --token-file "$sig46tok" > "$sig46log.2" 2>&1 &
+    sig46pid2=$!
+    sig46ready2=0
+    for _ in $(seq 1 50); do
+      if curl -fsS --max-time 2 "$sig46base/health?token=$TOKEN" >/dev/null 2>&1; then sig46ready2=1; break; fi
+      sleep 0.2
+    done
+    if [ "$sig46ready2" = 1 ]; then
+      equals "and a restarted board still has the message" \
+        "$(curl -sS --max-time 10 "$sig46base/inbox?id=it-$RUN-sig-peer&all=1&token=$TOKEN" | grep -c "sig-$RUN")" "1"
+      kill -HUP "$sig46pid2" 2>/dev/null
+      sleep 1
+      if kill -0 "$sig46pid2" 2>/dev/null; then
+        ok "a log-rotation signal does not take the board down"
+      else
+        no "a log-rotation signal does not take the board down" "the process died on SIGHUP"
+      fi
+      equals "and the board still answers" \
+        "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$sig46base/health?token=$TOKEN")" "200"
+      kill -TERM "$sig46pid2" 2>/dev/null
+      wait "$sig46pid2" 2>/dev/null
+    else
+      no "the board restarted on the folded database" "no answer on $sig46base"
+    fi
+  else
+    no "the stop fixture started" "no answer on $sig46base"
+  fi
+  kill "$sig46pid" "$sig46pid2" 2>/dev/null
+  wait "$sig46pid" "$sig46pid2" 2>/dev/null
+  rm -f "$sig46db" "$sig46db-wal" "$sig46db-shm" "$sig46tok" "$sig46log" "$sig46log.2" \
+        "$SCRATCH/signal-poll-${RUN}.txt" "$SCRATCH/signal-poll-${RUN}.code" "$SCRATCH/signal-sse-${RUN}.txt"
+else
+  printf '  skip  the stop path (needs CHATBOX_BIN)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
