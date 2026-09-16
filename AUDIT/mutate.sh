@@ -1141,6 +1141,21 @@ m('261-audit0043-splitrecipients',
 # AUDIT #0039: a request line carrying a control byte is refused, so no peer can write a log line.
 # AUDIT #0039: the log flattens what a peer supplied, so even a request line that got past the
 # refusal cannot end the record's line. Removing this leaves the refusal as the only defence.
+# AUDIT #0046: the scoped visibility rules must not scan messages/deliveries. This removes all three
+# indexes - the pre-fix schema.
+m('267-audit0046-noindex',
+  '''        exec("CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender);")
+        exec("CREATE INDEX IF NOT EXISTS idx_del_node ON deliveries(node, message_id);")
+        exec("CREATE INDEX IF NOT EXISTS idx_agents_node ON agents(node);")
+''',
+  '''''')
+
+# AUDIT #0046: `deliveries` is the table that grows without bound, so its index is pinned on its own.
+m('268-audit0046-nodelindex',
+  '''        exec("CREATE INDEX IF NOT EXISTS idx_del_node ON deliveries(node, message_id);")
+''',
+  '''''')
+
 m('266-audit0039-noflatten',
   r'''        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)''',
   r'''        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(req.method) \(req.path) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)''')

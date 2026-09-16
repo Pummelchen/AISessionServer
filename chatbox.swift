@@ -520,6 +520,14 @@ final class Store: @unchecked Sendable {
         // sort comes back.
         exec("CREATE INDEX IF NOT EXISTS idx_threads_last_at ON threads(last_at DESC);")
         exec("CREATE INDEX IF NOT EXISTS idx_threads_repo_last ON threads(repo, last_at DESC);")
+        // The scoped visibility rules ask "which conversations does this machine take part in?" by
+        // looking for its sessions' messages and for its delivery rows. Without these the answer is a
+        // scan of `messages` and of `deliveries` - the fastest-growing table on the board - and every
+        // scoped request (a thread, a reply, the listing, the registry) pays for it on the serial
+        // queue. `idx_del_node` leads with the node because that is what the rule filters on.
+        exec("CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender);")
+        exec("CREATE INDEX IF NOT EXISTS idx_del_node ON deliveries(node, message_id);")
+        exec("CREATE INDEX IF NOT EXISTS idx_agents_node ON agents(node);")
     }
 
     func exec(_ sql: String) {

@@ -5321,6 +5321,65 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 45. Scoped visibility is answered by indexes, not by scanning the board
+# "Which conversations does this machine take part in?" is asked by every scoped read - a thread, a
+# reply, the conversation list, the registry - and answered from `messages.sender` and
+# `deliveries.node`. Neither had an index, so each scoped request scanned both tables: `deliveries`
+# is the fastest-growing table on the board, and the cost rose with the board's history on the queue
+# every request shares.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  sc45port="${CHATBOX_SCOPE_INDEX_PORT:-8799}"
+  sc45db="$SCRATCH/scope-index-${RUN}.sqlite"
+  sc45tok="$SCRATCH/scope-index-${RUN}.token"
+  rm -f "$sc45db" "$sc45db-wal" "$sc45db-shm"
+  printf '%s\n' "$TOKEN" > "$sc45tok"
+  chmod 600 "$sc45tok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$sc45port" --db "$sc45db" --token-file "$sc45tok" \
+    > "$SCRATCH/scope-index-${RUN}.log" 2>&1 &
+  sc45pid=$!
+  sc45ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:$sc45port/health?token=$TOKEN" >/dev/null 2>&1; then sc45ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$sc45ready" = 1 ]; then
+    # Enough rows that the planner has a reason to prefer an index, written straight into the
+    # database: the question is what the plan looks like, not what the API answers.
+    sqlite3 "$sc45db" "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<2000)
+      INSERT INTO agents (id,node,agent,repos,registered_at,last_seen)
+      SELECT 'a-'||i,'node-'||(i%10),'dsh','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM c;" >/dev/null 2>&1
+    sqlite3 "$sc45db" "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<2000)
+      INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,reply_to,recipients,origin)
+      SELECT i%100,'2026-01-01T00:00:00Z','a-'||(i%2000),'','s','b',0,'','' FROM c;" >/dev/null 2>&1
+    sqlite3 "$sc45db" "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<2000)
+      INSERT INTO deliveries (message_id,agent,created_at,acked_at,node)
+      SELECT i,'a-'||(i%2000),'2026-01-01T00:00:00Z','','node-'||(i%10) FROM c;" >/dev/null 2>&1
+
+    sc45_part="SELECT 1 FROM messages m WHERE m.thread_id = 7 AND (m.sender IN (SELECT id FROM agents WHERE node='node-3') OR m.id IN (SELECT d.message_id FROM deliveries d WHERE d.node='node-3')) LIMIT 1"
+    sc45_plan="$(sqlite3 "$sc45db" "EXPLAIN QUERY PLAN $sc45_part")"
+    equals "a scoped participation check does not scan the messages table" \
+      "$(printf '%s\n' "$sc45_plan" | grep -c -e 'SCAN m')" "0"
+    equals "and does not scan the deliveries table" \
+      "$(printf '%s\n' "$sc45_plan" | grep -c -e 'SCAN d')" "0"
+    contains "because the delivery's machine is indexed" "$sc45_plan" "idx_del_node"
+
+    sc45_peers="SELECT a.id FROM agents a WHERE a.node = 'node-3' OR a.id IN (SELECT m.sender FROM messages m WHERE m.thread_id IN (SELECT m.thread_id FROM messages m WHERE m.sender IN (SELECT id FROM agents WHERE node = 'node-3') OR m.id IN (SELECT d.message_id FROM deliveries d WHERE d.node = 'node-3'))) OR a.id IN (SELECT d.agent FROM deliveries d WHERE d.message_id IN (SELECT m.id FROM messages m WHERE m.thread_id IN (SELECT m.thread_id FROM messages m WHERE m.sender IN (SELECT id FROM agents WHERE node = 'node-3') OR m.id IN (SELECT d.message_id FROM deliveries d WHERE d.node = 'node-3')))) ORDER BY a.id LIMIT 10"
+    sc45_pplan="$(sqlite3 "$sc45db" "EXPLAIN QUERY PLAN $sc45_peers")"
+    equals "and the scoped registry listing scans neither table either" \
+      "$(printf '%s\n' "$sc45_pplan" | grep -c -e 'SCAN m' -e 'SCAN d')" "0"
+    contains "finding a machine's own sessions by index" "$sc45_pplan" "idx_msg_sender"
+  else
+    no "the scoped-index fixture started" "no answer on $sc45port"
+  fi
+  kill "$sc45pid" 2>/dev/null
+  wait "$sc45pid" 2>/dev/null
+  rm -f "$sc45db" "$sc45db-wal" "$sc45db-shm" "$sc45tok"
+else
+  printf '  skip  the scoped index plans (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
