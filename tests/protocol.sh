@@ -4295,6 +4295,24 @@ if [ -x "$mcp_bin" ]; then
   contains "an unparseable line is still answered with a null id" \
     "$(printf 'not json\n' | mcp_session)" '"id":null'
 
+  # -32700 is JSON that cannot be parsed; a well-formed root of another type is -32600 Invalid
+  # Request. Both used to answer "parse error" with a null id, so a host could not tell a broken
+  # envelope from broken JSON - and a JSON-RPC batch, a top-level array, was called unparseable.
+  contains "JSON that cannot be parsed is -32700" \
+    "$(printf 'not json\n' | mcp_session)" '"code":-32700'
+  contains "a well-formed root that is not an object is -32600" \
+    "$(printf '[{"jsonrpc":"2.0","id":1,"method":"ping"}]\n' | mcp_session)" '"code":-32600'
+  contains "and so is a JSON string root" \
+    "$(printf '"hello"\n' | mcp_session)" '"code":-32600'
+  lacks "while neither of them is called a parse error" \
+    "$(printf '"hello"\n' | mcp_session)" '"code":-32700'
+  # The published schema says `additionalProperties: false`. An undeclared argument used to be
+  # forwarded as a server parameter no tool advertises - `hop=` suppresses federation forwarding -
+  # so the contract and the implementation disagreed.
+  mcp_extra="$(mcp_say '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"say","arguments":{"from":"it-x","hop":"board-a"}}}')"
+  contains "an argument the schema does not declare is refused" "$mcp_extra" '"code":-32602'
+  contains "and the refusal names it" "$mcp_extra" "unknown argument 'hop'"
+
   # Peer text must reach the model inside the frame, exactly as it does through the shell client.
   # This relay is where a peer's words become a model's tool output, so an unframed read is an
   # injection path: one message to this session can carry "ignore previous instructions" and the

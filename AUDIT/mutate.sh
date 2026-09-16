@@ -1313,6 +1313,22 @@ EOF
 # AUDIT #0007: no UTF-8 conversion is force-unwrapped. The pin has to be textual - `Data(s.utf8)` and
 # `s.data(using: .utf8)!` are the same program once compiled, so no behaviour can tell them apart -
 # and this cell puts one site back in the source the harness names in CHATBOX_SRC.
+# AUDIT #0058: a well-formed root that is not an object is -32600, not -32700. This is the
+# pre-fix answer for every one of them (the code had a single "parse error" branch).
+m('289-audit0058-parseerror',
+  r'''            fail(id: nil, code: -32600, "Invalid Request: a JSON-RPC message is an object")''',
+  r'''            fail(id: nil, code: -32700, "parse error")''', target='mcp')
+
+# AUDIT #0060: an argument the tool schema does not declare is refused, not forwarded. Removing the
+# guard forwards `hop=` (and anything else) to the server, which is what the finding is about.
+m('290-audit0060-extraargs',
+  r'''            guard declared.contains(k) else {
+                fail(id: id, code: -32602, "unknown argument '\(k)' for \(name)")
+                return
+            }
+''',
+  r'''''', target='mcp')
+
 m('288-audit0007-forceunwrap',
   r'''            FileHandle.standardError.write(Data("chatbox: '\(name)' needs a value\n".utf8))''',
   r'''            FileHandle.standardError.write("chatbox: '\(name)' needs a value\n".data(using: .utf8)!)''')

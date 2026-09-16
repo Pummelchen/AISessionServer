@@ -250,7 +250,16 @@ func handleToolCall(_ id: Any?, _ params: [String: Any]) {
     }
     var args: [String: String] = [:]
     if let raw = params["arguments"] as? [String: Any] {
+        let declared = Set(tool.properties.map { $0.0 })
         for (k, v) in raw {
+            // The published schema says `additionalProperties: false`. Forwarding an undeclared key
+            // anyway let a host drive server parameters no tool advertises - `hop=` suppresses
+            // federation forwarding, and `all=` is not part of `say` - so the contract and the
+            // implementation disagreed. Refused by name, as Invalid params.
+            guard declared.contains(k) else {
+                fail(id: id, code: -32602, "unknown argument '\(k)' for \(name)")
+                return
+            }
             if let s = v as? String { args[k] = s }
             else if let n = v as? NSNumber { args[k] = n.stringValue }
         }
@@ -275,9 +284,23 @@ note("chatbox-mcp: forwarding to \(configURL)")
 while let line = readLine(strippingNewline: true) {
     let trimmed = line.trimmingCharacters(in: .whitespaces)
     if trimmed.isEmpty { continue }
-    guard let data = trimmed.data(using: .utf8),
-          let message = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+    guard let data = trimmed.data(using: .utf8) else {
         fail(id: nil, code: -32700, "parse error")
+        continue
+    }
+    let parsed = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+    guard let message = parsed as? [String: Any] else {
+        // JSON-RPC reserves -32700 for text that is not JSON at all; a well-formed root of another
+        // type is `-32600 Invalid Request`. Both used to answer "parse error" with a null id, so a
+        // host could not tell a broken envelope from broken JSON. A top-level array - a JSON-RPC
+        // batch - is refused here rather than processed: this adapter answers one message per line,
+        // and a batch needs its replies collected into a single array, a shape this stream does not
+        // have. The refusal is explicit and says which of the two it is.
+        if parsed == nil {
+            fail(id: nil, code: -32700, "parse error")
+        } else {
+            fail(id: nil, code: -32600, "Invalid Request: a JSON-RPC message is an object")
+        }
         continue
     }
     let id = message["id"]
