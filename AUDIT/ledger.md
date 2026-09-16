@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 50 | done: 43 | blocked: 0 | total: 93** (S0 7, S1 31, S2 48, S3 7)
+**Open: 48 | done: 47 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -67,7 +67,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0059](#0059) | S2 | M2 | `chatbox-mcp.swift:197` | notifications/cancelled is a no-op that can never be observed while a call blocks the read loop | incomplete | **START** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0060](#0060) | S2 | M2 | `chatbox-mcp.swift:91` | Tool schema declares additionalProperties:false but undeclared arguments are forwarded to the server | bug | **START** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0061](#0061) | S2 | M1 | `chatbox.swift:1553` | Per-recipient N+1 queries on the send path; recipient count is bounded only by --max-body | perf | **START** | node1 | phase-B/L5-performance |
-| [0062](#0062) | S2 | M1 | `chatbox.swift:1654` | Boolean parameters are true for any non-empty value: all=0 includes read mail and json=0 emits JSON | logic | **START** | node1 | phase-B/L2-server-http |
+| [0062](#0062) | S2 | M1 | `chatbox.swift:1654` | Boolean parameters are true for any non-empty value: all=0 includes read mail and json=0 emits JSON | logic | **DONE** | node1 | phase-B/L2-server-http |
 | [0063](#0063) | S2 | M1 | `chatbox.swift:1748` | Serial forward queue plus a 12 s semaphore wait holds one connection per queued federation forward | perf | **START** | node1 | phase-B/L5-performance |
 | [0064](#0064) | S2 | M1 | `chatbox.swift:1752` | Federation forward buffers the peer's entire response body with no size cap | unsafe | **START** | node1 | phase-B/L2-server-http |
 | [0065](#0065) | S2 | M1 | `chatbox.swift:1773` | Any 2xx from the peer is reported as a delivery without checking the peer is a chatbox board | bug | **START** | node1 | phase-B/L2-server-http |
@@ -77,7 +77,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **START** | node1 | phase-B/L7-ops |
 | [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **START** | node1 | phase-B/L2-server-core |
 | [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **START** | node1 | phase-B/L4-security |
-| [0072](#0072) | S2 | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **START** | node1 | phase-B/L4-security |
+| [0072](#0072) | S2 | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0073](#0073) | S2 | M1 | `chatbox.swift:449` | Store.exec ignores every SQLite error, and the db-open refusal drops the cause | incomplete | **START** | node1 | phase-B/L7-ops |
 | [0074](#0074) | S2 | M1 | `chatbox.swift:460` | Stored text is silently truncated at an embedded NUL byte | bug | **START** | node1 | phase-B/L2-server-core |
 | [0075](#0075) | S2 | M1 | `chatbox.swift:499` | Store.scalar returns an arbitrary column via Dictionary.values.first | logic | **START** | node1 | phase-B/L3-line-level |
@@ -92,10 +92,11 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0084](#0084) | S2 | M4 | `tests/protocol.sh:3748` | The /events max= ceiling is never exercised | test | **START** | node1 | phase-B/L6-tests |
 | [0085](#0085) | S2 | M4 | `tests/protocol.sh:395` | /token?json=1 secret check is vacuous: the JSON form is never asserted | test | **START** | node1 | phase-B/L6-tests |
 | [0086](#0086) | S2 | M4 | `tests/protocol.sh:3967` | fed_refuse decides "refused" with a fixed sleep and never checks the exit status | test | **START** | node1 | phase-B/L6-tests |
-| [0090](#0090) | S2 | M1 | `chatbox.swift:2279` | GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1] | bug | **START** | node1 | audit/0034 follow-up |
+| [0090](#0090) | S2 | M1 | `chatbox.swift:2279` | GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1] | bug | **DONE** | node1 | audit/0034 follow-up |
 | [0091](#0091) | S2 | M1 | `AUDIT/mutate.sh` | The mutation matrix silently skips cells whose anchor no longer matches the code, and cannot be reproduced from a clone | test | **DONE** | node1 | audit/0034 run |
 | [0092](#0092) | S2 | M5 | `.github/workflows/ci.yml:45` | CI builds with -O only, so the audit build standard is not enforced and can regress silently | test | **DONE** | node1 | audit/0001 closure |
 | [0093](#0093) | S2 | M8 | `(repository state)` | The audit branch was reconciled with nine commits that landed on main while it ran | deps | **DONE** | node1 | main moved during the audit |
+| [0094](#0094) | S2 | M4 | `tests/protocol.sh:1515,4471` | Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board | test | **DONE** | node1 | new-this-session (the audit/0062 verification run) |
 | [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
 | [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **START** | node1 | phase-A |
 | [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **START** | node1 | L0 secret-scan triage |
@@ -103,6 +104,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0087](#0087) | S3 | repo | `.github/traffic.json:4` | Canned view count served as the live 'Views (14d)' README badge | placeholder | **START** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0088](#0088) | S3 | M1 | `chatbox.swift:1617` | Local `who` shadows the Principal parameter in message() | style | **START** | node1 | phase-B/L3-line-level |
 | [0089](#0089) | S3 | M1 | `chatbox.swift:260` | The '?' element of the repo-key character check is unreachable | dead | **START** | node1 | phase-B/L3-line-level |
+| [0095](#0095) | S3 | M4 | `tests/protocol.sh (every fixture section)` | A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port | test | **START** | node1 | new-this-session (the audit/0090 matrix base cell) |
 
 ## Task detail
 
@@ -1000,13 +1002,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / logic / M1
 - **Location:** `chatbox.swift:1654`
 - **Title:** Boolean parameters are true for any non-empty value: all=0 includes read mail and json=0 emits JSON
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** includeAcked is computed as `!req.p("all").isEmpty` (1654, and again 1665, 2040) and the JSON switch as `!req.p("json").isEmpty` (1655, 1672, 2069, 2110, 2171, 2267). So all=0, all=false and json=0 select the 'on' behaviour. Only wait= is parsed numerically (waitSeconds 1951-1953).
 
 WHY IT MATTERS: A caller or script that passes all=0 expecting unread-only silently receives already-read mail, and json=0 silently changes the response format, breaking a text parser; both are documented as 1/off-by-omission flags.
 
 CONFIDENCE: high
 - **Fix:** Parse the value (accept 1/true/yes) or at least treat 0/false as off, and reject anything else with 400 so a typo cannot flip behaviour silently.
+- **Evidence (after):** TEST (gate): a fixture with two unread messages in two conversations on one scoped board. Before: `POST /ack?id=B&all=0&thread=T1` answered `ok acked 2 for B` and left the unread inbox empty - a caller asking about one conversation had its whole inbox marked read - `GET /inbox?id=B&all=0` matched 2 where the default matched 1, and `GET /inbox?id=B&json=0` answered the JSON object. After: the ack answers `ok acked 1 for B`, the second conversation is still unread (1), `all=0` matches 1 and `all=1` matches 2, and `json=0` answers `inbox for it-...-fl-b` with no `matching` key. Section 48 pins eight checks, including a fixture proof that both deliveries exist and that they are two separate conversations. Mutant `278-audit0062-anyvalue` (the old reading, put back in one place) is red at 1058 passed / 5 failed - the ack count, the still-unread count, the all=0 and all=1 counts and the json=0 form; the cells whose fragments contained the old spellings (`19-ackonwait`, `175-trk30-jsonflat`, `190-trk16-flatthreads`) were re-anchored, because a stale fragment aborts the matrix. Base cell GREEN at 1063 passed / 0 failed on 656f78e (chatbox.swift sha256 58439e0f7810dab9); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.
+- **Commit:** `e94b940`
+- **Notes:** Considered and rejected: reject an unrecognised value with 400 (what this task's START proposed). The documented flags are presence and `1`, and the dangerous direction is the one fixed here - `0`/`false`/`no`/`off` now mean off - while a 400 would turn a caller that spells it `all=yes` or `all=true` into a failure where it used to work. `Request.flag(_:)` is the single reading for all nine call sites, so a future site cannot pick the old one up by accident.
 
 ### 0063
 
@@ -1130,13 +1135,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / unsafe / M1
 - **Location:** `chatbox.swift:387`
 - **Title:** Server-created database, WAL and backups are world-readable (0644)
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** Store.init uses sqlite3_open (387), which creates files with SQLite's default 0644, and nothing chmods path, the -wal or the -shm. The checkout's own chatbox.sqlite, chatbox.sqlite-wal and chatbox.sqlite.bak-20260913-211112 are all `-rw-r--r--`, while README:74 tells operators to chmod 600 the token. --backup's `VACUUM INTO ?` (2910-2914) creates the copy the same way, and the README server quick start (README:71-79) sets no umask.
 
 WHY IT MATTERS: On any shared host, every local user can read all plain-text reports, the registry and the credential hashes (and copy the WAL); backups carry the same data to wherever they are copied. The per-machine credential boundary means nothing if the board file itself is readable.
 
 CONFIDENCE: high
 - **Fix:** Create the board 0600: chmod the DB path after sqlite3_open and the destination after VACUUM INTO, or set umask 077 before opening. Document the expected modes and refuse to serve a group/world-readable board (or at least warn).
+- **Evidence (after):** TEST (gate): a board started on a fresh path has `chatbox-... .sqlite` and its `-wal` at 600 (before: 644, and the WAL is the same history until it is folded back); a database chmodded to 644 - proved at 644 first - is served at 600 after a restart and the start says `chatbox: tightened <path> from mode 644 to 600`; and `--backup` writes its copy at 600 (VACUUM INTO does not go through SQLite's file creation). Section 50 pins six checks. Mutants `279-audit0072-umask` (the umask back to 022 - the database is chmodded, so the WAL and the backup are what go red: 1060 passed / 3 failed) and `280-audit0072-nochmod` (the already-existing database is inherited rather than tightened: 1061 / 2) are red; base cell GREEN at 1063 passed / 0 failed on 656f78e (chatbox.swift sha256 58439e0f7810dab9); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.
+- **Commit:** `1a46021`
+- **Notes:** The umask is set before `checkArguments`, i.e. before any file this process creates - a rejected command line also creates nothing world-readable. `Store.init` skips the chmod for a read-only open (`--prune-dry-run`), which is the one mode that must not touch the file; the destination of `--backup` is covered by the umask, and `--verify-backup` only reads. A group-readable board is not refused, deliberately: the process cannot know whether the deployment means to share it, and changing the mode of every start is the larger surprise; the log line makes the tightening visible instead.
 
 ### 0073
 
@@ -1325,13 +1333,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / bug / M1
 - **Location:** `chatbox.swift:2279`
 - **Title:** GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1]
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** `listThreads` returns `(200, "no threads yet\n")` at 2279 when the scoped listing is empty, and `listTokens` returns `(200, "no credentials issued\n")` at 2442 - both *before* the `if !req.p("json").isEmpty` branch that follows them. A caller that asked for JSON gets `no threads yet` and a JSON parse error; `/inbox` is the other way round on purpose and says so in a comment at 1806-1810 ('The JSON form still answers JSON'), and `/peers` answers JSON unconditionally. The `/ui` page happens to survive because it wraps `JSON.parse` in a try/catch and shows an empty board, so the failure is silent there; any other client sees a parse error rather than an empty list.
 
 WHY IT MATTERS: `json=1` is the machine-readable contract of every listing route. A route that answers prose on an empty result makes 'empty' look like 'broken' to its callers, and it is the state a scoped credential is in most often.
 
 CONFIDENCE: high
 - **Fix:** Move the `req.p("json")` check above the empty-result return in both routes and answer `jsonRows([], key:, matching: 0)` for `json=1`, keeping the one-line prose answer for the human form; add suite checks that an empty scoped listing answers parseable JSON with `shown` and `matching` both 0.
+- **Evidence (after):** TEST (gate): on a board with nothing on it, `GET /threads?json=1` and `GET /token?json=1` answered `no threads yet` / `no credentials issued` before and answer `{"shown": 0, "matching": 0, "threads": []}` / `{"shown": 0, "matching": 0, "tokens": []}` after; the text forms still answer the sentence. A second fixture holds one conversation and a credential scoped to a machine that is in none: the bootstrap listing matches 1, proving the conversation exists, while the scoped `GET /threads?json=1` answers the empty JSON object instead of prose - the case the finding is about. Section 49 pins twelve checks. Mutants `277-audit0090-jsonprose` (red at 1057 passed / 6 failed: both empty object checks, the prose check, the matching count and the two scoped checks) and `281-audit0090-tokenprose` (red at 1061 / 2: the empty credential listing and its prose check) put each branch back and are both red; base cell GREEN at 1063 passed / 0 failed on 656f78e (chatbox.swift sha256 58439e0f7810dab9); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.
+- **Commit:** `0699fa0`
+- **Notes:** The two routes were fixed together because they are the same bug in the same shape; the mutant list keeps them separable, one cell per route. `json=1` on a *non-empty* listing was already correct, so the check that the text form is unchanged is there to prove the fix moved the emptiness branch rather than the format switch. Follow-up `656f78e`: the first cut of the section-49 check asserted on `"$js49 send"` where the variable it assigned is `js49_sent`, so under `set -u` the suite exited at that line and the three scoped-listing checks - the ones this task exists for - never ran; the matrix run's base cell caught it before any mutant was measured, and the orphaned fixture it left behind is recorded as #0095.
 
 ### 0091
 
@@ -1380,6 +1391,20 @@ AUDIT (gate): re-read cold. The new step compiles nothing twice into the artifac
 - **Evidence (after):** The base cell and the relative-path cell were re-run on the merged tree and are GREEN (base 1027 passed / 0 failed, 0 false passes), both binaries still typecheck 0/0 under the audit flags, and `sh -n`/`dash -n`/shellcheck are unchanged. Matrix cell 231 (`231-audit0017-nourl`, which restores the tailnet fallback) was re-pointed at the loopback default and is red on four checks. CI (`35131154108`) and CodeQL (`35131157602`) were dispatched from the merged revision and both **succeeded** after a 35-minute queue wait; the run ids and conclusions are recorded in `AUDIT/environment.md`.
 - **Commit:** `816c5d2`
 - **Notes:** Merging main *into* the audit branch is not the merge the brief gates (that one is the PR into main after Phase E), and it is what makes Phase E meaningful: a fresh clone of a branch based on a stale `971faae` would verify a tree that can no longer be merged.
+
+### 0094
+
+- **Severity / category / module:** S2 / test / M4
+- **Location:** `tests/protocol.sh:1515,4471`
+- **Title:** Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board
+- **Status:** DONE
+- **Evidence (before):** `fed_refuse` (section 38) and the negative-`--stale-after` check (section 29) started the binary, slept exactly one second and asked `kill -0` whether it was still there. In one full suite run on node1 two refusals - `--peer=` and `--peer http://alice:s3cret@127.0.0.1:1` - were reported as `it started anyway: chatbox: --peer needs a board URL - refusing to start with a peer that names nothing`, while the check that reads the same log and looks for the refusal phrase passed immediately afterwards. Both invocations exit 2 in 0.06-0.10 s in isolation (25/25 runs, and 30/30 with six CPU burners running), so the product was right and the check was wrong: a process that has ended but has not yet been reaped answers `kill -0` exactly like a live one, and one flat second is not evidence that it has left.
+
+WHY IT MATTERS: a check that can fail on a busy machine is a check whose red is not evidence - it hides a real regression among the noise, and in the mutation matrix a spuriously red cell is indistinguishable from the red that proves a false pass was caught.
+- **Fix:** Both checks poll for the exit in the same 30 x 0.1 s window the other startup-refusal fixtures already use (section 42 `badstart`, section 35, section 46) and fail only if the process is still there after it. The assertion is unchanged: a board that really started outlives any three-second window. The normal path is now 0.1 s instead of a flat 1 s.
+- **Evidence (after):** TEST: the two refusals were reproduced 25 times in isolation and 30 times under six concurrent CPU burners - exit 2 every time, no `started anyway`. The full suite on the frozen revision 656f78e (chatbox.swift sha256 58439e0f7810dab9) is GREEN at 1063 passed / 0 failed (the base cell of the mutation run for the audit/0062 batch), and both hardened checks run in it. Not weakened: the liveness assertion, the log-phrase assertion and the pass/fail boundary are identical, only the wait for the process to leave is longer and adaptive.
+- **Commit:** `93518cb`
+- **Notes:** Why not a longer flat sleep: the property is that the process *ended*, and no sleep length is evidence of that - only waiting for the exit is. Why not `wait`: it blocks for ever when the refusal did not happen, which is exactly the case the check exists to catch. The two checks were the only flat-sleep refusals in the suite; the other `kill -0` uses are positive liveness probes whose fixture is proved again by the work that follows them.
 
 ### 0011
 
@@ -1458,6 +1483,17 @@ WHY IT MATTERS: The documented rule that a '?' is not a usable key character is 
 
 CONFIDENCE: high
 - **Fix:** Either drop '?' from the list (and let the strip stand, documenting the truncation) or check for the character before the strip so the documented refusal is real; keep the client and server rules identical either way.
+
+### 0095
+
+- **Severity / category / module:** S3 / test / M4
+- **Location:** `tests/protocol.sh (every fixture section)`
+- **Title:** A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port
+- **Status:** START
+- **Evidence (before):** Section 49's fixture was started and then the suite exited at the next line (a `set -u` unbound variable in the check, fixed in 656f78e), so the `kill "$js49pid"` that ends the section never ran and the server kept listening on 8777. The next full run's section 49 could not bind 8777 and reported `FAIL the json fixture started - no answer on http://127.0.0.1:8777`, which reads as a product failure; `lsof` showed `tests/.scratch/mut/base --port 8777 --db .../json-t64129.*.sqlite`, an orphan of the previous run. Nothing in the suite checks that the ports it is about to use are free, and every fixture section has the same shape: the cleanup is at the end of the section, so any early exit (a `set -u` abort, an interrupt, a killed run) leaves one server per section it had reached.
+
+WHY IT MATTERS: a runner that reports 'no answer' for a port somebody else holds sends the next person after the wrong bug - here it cost a full suite run before the orphan was found - and in CI a leaked fixture turns one failure into a run that keeps failing on every retry.
+- **Fix:** To be fixed with #0010 (suite hygiene): probe the suite's fixture ports before the first section and stop with a diagnostic that names the port and says a previous run may have left a fixture behind, rather than letting each section report its own 'no answer'; and kill the fixtures on exit (a trap over the pids the sections already track) so an aborted run cleans up after itself.
 
 ## Destructive or system-changing operations (command + rollback, logged before running)
 
