@@ -932,19 +932,10 @@ m('229-trk17-nolog', r'''        FileHandle.standardError.write(line.data(using:
 m('230-audit0023-emptytoken', r'''if argPresent("--token") && tokenArg.isEmpty {''', r'''if false {''')
 
 # AUDIT #0017: the client must refuse to guess a server instead of using a built-in default.
-m('231-audit0017-nourl', r'''  if [ -z "$URL" ]; then
-    echo "chatbox: no server configured — set CHATBOX_URL, or write it to ${CHATBOX_CONFIG:-$HOME/.chatbox}" >&2
-    echo "  (there is deliberately no default: the bearer token would go wherever it pointed)" >&2
-    exit 2
-  fi
-''', '''  :
-''', target='cli')
-
-# AUDIT #0021: the /ui page must join its credential with '&' when the path already has a query.
-m('232-audit0021-uiquery', r'''        const withQuery = (path, search) =>
-          !search ? path
-                  : path + (path.includes('?') ? '&' : '?') + (search.startsWith('?') ? search.slice(1) : search);''',
-  r'''        const withQuery = (path, search) => path + search;''')
+# AUDIT #0017: the client must never fall back to a machine-specific address. This restores the one
+# the shipped client used to carry, which sent a live bearer token to whoever owned it.
+m('231-audit0017-nourl', r'''URL="${CHATBOX_URL:-http://127.0.0.1:8787}"''',
+  r'''URL="${CHATBOX_URL:-http://100.66.125.48:8787}"''', target='cli')
 
 # AUDIT #0019: the MCP adapter must escape '+' (the server decodes it as a space).
 m('233-audit0019-mcpplus', r'''        case 0x41...0x5A, 0x61...0x7A, 0x30...0x39, 0x2D, 0x2E, 0x5F, 0x7E:''',

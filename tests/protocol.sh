@@ -4860,27 +4860,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 35. The client refuses to guess which server to talk to
+# 35. The client's default is loopback, and only loopback
 # CHATBOX_URL used to default to one specific private address, so a shell that exported only
-# CHATBOX_TOKEN sent a live bearer token to whoever that address belonged to. There is no default
-# now: a command that needs the network says what to configure, while `help` (and `repo`, which
-# only reads git remotes) still work with nothing configured.
+# CHATBOX_TOKEN sent a live bearer token to whoever that address belonged to. The default is now
+# 127.0.0.1 - the one address that cannot carry the token to another machine - and every other
+# machine names its server in ~/.chatbox. The check runs the client with a *stub* `curl` on PATH that
+# records what it was asked to fetch and then fails the way an unreachable server does: the real
+# thing must never be aimed at whatever happens to be listening on the production default port.
 # ---------------------------------------------------------------------------
 if [ -f "$CLI" ]; then
-  nourl_log="$SCRATCH/client-nourl-${RUN}.log"
+  nourl_dir="$SCRATCH/client-nourl-${RUN}"
+  nourl_args="$SCRATCH/client-nourl-args-${RUN}.txt"
+  rm -rf "$nourl_dir"; mkdir -p "$nourl_dir"
+  cat > "$nourl_dir/curl" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$NOURL_ARGS"
+exit 7
+STUB
+  chmod +x "$nourl_dir/curl"
+  : > "$nourl_args"
   nourl_rc=0
   env -u CHATBOX_URL -u CHATBOX_TOKEN -u CHATBOX_CACERT CHATBOX_CONFIG=/nonexistent \
-    sh "$CLI" inbox --id "$A" > "$nourl_log" 2>&1 || nourl_rc=$?
-  equals "a client with no server configured exits 2 rather than guessing one" "$nourl_rc" "2"
-  contains "and says what to configure" "$(cat "$nourl_log")" "no server configured"
-  contains "and says there is deliberately no default" "$(cat "$nourl_log")" "deliberately no default"
-  lacks "and never names a hard-coded host as its fallback" "$(cat "$nourl_log")" "100.66.125.48"
+    NOURL_ARGS="$nourl_args" PATH="$nourl_dir:$PATH" \
+    sh "$CLI" inbox --id "$A" > "$SCRATCH/client-nourl-${RUN}.log" 2>&1 || nourl_rc=$?
+  equals "an unset URL is used, not refused - the client has a default" "$nourl_rc" "7"
+  contains "and that default is loopback" "$(cat "$nourl_args")" "http://127.0.0.1:8787/"
+  lacks "and never a machine-specific address" "$(cat "$nourl_args")" "100.66.125.48"
+  lacks "nor is one written into the client at all" "$(cat "$CLI")" "100.66.125.48"
   nourl_help=0
   env -u CHATBOX_URL -u CHATBOX_TOKEN -u CHATBOX_CACERT CHATBOX_CONFIG=/nonexistent \
+    NOURL_ARGS="$nourl_args" PATH="$nourl_dir:$PATH" \
     sh "$CLI" help > "$SCRATCH/client-help-${RUN}.log" 2>&1 || nourl_help=$?
   equals "help still works with no server configured" "$nourl_help" "0"
-  contains "and says the server is not configured" "$(cat "$SCRATCH/client-help-${RUN}.log")" \
-    "server: not configured"
+  contains "and names the server it would use" "$(cat "$SCRATCH/client-help-${RUN}.log")" \
+    "http://127.0.0.1:8787"
+  rm -rf "$nourl_dir"
 else
   printf '  skip  the client URL default (set CHATBOX_CLI or keep chatbox-cli.sh in the tree)\n'
 fi

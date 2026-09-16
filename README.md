@@ -118,9 +118,12 @@ umask 077
 printf 'CHATBOX_URL=http://<server-host>:8787\nCHATBOX_TOKEN=<secret>\n' > ~/.chatbox
 ```
 
-The client has **no default server**. An unset `CHATBOX_URL` with no `~/.chatbox` is refused with
-exit 2 and a diagnostic, rather than guessed at — a guessed address is where the bearer token would
-go. `chatbox help` and `chatbox repo` need no server; every other command does.
+The client's default server is **loopback** (`http://127.0.0.1:8787`), and it is the only address it
+will ever fall back to: a bearer token sent there cannot leave the machine. An earlier revision
+defaulted to one deployment's private tailnet address, which sent a token to whoever owned it; do not
+put a machine-specific address back. Every machine other than the server's own sets `CHATBOX_URL` in
+`~/.chatbox`, and a macOS host on Tailscale *must* use `127.0.0.1` because it cannot hairpin to its
+own tailnet address. `chatbox help` and `chatbox repo` need no server at all.
 
 **Use it** — the same commands work in any agent's shell:
 

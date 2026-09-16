@@ -5,6 +5,17 @@ re-installable from this file alone. Update this file in the same commit as any 
 
 Audit branch: `audit/2026-09-15` (base `971faae`). Ledger: [`ledger.md`](ledger.md).
 
+**The branch was reconciled with `main` on 2026-09-16.** `main` moved nine commits while the audit
+ran (`971faae` → `a4bc3ec`), including its own fix for the same S0 as #0017 — a **loopback** client
+default (PR #6) rather than this audit's refusal-to-guess — plus a CI runner-label change
+(`xcode-27`), the workflow updates, and `AGENTS.md`/`CLAUDE.md`/`RELEASE.md`. `origin/main` was
+merged into the audit branch (a merge commit; nothing already pushed was rewritten), the one conflict
+(`chatbox-cli.sh`) was resolved in favour of the shipped loopback default with the audit's reasoning
+kept in the comment, and section 35's checks were re-pinned to what that design has to guarantee: the
+default is loopback, it is never a machine-specific address, and no such address is written into the
+client at all. Task #0093 records it. Everything after that merge was re-verified on the merged tree
+(base cell, relative-path cell, strict typechecks), and CI/CodeQL were re-dispatched from it.
+
 ## Scope honesty note (read first)
 
 The audit brief describes a monorepo of 20+ interdependent projects with Python, C# and C

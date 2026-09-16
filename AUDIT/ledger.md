@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 51 | done: 41 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
+**Open: 51 | done: 42 | blocked: 0 | total: 93** (S0 7, S1 31, S2 48, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -95,6 +95,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0090](#0090) | S2 | M1 | `chatbox.swift:2279` | GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1] | bug | **START** | node1 | audit/0034 follow-up |
 | [0091](#0091) | S2 | M1 | `AUDIT/mutate.sh` | The mutation matrix silently skips cells whose anchor no longer matches the code, and cannot be reproduced from a clone | test | **DONE** | node1 | audit/0034 run |
 | [0092](#0092) | S2 | M5 | `.github/workflows/ci.yml:45` | CI builds with -O only, so the audit build standard is not enforced and can regress silently | test | **DONE** | node1 | audit/0001 closure |
+| [0093](#0093) | S2 | M8 | `(repository state)` | The audit branch was reconciled with nine commits that landed on main while it ran | deps | **DONE** | node1 | main moved during the audit |
 | [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
 | [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **START** | node1 | phase-A |
 | [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **START** | node1 | L0 secret-scan triage |
@@ -125,7 +126,7 @@ CONFIDENCE: high
 AUDIT (gate): re-read cold. The guard sits in curl_tls, the single function every request path goes through, so a future subcommand cannot bypass it; `repo` (git remotes only) and `help` do not call it and still work unconfigured; the CACERT case now has an explicit empty-URL branch so a CACERT without a URL gets the true diagnostic instead of a confusing one. No check weakened: section 35 is new, and the only changed existing behaviour is that a misconfigured client refuses instead of guessing. Baseline comparison: suite 864 -> 878 passed, documented build and all scanner counts unchanged.
 Mutation (gate, after correcting a first attempt whose replacement lost a newline and produced a syntax-error client - that red was discarded, not recorded): the mutant passes `sh -n`, and the harness reports it red with exactly the three section-35 checks failing (875 passed / 3 failed: exit code, 'no server configured', 'deliberately no default') while base stays green at 878.
 - **Commit:** `a5a658b`
-- **Notes:** Rejected alternatives: (a) defaulting to http://127.0.0.1:8787 like the MCP adapter does — a loopback board is a *different* board, so the token would still be sent somewhere the operator did not name; (b) keeping a default and warning — a warning on every invocation is noise and does not stop the leak; (c) reading the URL from a checkout-specific file — that is what ~/.chatbox already is.
+- **Notes:** Rejected alternatives: (a) defaulting to http://127.0.0.1:8787 like the MCP adapter does — a loopback board is a *different* board, so the token would still be sent somewhere the operator did not name; (b) keeping a default and warning — a warning on every invocation is noise and does not stop the leak; (c) reading the URL from a checkout-specific file — that is what ~/.chatbox already is. RECONCILED 2026-09-16: while the audit ran, `main` shipped its own fix for the same defect (`77afe19`, PR #6) as a **loopback default** (`http://127.0.0.1:8787`) rather than the refusal this task introduced. Merging main into the audit branch conflicted exactly there, and the owner chose the shipped design: the default is loopback and nothing else, the now-unreachable empty-URL refusal in `curl_tls` is deleted with it, and section 35's checks are re-pinned to the property that matters - an unset URL is *used* (the stub curl records `http://127.0.0.1:8787/...` and the client exits with curl's transport code), it is never a machine-specific address, and no such address is written into the client at all. The S0 is still fixed: a token can no longer reach a third party. README and the client comment were updated to match, and the reasoning is kept so a machine-specific default is not reintroduced.
 
 ### 0018
 
@@ -1362,6 +1363,17 @@ PHASE-D NOTE (a limit of the standard, measured while building this control): `-
 AUDIT (gate): re-read cold. The new step compiles nothing twice into the artifacts - it is `-typecheck`, so the binaries the suite drives are still the documented build's, and a strict-only failure cannot change the tested binary. It runs before the server starts, so a violating commit fails fast. No existing step, flag or action pin was touched.
 - **Commit:** `2dd1465`
 - **Notes:** Rejected alternatives: (a) add the strict flags to the existing Build step - then a strict failure and a documented-build failure look the same in the log and nobody can tell which contract broke; (b) replace the `-O` build with the strict one - the README documents `-O` and the audit standard is an additional contract, not a replacement; (c) enforce it in a git hook or a local script - nothing on a contributor's machine is a gate, which is the whole finding; (d) also run the mutation matrix in CI - hours of runner time per pull request, and `AUDIT/mutate.sh` is the deliberate, auditable place for it. Bookkeeping note: the `AUDIT/environment.md` section this task added landed in the previous commit (`72634da`, the #0041/#0047 ledger commit) because that commit's `git add AUDIT` swept it up. It is on the audit branch, it is not rewritten, and it is referenced here so the provenance is not a surprise to a reader of either commit.
+
+### 0093
+
+- **Severity / category / module:** S2 / deps / M8
+- **Location:** `(repository state)`
+- **Title:** The audit branch was reconciled with nine commits that landed on main while it ran
+- **Status:** DONE
+- **Evidence (before):** `git ls-remote origin main` was `971faae` when the audit started and `a4bc3ec` when it finished: nine commits, including `77afe19` (the client default, the same S0 as #0017), `4a957f3` (CI runner label `xcode-27`), the codeql/ci workflow updates, and AGENTS.md / CLAUDE.md / RELEASE.md. `git merge-tree HEAD origin/main` showed one conflict, in `chatbox-cli.sh`.
+- **Fix:** `origin/main` was merged into `audit/2026-09-15` (a merge commit, not a rebase: nothing already pushed is rewritten). The client conflict was resolved to main's loopback default with the audit's reasoning kept in the comment, the unreachable empty-URL refusal was deleted, section 35's checks were re-pinned, README was updated, and the merged workflows kept main's runner label with the audit's pinned action SHAs and strict-concurrency step.
+- **Evidence (after):** The base cell and the relative-path cell were re-run on the merged tree and are GREEN; both binaries still typecheck 0/0 under the audit flags; `sh -n`/`dash -n`/shellcheck are unchanged. CI and CodeQL are re-dispatched on the merged revision and recorded in `AUDIT/environment.md`.
+- **Notes:** Merging main *into* the audit branch is not the merge the brief gates (that one is the PR into main after Phase E), and it is what makes Phase E meaningful: a fresh clone of a branch based on a stale `971faae` would verify a tree that can no longer be merged.
 
 ### 0011
 

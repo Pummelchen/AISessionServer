@@ -24,18 +24,19 @@ LC_ALL=C
 export LC_ALL
 
 # Per-machine defaults (optional): a ~/.chatbox file exporting CHATBOX_URL and
-# CHATBOX_TOKEN. The server's own host must use 127.0.0.1, because macOS+Tailscale
-# cannot hairpin to its own tailnet address; every other Mac uses the tailnet IP.
+# CHATBOX_TOKEN. The default below is loopback; point CHATBOX_URL at whatever
+# address reaches the server from this machine. A macOS host on Tailscale cannot
+# hairpin to its own tailnet address and must use 127.0.0.1.
 if [ -f "${CHATBOX_CONFIG:-$HOME/.chatbox}" ]; then
   . "${CHATBOX_CONFIG:-$HOME/.chatbox}"
 fi
 
-# There is no default server. The client used to fall back to one specific private address, so a
-# shell that exported only CHATBOX_TOKEN sent a live bearer token to whoever that address
-# belonged to. An unset URL is refused where a request is actually made (see curl_tls), so
-# `help` and `repo` still work with nothing configured — but nothing is ever sent anywhere by
-# guess.
-URL="${CHATBOX_URL:-}"
+# The default is loopback, and nothing else: the one address that cannot carry the token to another
+# machine. The client used to fall back to one specific private address, so a shell that exported
+# only CHATBOX_TOKEN sent a live bearer token to whoever that address belonged to. A macOS host on
+# Tailscale cannot hairpin to its own tailnet address and must use 127.0.0.1; every other machine
+# sets CHATBOX_URL in ~/.chatbox. Do not put a machine-specific address back here.
+URL="${CHATBOX_URL:-http://127.0.0.1:8787}"
 TOKEN="${CHATBOX_TOKEN:-}"
 # A private CA, for a server whose certificate no system trust store knows about —
 # which is the normal case for a self-signed deployment. curl uses this *instead of*
@@ -115,14 +116,11 @@ EOF
 }
 
 curl_tls() { # curl, with the configured CA if there is one
-  # Every request path goes through here, so this is the one place a missing server has to be
-  # caught. Guessing would mean sending the bearer token to whoever the guess named — which is
-  # exactly what the shipped default did.
-  if [ -z "$URL" ]; then
-    echo "chatbox: no server configured — set CHATBOX_URL, or write it to ${CHATBOX_CONFIG:-$HOME/.chatbox}" >&2
-    echo "  (there is deliberately no default: the bearer token would go wherever it pointed)" >&2
-    exit 2
-  fi
+  # Every request path goes through here. `URL` is never empty: it is the loopback default or
+  # whatever the operator configured, and `${CHATBOX_URL:-…}` covers an unset *and* an empty value —
+  # which is why the refusal this used to carry (for a URL nobody configured) is gone with the
+  # default it was written against. The refusal that remains is the one that still has a case:
+  # naming a CA while pointing at plain `http://` (see the check above).
   if [ -n "$CACERT" ]; then
     # =https, not +https: a redirect must not be able to move the token onto http.
     curl --cacert "$CACERT" --proto '=https' "$@"
