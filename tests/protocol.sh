@@ -1511,7 +1511,15 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
     "$CHATBOX_BIN" --port "$((sport + 1))" --db "$SCRATCH/neg-${RUN}.sqlite" \
       --token-file "$stok" --stale-after -1 > "$SCRATCH/neg-${RUN}.log" 2>&1 &
     negpid=$!
-    sleep 1
+    # A refusal is proved by the process having *ended*, and a flat second assumes it did. On a
+    # shared runner under load a refusal that takes longer than that to leave the process table was
+    # reported as "it started anyway", so this waits for the exit in the same 3-second window the
+    # other refusal fixtures use; a board that really started outlives any of them.
+    _negw=0
+    while [ "$_negw" -lt 30 ] && kill -0 "$negpid" 2>/dev/null; do
+      sleep 0.1
+      _negw=$((_negw + 1))
+    done
     if kill -0 "$negpid" 2>/dev/null; then
       no "a negative staleness window is refused" "it started anyway: $(head -1 "$SCRATCH/neg-${RUN}.log")"
       kill "$negpid" 2>/dev/null
@@ -4467,7 +4475,14 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
     "$CHATBOX_BIN" --port "$rport" --db "$SCRATCH/fed-refuse-${RUN}.sqlite" --token-file "$ftok" "$@" \
       > "$SCRATCH/fed-refuse-${RUN}.log" 2>&1 &
     _rp=$!
-    sleep 1
+    # Same as the negative-window refusal above: the exit is waited for, not assumed. The flat
+    # second this used to spend was the only difference from the startup-refusal checks that use a
+    # 3-second poll - and it reported two refusals as "it started anyway" in one loaded run.
+    _rw=0
+    while [ "$_rw" -lt 30 ] && kill -0 "$_rp" 2>/dev/null; do
+      sleep 0.1
+      _rw=$((_rw + 1))
+    done
     if kill -0 "$_rp" 2>/dev/null; then
       no "$_d" "it started anyway: $(head -1 "$SCRATCH/fed-refuse-${RUN}.log")"
       kill "$_rp" 2>/dev/null
