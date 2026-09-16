@@ -113,13 +113,23 @@ m('17-blockingwait', '''        queue.asyncAfter(deadline: .now() + longPollInte
                        waiter: waiter, conn: conn)''')
 m('18-timeouterror', '''            finish(req, conn: conn, status: 200, body: "")''',
   '''            finish(req, conn: conn, status: 404, body: "no messages\\n")''')
-m('19-ackonwait', '''        if store.hasUnread(forAgent: id) {
+m('19-ackonwait', r'''        store.beginRequest()
+        if store.hasUnread(forAgent: id) {
             let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+            if store.readFailed {
+                finish(req, conn: conn, status: 500, body: "error: the store could not be read — the page would have been partial\n")
+                return
+            }
             finish(req, conn: conn, status: 200, body: renderInbox(req, id: id, rows: rows),
                    headers: unreadHeader(rows))
             return
-        }''', '''        if store.hasUnread(forAgent: id) {
+        }''', r'''        store.beginRequest()
+        if store.hasUnread(forAgent: id) {
             let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+            if store.readFailed {
+                finish(req, conn: conn, status: 500, body: "error: the store could not be read — the page would have been partial\n")
+                return
+            }
             store.run("UPDATE deliveries SET acked_at=? WHERE agent=?", [nowISO(), id])
             finish(req, conn: conn, status: 200, body: renderInbox(req, id: id, rows: rows),
                    headers: unreadHeader(rows))
@@ -269,7 +279,8 @@ m('49-nostale', '''        guard staleAfter > 0 else { return false }
         guard let then = Self.parseISO(lastSeen) else { return true }
         return now.timeIntervalSince(then) > Double(staleAfter)''',
   '''        return false''')
-m('50-nomarker', '''            unseen.contains(r) ? "\\(r) (\\(unseenLabel(r)))" : r''', '''            r''')
+m('50-nomarker', r'''               : delivered.map { r in unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r }.joined(separator: ", "))''',
+  r'''               : delivered.joined(separator: ", "))''')
 m('51-nopeersstatus', '''            rows[i]["status"] = staleAfter == 0 ? "unknown"
                 : (isStale(seen, now: now) ? "stale" : "active")
             rows[i]["age"] = ageDescription(seen, now: now)
@@ -867,11 +878,9 @@ m('204-trk17-fieldsraw', r'''        let encoded = fields.map { "\(formEncode($0
   r'''        let encoded = fields.map { "\($0.0)=\($0.1)" }.joined(separator: "&")''')
 m('205-trk17-plusraw', r'''        case 0x41...0x5A, 0x61...0x7A, 0x30...0x39, 0x2D, 0x2E, 0x5F, 0x7E:''',
   r'''        case 0x41...0x5A, 0x61...0x7A, 0x30...0x39, 0x2D, 0x2E, 0x5F, 0x7E, 0x2B:''')
-m('206-trk17-syncforward', r'''        let answer = handle(req, who)
-        if let plan = answer.forward {''',
+m('206-trk17-syncforward', r'''        let answer = handle(req, who)''',
   r'''        var answer = handle(req, who)
-        if let plan = answer.forward { answer.body += forwardMessage(plan); answer.forward = nil }
-        if let plan = answer.forward {''')
+        if let plan = answer.forward { answer.body += forwardMessage(plan); answer.forward = nil }''')
 m('207-trk17-nopeertokenguard', r'''if peerURL.isEmpty && !peerToken.isEmpty {''', r'''if false {''')
 m('208-trk17-nopeeremptyguard', r'''if argPresent("--peer") && peerURL.isEmpty {''', r'''if false {''')
 m('209-trk17-noserveridguard', r'''if !validBoardID(serverID) {''', r'''if false {''')
@@ -1138,6 +1147,26 @@ m('261-audit0043-splitrecipients',
 # SIGTERM kills the process where it stands and SIGHUP takes the board down.
 # AUDIT #0040: a refused connection that never speaks is closed on the idle deadline. Removing the
 # deadline leaves the socket in `.preparing` for ever.
+# AUDIT #0045: a GET whose read failed is an error, not an empty answer.
+m('274-audit0045-noreadcheck',
+  r'''        if req.method == "GET", store.readFailed {''',
+  r'''        if false, store.readFailed {''')
+
+# AUDIT #0045: a send whose recipient read failed must not store unreachable mail.
+m('275-audit0045-nosendguard',
+  r'''        if store.readFailed {
+            store.run("ROLLBACK", [])
+            return Reply(500, "error: the recipients could not be resolved — nothing was written\n")
+        }
+''',
+  r'''''')
+
+# AUDIT #0045: a prune whose read failed must roll back rather than delete a partial candidate set.
+m('276-audit0045-nopruneguard',
+  r'''        if readFailed { return abandon() }
+''',
+  r'''''')
+
 m('272-audit0040-nodeadline',
   r'''            if idleTimeout > 0 {
                 queue.asyncAfter(deadline: .now() + .seconds(idleTimeout), execute: refusalIdle)
