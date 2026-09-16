@@ -5135,6 +5135,119 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 43. A reply answers the participants, not a text encoding of them
+# `messages.recipients` is a comma-joined string, and a session id may itself contain a comma - any
+# credential can register one. The reply path re-split that column to find the participants, so an id
+# like `owner,victim` became two recipients: a machine that never took part received a delivery row
+# for the conversation, and with it read access to it. The same loop read *every message of the
+# thread*, bodies included and with no bound, to collect those names, so a 30 MB conversation cost
+# 30 MB of memory on the server's only queue. Participants now come from `deliveries` (one row per
+# recipient, no delimiter) and no message content is read.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  c43port="${CHATBOX_REPLY_PORT:-8798}"
+  c43base="http://127.0.0.1:$c43port"
+  c43db="$SCRATCH/reply-participants-${RUN}.sqlite"
+  c43tok="$SCRATCH/reply-participants-${RUN}.token"
+  rm -f "$c43db" "$c43db-wal" "$c43db-shm"
+  printf '%s\n' "$TOKEN" > "$c43tok"
+  chmod 600 "$c43tok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$c43port" --db "$c43db" --token-file "$c43tok" \
+    > "$SCRATCH/reply-participants-${RUN}.log" 2>&1 &
+  c43pid=$!
+  c43ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS --max-time 2 "$c43base/health?token=$TOKEN" >/dev/null 2>&1; then c43ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$c43ready" = 1 ]; then
+    c43() { # path, then curl data arguments
+      _c43p="$1"; shift
+      curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" "$c43base/$_c43p" "$@"
+    }
+    c43_alice="it-$RUN-comma-alice"
+    # The stranger's id is the *tail* of the owner's id, so splitting the owner's id yields the
+    # stranger exactly - which is the whole defect. The other fragment names no session at all.
+    c43_victim="it-$RUN-victim"
+    c43_owner="it-$RUN-owner,$c43_victim"
+    c43 register --data-urlencode "id=$c43_alice" --data-urlencode "node=node-alice" >/dev/null
+    c43 register --data-urlencode "id=$c43_victim" --data-urlencode "node=node-victim" >/dev/null
+    # The id with the comma owns a repo, so a repo-routed message reaches it as *one* recipient.
+    c43 register --data-urlencode "id=$c43_owner" --data-urlencode "node=node-owner" \
+      --data-urlencode "repos=example.test/$RUN/comma" >/dev/null
+    c43_first="$(c43 message --data-urlencode "from=$c43_alice" \
+      --data-urlencode "repo=example.test/$RUN/comma" --data-urlencode "subject=comma-$RUN" \
+      --data-urlencode "body=first-$RUN")"
+    c43_tid="$(field "$c43_first" thread)"
+    equals "a repo-routed message reaches the id that contains a comma" \
+      "$(field "$c43_first" delivered_to)" "$c43_owner"
+    c43_reply="$(c43 message --data-urlencode "from=$c43_alice" \
+      --data-urlencode "thread=$c43_tid" --data-urlencode "body=reply-$RUN")"
+    equals "and a reply answers exactly that participant" \
+      "$(field "$c43_reply" delivered_to)" "$c43_owner"
+    equals "so a fragment of the id is not a recipient" \
+      "$(sqlite3 "$c43db" "select count(*) from deliveries where agent='it-$RUN-owner';")" "0"
+    equals "and neither is the session that shares its tail" \
+      "$(curl -sS --max-time 20 "$c43base/inbox?id=$c43_victim&all=1&token=$TOKEN" | grep -c "reply-$RUN")" "0"
+    # ... while the participant really does hold it: the two checks above must not be passing
+    # because the reply reached nobody.
+    equals "while the participant holds it" \
+      "$(curl -sS --max-time 20 "$c43base/inbox?id=$c43_owner&all=1&token=$TOKEN" | grep -c "reply-$RUN")" "1"
+
+    # A participant who is in the conversation only because it was *sent* the message - reached by
+    # name, with no repo involved - has no row in `messages.sender`. Its delivery row is the only
+    # record that it took part, so a participants query that forgot the delivery half would answer
+    # nobody. (The repo-routed case above cannot see that, because the owner is also a repo owner.)
+    c43_bob="it-$RUN-comma-bob"
+    c43 register --data-urlencode "id=$c43_bob" --data-urlencode "node=node-bob" >/dev/null
+    c43_direct="$(c43 message --data-urlencode "from=$c43_alice" --data-urlencode "to=$c43_bob" \
+      --data-urlencode "subject=direct-$RUN" --data-urlencode "body=direct-$RUN")"
+    c43_dtid="$(field "$c43_direct" thread)"
+    c43_dreply="$(c43 message --data-urlencode "from=$c43_alice" \
+      --data-urlencode "thread=$c43_dtid" --data-urlencode "body=direct-reply-$RUN")"
+    equals "a reply reaches a participant that was only sent the message" \
+      "$(field "$c43_dreply" delivered_to)" "$c43_bob"
+    equals "and that participant holds it" \
+      "$(curl -sS --max-time 20 "$c43base/inbox?id=$c43_bob&all=1&token=$TOKEN" | grep -c "direct-reply-$RUN")" "1"
+
+    # Grow the same conversation to ~30 MB of bodies, written straight into the database. A reply
+    # must not read them: the old path materialised the whole thread to collect names - measured at
+    # 36 MB of server RSS growth on this fixture - where the participants query grows it by 1 MB.
+    # The bound is an order of magnitude either side of those two numbers.
+    sqlite3 "$c43db" "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<4000)
+      INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,reply_to,recipients,origin)
+      SELECT $c43_tid,'2020-01-01T00:00:00Z','$c43_alice','','bulk',printf('%.8000c','x'),0,'$c43_owner','' FROM c;" >/dev/null 2>&1
+    c43_rows="$(sqlite3 "$c43db" "select count(*) from messages where thread_id=$c43_tid;")"
+    if [ "${c43_rows:-0}" -gt 4000 ]; then
+      ok "the reply fixture has a conversation large enough to measure ($c43_rows messages)"
+    else
+      no "the reply fixture has a conversation large enough to measure" \
+         "only ${c43_rows:-0} messages"
+    fi
+    c43_before="$(ps -o rss= -p "$c43pid" 2>/dev/null | tr -d ' ')"; c43_before="${c43_before:-0}"
+    c43_big="$(c43 message --data-urlencode "from=$c43_alice" \
+      --data-urlencode "thread=$c43_tid" --data-urlencode "body=big-reply-$RUN")"
+    c43_after="$(ps -o rss= -p "$c43pid" 2>/dev/null | tr -d ' ')"; c43_after="${c43_after:-0}"
+    contains "a reply into the large conversation still lands" "$c43_big" "ok posted"
+    c43_growth=$((c43_after - c43_before))
+    if [ "$c43_growth" -lt 10240 ]; then
+      ok "and it does not materialise the conversation it answers (${c43_growth}KB for $c43_rows messages)"
+    else
+      no "and it does not materialise the conversation it answers" \
+         "${c43_growth}KB of RSS growth for $c43_rows messages"
+    fi
+  else
+    no "the reply-participants fixture started" "no answer on $c43base"
+  fi
+  kill "$c43pid" 2>/dev/null
+  wait "$c43pid" 2>/dev/null
+  # The fixture is ~30 MB; scratch is not a dumping ground.
+  rm -f "$c43db" "$c43db-wal" "$c43db-shm" "$c43tok"
+else
+  printf '  skip  reply participants (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

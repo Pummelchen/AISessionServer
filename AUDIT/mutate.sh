@@ -94,10 +94,15 @@ m('12-querytoken', '''        // A query parameter and a header that disagree is
         }''', '''        if let t = req.params["token"], !t.isEmpty { req.token = t }''')
 m('13-norepo', '''            if effRepo.isEmpty { effRepo = store.scalar("SELECT repo FROM threads WHERE id = ?", [String(t)]) }
 ''', '')
-m('14-noparticipants', '''            if !threadIn.isEmpty {
-                for m in store.thread(String(threadId)) {''',
-  '''            if false, !threadIn.isEmpty {
-                for m in store.thread(String(threadId)) {''')
+m('14-noparticipants', r'''            if !threadIn.isEmpty {
+                // One participants-only query. This used to read every message of the thread - bodies
+                // included, with no LIMIT - and then split its comma-joined `recipients` back apart,
+                // which is how an id containing a comma became two participants.
+                set.formUnion(store.threadParticipants(String(threadId)))
+            }''',
+  r'''            if false, !threadIn.isEmpty {
+                set.formUnion(store.threadParticipants(String(threadId)))
+            }''')
 m('16-waitignored', '''        guard let raw = Int(req.p("wait")), raw > 0 else { return 0 }
         return min(raw, maxWaitSeconds)''', '''        return 0''')
 m('17-blockingwait', '''        queue.asyncAfter(deadline: .now() + longPollInterval) {
@@ -648,7 +653,7 @@ m('141-ackthreadcount', '''            let r = store.runReporting("""
               AND message_id IN (SELECT id FROM messages WHERE thread_id=?)
             """, [nowISO(), id, req.p("thread")])
             rc = r.rc
-            n = store.thread(req.p("thread")).count''')
+            n = Int(store.scalar("SELECT COUNT(*) FROM messages WHERE thread_id = ?", [req.p("thread")])) ?? 0''')
 
 # TRK-21: a capped inbox says how many of how many it is showing, in both forms.
 m('142-trk21-nonote', '''        if matching > shown {''', '''        if false {''')
@@ -734,7 +739,7 @@ m('160-trk31-watchrefusal', '''        if [ "$_rc" -eq 2 ]; then''',
 
 # TRK-30: the three bounds. Each is pinned by the check that reads the number it produces.
 m('161-trk30-threadunbounded', '''        let rows = store.threadPage(id, limit: maxRows)''',
-  '''        let rows = store.thread(id)''')
+  '''        let rows = store.rows("SELECT * FROM messages WHERE thread_id = ? ORDER BY id ASC", [id])''')
 m('162-trk30-peersunbounded', '''        var rows = store.agentsListing(limit: maxRows, visibleTo: scope)''',
   '''        var rows = store.agentsListing(limit: 1000000, visibleTo: scope)''')
 m('163-trk30-tokensunbounded', '''        let rows = store.tokensListing(limit: maxRows)''',
@@ -1109,6 +1114,28 @@ m('258-audit0048-idleguard',
 m('259-audit0048-connsguard',
   r'''if maxConnValue < 1 || maxConnValue > 65535 {''',
   r'''if false {''')
+# AUDIT #0043: participants come from the delivery rows, not from splitting a comma-joined column.
+m('261-audit0043-splitrecipients',
+  r'''                set.formUnion(store.threadParticipants(String(threadId)))''',
+  r'''                for m in store.rows("SELECT id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients, origin FROM messages WHERE thread_id = ? ORDER BY id ASC", [String(threadId)]) {
+                    if let s = m["sender"], !s.isEmpty { set.insert(s) }
+                    for r in (m["recipients"] ?? "").split(separator: ",") {
+                        let t = r.trimmingCharacters(in: .whitespaces)
+                        if !t.isEmpty { set.insert(t) }
+                    }
+                }''')
+
+# AUDIT #0043: the recipients of a thread are senders *and* everyone with a delivery row; a reply
+# that only answers the senders reaches nobody who was merely told.
+m('262-audit0043-sendersonly',
+  r'''          UNION
+          SELECT d.agent AS a FROM deliveries d JOIN messages m ON m.id = d.message_id
+           WHERE m.thread_id = ?
+        ) WHERE a IS NOT NULL AND a <> '' ORDER BY a
+        """, [id, id]).compactMap { $0["agent"] }''',
+  r'''        ) WHERE a IS NOT NULL AND a <> '' ORDER BY a
+        """, [id]).compactMap { $0["agent"] }''')
+
 m('260-audit0048-rowsguard',
   r'''if maxRowsValue < 1 || maxRowsValue > 1000000 {''',
   r'''if false {''')

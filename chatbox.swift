@@ -962,11 +962,24 @@ final class Store: @unchecked Sendable {
         """, [threadId, node, node]).isEmpty
     }
 
-    func thread(_ id: String) -> [[String: String]] {
+    /// Everyone who has taken part in one conversation: its senders plus everyone with a delivery row
+    /// for one of its messages. This is the set a reply has to answer, and it is read from `deliveries`
+    /// rather than by splitting `messages.recipients`.
+    ///
+    /// That column is comma-joined, and a session id may itself contain a comma (any credential can
+    /// register one). Splitting it invented participants who never took part - one reply was enough to
+    /// give a stranger's machine a delivery row, and with it read access to the thread. There is no
+    /// delimiter to get wrong here, and no message content is read: the loop this replaced
+    /// materialised every message of the thread, bodies included, to find the same set of names.
+    func threadParticipants(_ id: String) -> [String] {
         rows("""
-        SELECT id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients, origin
-        FROM messages WHERE thread_id = ? ORDER BY id ASC
-        """, [id])
+        SELECT a AS agent FROM (
+          SELECT sender AS a FROM messages WHERE thread_id = ?
+          UNION
+          SELECT d.agent AS a FROM deliveries d JOIN messages m ON m.id = d.message_id
+           WHERE m.thread_id = ?
+        ) WHERE a IS NOT NULL AND a <> '' ORDER BY a
+        """, [id, id]).compactMap { $0["agent"] }
     }
 
     /// The newest `limit` messages of a thread, in reading order. A conversation has no natural
@@ -1653,13 +1666,10 @@ final class Chatbox: @unchecked Sendable {
             var set = Set<String>()
             if !effRepo.isEmpty { set.formUnion(store.owners(ofRepo: effRepo)) }
             if !threadIn.isEmpty {
-                for m in store.thread(String(threadId)) {
-                    if let s = m["sender"], !s.isEmpty { set.insert(s) }
-                    for r in (m["recipients"] ?? "").split(separator: ",") {
-                        let t = r.trimmingCharacters(in: .whitespaces)
-                        if !t.isEmpty { set.insert(t) }
-                    }
-                }
+                // One participants-only query. This used to read every message of the thread - bodies
+                // included, with no LIMIT - and then split its comma-joined `recipients` back apart,
+                // which is how an id containing a comma became two participants.
+                set.formUnion(store.threadParticipants(String(threadId)))
             }
             recipients = Array(set).sorted()
         }
