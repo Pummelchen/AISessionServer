@@ -1216,6 +1216,100 @@ m('272-audit0040-nodeadline',
 ''',
   r'''''')
 
+# AUDIT #0052: the credential is not an argument. This is the exposure the finding is about - the
+# token back on the command line, where `ps` shows it to every user on the machine.
+m('282-audit0052-argvtoken',
+  r'''    set -- -K "$TOKEN_CONFIG" "$@"''',
+  r'''    set -- -H "Authorization: Bearer $TOKEN" "$@"''', target='cli')
+
+# AUDIT #0053: the environment beats the config file. Removing the restore lets the file win again,
+# which is the pre-fix behaviour: `CHATBOX_URL=... chatbox say` reaches the file's board.
+m('283-audit0053-filewins',
+  r'''[ -n "$_chatbox_url_set" ] && CHATBOX_URL="$_chatbox_env_url"
+[ -n "$_chatbox_token_set" ] && CHATBOX_TOKEN="$_chatbox_env_token"
+[ -n "$_chatbox_cacert_set" ] && CHATBOX_CACERT="$_chatbox_env_cacert"
+''',
+  r'''''', target='cli')
+
+# AUDIT #0055: every value in a query is encoded. An identity `urlenc` is the pre-fix pasting of the
+# raw value into the URL.
+m('284-audit0055-rawurl',
+  r'''urlenc() {
+  _ue_in="$1"
+  _ue_out=""
+  while [ -n "$_ue_in" ]; do
+    _ue_c="${_ue_in%"${_ue_in#?}"}"
+    _ue_in="${_ue_in#?}"
+    case "$_ue_c" in
+      [A-Za-z0-9.~_-]) _ue_out="$_ue_out$_ue_c" ;;
+      *) _ue_out="$_ue_out%$(printf '%s' "$_ue_c" | od -An -tx1 | tr -d ' \n')" ;;
+    esac
+  done
+  printf '%s' "$_ue_out"
+}''',
+  r'''urlenc() {
+  printf '%s' "$1"
+}''', target='cli')
+
+# AUDIT #0056: `ack --all` reaches the server. The pre-fix branch posts id/message/thread only, so
+# the flag the caller passed is dropped and the server's refusal names it.
+m('285-audit0056-noall',
+  r'''    if [ -n "$ALL" ]; then
+      http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" \
+        --data-urlencode "thread=$THREAD" --data-urlencode "all=1"
+    else
+      http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" \
+        --data-urlencode "thread=$THREAD"
+    fi ;;''',
+  r'''    http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" --data-urlencode "thread=$THREAD" ;;''',
+  target='cli')
+
+# AUDIT #0008: no printf takes its format from a variable (SC2059).
+m('286-audit0008-printfvar',
+  r'''s/$(printf '%b' "$_fc_seq")//g"''',
+  r'''s/$(printf "$_fc_seq")//g"''', target='cli')
+
+# AUDIT #0009: nothing writes a temporary file it then reads through (SC2094). This is the pre-fix
+# shape: the split list in a temp file, read by the loop below it, removed on the error path.
+m('287-audit0009-tempfile',
+  r'''  _out=""
+  _n=0
+  # The list reaches the loop as a here document. It used to be split into a temporary file that
+  # this same function then read through, and removed on the error path - a path both read and
+  # written by one shell, and a cleanup the shell could not be relied on to reach (an interrupt left
+  # the file behind). The here document is the same list on the loop's stdin and leaves nothing.
+  while IFS= read -r _k; do
+    [ -n "$_k" ] || continue
+    _c="$(canon_repo "$_k" 2>/dev/null)" || {
+      echo "chatbox: '$_k' is not a usable repo key" >&2
+      echo "  expected host/owner/repo, e.g. github.com/acme/libfoo" >&2
+      return 2
+    }
+    _out="${_out:+$_out,}$_c"
+    _n=$((_n + 1))
+  done <<EOF
+$(printf '%s\n' "$_raw" | tr ',' '\n')
+EOF
+''',
+  r'''  _t="$(mktemp "${TMPDIR:-/tmp}/chatbox-canon.XXXXXX" 2>/dev/null)" || {
+    echo "chatbox: cannot create a temporary file to check the claim" >&2; return 2; }
+  printf '%s\n' "$_raw" | tr ',' '\n' > "$_t"
+  _out=""
+  _n=0
+  while IFS= read -r _k; do
+    [ -n "$_k" ] || continue
+    _c="$(canon_repo "$_k" 2>/dev/null)" || {
+      rm -f "$_t"
+      echo "chatbox: '$_k' is not a usable repo key" >&2
+      echo "  expected host/owner/repo, e.g. github.com/acme/libfoo" >&2
+      return 2
+    }
+    _out="${_out:+$_out,}$_c"
+    _n=$((_n + 1))
+  done < "$_t"
+  rm -f "$_t"
+''', target='cli')
+
 # AUDIT #0040: how many refusals may be in flight at once is bounded, not only how long each lives.
 m('273-audit0040-nocap',
   r'''            if refusedConnections.count >= maxConnections {

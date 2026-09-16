@@ -27,9 +27,25 @@ export LC_ALL
 # CHATBOX_TOKEN. The default below is loopback; point CHATBOX_URL at whatever
 # address reaches the server from this machine. A macOS host on Tailscale cannot
 # hairpin to its own tailnet address and must use 127.0.0.1.
+#
+# The environment wins over the file. The file is what a machine defaults to; an
+# exported value is somebody saying which board *this* request is for, and the file
+# used to be sourced on top of it, so `CHATBOX_URL=http://staging chatbox say ...`
+# posted to the address in ~/.chatbox instead, with no warning.
+_chatbox_env_url="${CHATBOX_URL-}"
+_chatbox_url_set="${CHATBOX_URL+yes}"
+_chatbox_env_token="${CHATBOX_TOKEN-}"
+_chatbox_token_set="${CHATBOX_TOKEN+yes}"
+_chatbox_env_cacert="${CHATBOX_CACERT-}"
+_chatbox_cacert_set="${CHATBOX_CACERT+yes}"
 if [ -f "${CHATBOX_CONFIG:-$HOME/.chatbox}" ]; then
   . "${CHATBOX_CONFIG:-$HOME/.chatbox}"
 fi
+[ -n "$_chatbox_url_set" ] && CHATBOX_URL="$_chatbox_env_url"
+[ -n "$_chatbox_token_set" ] && CHATBOX_TOKEN="$_chatbox_env_token"
+[ -n "$_chatbox_cacert_set" ] && CHATBOX_CACERT="$_chatbox_env_cacert"
+unset _chatbox_env_url _chatbox_url_set _chatbox_env_token _chatbox_token_set \
+      _chatbox_env_cacert _chatbox_cacert_set
 
 # The default is loopback, and nothing else: the one address that cannot carry the token to another
 # machine. The client used to fall back to one specific private address, so a shell that exported
@@ -56,6 +72,33 @@ case "$URL" in
        exit 2
      fi ;;
 esac
+
+# The credential is an argument to nothing. `ps` shows every process's arguments to every user on
+# the machine — the server's own documentation says a token passed on the command line is visible
+# there, and this client used to put it there twice over: in the query of every read and in the body
+# of every write. It now travels in a curl config file created 0600, read by curl with `-K` and
+# removed when this process exits; `curl_tls` is where it is attached, and every request goes through
+# there, so a new request path cannot forget it or leak it.
+TOKEN_CONFIG=""
+if [ -n "$TOKEN" ]; then
+  case "$TOKEN" in
+    *'
+'*) echo "chatbox: CHATBOX_TOKEN must be one line — it is sent as an HTTP header" >&2; exit 2 ;;
+  esac
+  TOKEN_CONFIG="$(mktemp "${TMPDIR:-/tmp}/chatbox-auth.XXXXXX" 2>/dev/null)" || TOKEN_CONFIG=""
+  if [ -z "$TOKEN_CONFIG" ]; then
+    echo "chatbox: cannot create a private credential file under ${TMPDIR:-/tmp}" >&2
+    echo "  refusing to put the token on the command line, where ps would show it" >&2
+    exit 2
+  fi
+  chmod 600 "$TOKEN_CONFIG" 2>/dev/null
+  _token_esc="$(printf '%s' "$TOKEN" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  printf 'header = "Authorization: Bearer %s"\n' "$_token_esc" > "$TOKEN_CONFIG"
+  unset _token_esc
+fi
+trap '[ -n "${TOKEN_CONFIG:-}" ] && rm -f "$TOKEN_CONFIG"' EXIT
+trap '[ -n "${TOKEN_CONFIG:-}" ] && rm -f "$TOKEN_CONFIG"; exit 130' INT
+trap '[ -n "${TOKEN_CONFIG:-}" ] && rm -f "$TOKEN_CONFIG"; exit 143' TERM HUP
 
 usage() {
   cat <<EOF
@@ -121,6 +164,12 @@ curl_tls() { # curl, with the configured CA if there is one
   # which is why the refusal this used to carry (for a URL nobody configured) is gone with the
   # default it was written against. The refusal that remains is the one that still has a case:
   # naming a CA while pointing at plain `http://` (see the check above).
+  #
+  # The credential rides in on `-K`, never as an argument: the config file is 0600 and is removed
+  # when this process exits, so the token is not in `ps` and not in anything this client builds.
+  if [ -n "${TOKEN_CONFIG:-}" ]; then
+    set -- -K "$TOKEN_CONFIG" "$@"
+  fi
   if [ -n "$CACERT" ]; then
     # =https, not +https: a redirect must not be able to move the token onto http.
     curl --cacert "$CACERT" --proto '=https' "$@"
@@ -161,26 +210,40 @@ curl_checked() { # the curl arguments
   esac
 }
 
+# Percent-encode one value for a query string. Every value this client puts in a URL goes through
+# here: the server accepts an id containing a space or an `&` (it refuses only control bytes), and a
+# raw one makes curl reject the whole URL ("Malformed input", exit 3) or silently turns the rest of
+# the query into a different request. `LC_ALL=C` is set at the top, so `?` is one byte and this
+# byte-wise loop is exact for any input.
+urlenc() {
+  _ue_in="$1"
+  _ue_out=""
+  while [ -n "$_ue_in" ]; do
+    _ue_c="${_ue_in%"${_ue_in#?}"}"
+    _ue_in="${_ue_in#?}"
+    case "$_ue_c" in
+      [A-Za-z0-9.~_-]) _ue_out="$_ue_out$_ue_c" ;;
+      *) _ue_out="$_ue_out%$(printf '%s' "$_ue_c" | od -An -tx1 | tr -d ' \n')" ;;
+    esac
+  done
+  printf '%s' "$_ue_out"
+}
+
 http_get() { # path [query]
-  _q="${2:-}"
-  [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
-  curl_checked --max-time 30 "${URL}${1}${_q:+?$_q}"
+  # The credential is not in the query: it rides in the curl config file from `curl_tls`.
+  curl_checked --max-time 30 "${URL}${1}${2:+?$2}"
 }
 
 # A long poll is meant to be held open, so the client's own timeout has to
 # outlast the server-side wait or curl would abandon a request that is working.
 http_get_wait() { # path, query, curl --max-time
-  _q="${2:-}"
-  [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
-  curl_checked --max-time "$3" "${URL}${1}${_q:+?$_q}"
+  curl_checked --max-time "$3" "${URL}${1}${2:+?$2}"
 }
 
 # The same, with the response headers kept: the inbox says *which* messages it rendered in
 # `X-Chatbox-Unread-Ids`, which is what lets the wake loop acknowledge exactly those.
 http_get_wait_hdr() { # path, query, curl --max-time, header file
-  _q="${2:-}"
-  [ -n "$TOKEN" ] && _q="${_q:+$_q&}token=$TOKEN"
-  CHATBOX_HEADER_FILE="$4" curl_checked --max-time "$3" "${URL}${1}${_q:+?$_q}"
+  CHATBOX_HEADER_FILE="$4" curl_checked --max-time "$3" "${URL}${1}${2:+?$2}"
 }
 
 # ---------- untrusted framing ----------
@@ -224,7 +287,7 @@ for _fc_seq in \
   '\342\200\252' '\342\200\253' '\342\200\254' '\342\200\255' '\342\200\256' \
   '\342\201\246' '\342\201\247' '\342\201\250' '\342\201\251' '\357\273\277' ; do
   FORMAT_CONTROLS_SED="$FORMAT_CONTROLS_SED
-s/$(printf "$_fc_seq")//g"
+s/$(printf '%b' "$_fc_seq")//g"
 done
 unset _fc_seq
 
@@ -469,26 +532,26 @@ canon_repo() {
 canon_repos() { # comma list -> canonical comma list, or non-zero with the reason on stderr
   _raw="${1:-}"
   [ -n "$_raw" ] || { printf '%s' ""; return 0; }
-  _t="$(mktemp "${TMPDIR:-/tmp}/chatbox-canon.XXXXXX" 2>/dev/null)" || {
-    echo "chatbox: cannot create a temporary file to check the claim" >&2; return 2; }
-  printf '%s\n' "$_raw" | tr ',' '\n' > "$_t"
   _out=""
   _n=0
+  # The list reaches the loop as a here document. It used to be split into a temporary file that
+  # this same function then read through, and removed on the error path - a path both read and
+  # written by one shell, and a cleanup the shell could not be relied on to reach (an interrupt left
+  # the file behind). The here document is the same list on the loop's stdin and leaves nothing.
   while IFS= read -r _k; do
     [ -n "$_k" ] || continue
     _c="$(canon_repo "$_k" 2>/dev/null)" || {
-      rm -f "$_t"
       echo "chatbox: '$_k' is not a usable repo key" >&2
       echo "  expected host/owner/repo, e.g. github.com/acme/libfoo" >&2
       return 2
     }
     _out="${_out:+$_out,}$_c"
     _n=$((_n + 1))
-  done < "$_t"
-  rm -f "$_t"
-  # Nothing usable in the claim is not a successful claim of nothing. A list of
-  # separators, a claim that vanished in the split and a temp file that could not
-  # be written all end up here, and all of them must stop the registration rather
+  done <<EOF
+$(printf '%s\n' "$_raw" | tr ',' '\n')
+EOF
+  # Nothing usable in the claim is not a successful claim of nothing. A list of separators and a
+  # claim that vanished in the split both end up here, and both must stop the registration rather
   # than travel on as an empty claim that exits 0.
   if [ "$_n" -eq 0 ] || [ -z "$_out" ]; then
     echo "chatbox: '$_raw' contains no repo key" >&2
@@ -550,11 +613,9 @@ repo_primary() { # directory -> the canonical key of origin, else of the first u
 
 http_post() { # path, then k=v pairs
   _path="$1"; shift
-  if [ -n "$TOKEN" ]; then
-    curl_checked --max-time 60 -G -X POST "$@" --data-urlencode "token=$TOKEN" "${URL}${_path}"
-  else
-    curl_checked --max-time 60 -G -X POST "$@" "${URL}${_path}"
-  fi
+  # No token in the body either: the credential is the config file from `curl_tls`, so it is in no
+  # argument of the request at all.
+  curl_checked --max-time 60 -G -X POST "$@" "${URL}${_path}"
 }
 
 cmd="${1:-help}"
@@ -707,13 +768,15 @@ case "$cmd" in
       --data-urlencode "reply_to=$REPLYTO" \
       --data-urlencode "body=$BODY" ;;
   inbox)
-    _q="id=$ID"; [ -n "$ALL" ] && _q="$_q&all=1"
+    # The id is encoded, not pasted: an id with a space or an `&` is a legal id, and pasted raw it
+    # makes curl refuse the URL or turns the rest of the query into a different request.
+    _q="id=$(urlenc "$ID")"; [ -n "$ALL" ] && _q="$_q&all=1"
     case "$WAIT" in
       ''|*[!0-9]*) read_framed "chatbox inbox --id $ID" /inbox "$_q" ;;
       *)           read_framed "chatbox inbox --id $ID" /inbox "$_q&wait=$WAIT" "$WAIT" ;;
     esac ;;
   thread)
-    read_framed "chatbox thread ${POS1:-$ID}" /thread "id=${POS1:-$ID}" ;;
+    read_framed "chatbox thread ${POS1:-$ID}" /thread "id=$(urlenc "${POS1:-$ID}")" ;;
   threads)
     if [ -n "$REPO" ]; then
       _orig="$REPO"
@@ -722,9 +785,19 @@ case "$cmd" in
         exit 2
       }
     fi
-    read_framed "chatbox threads${REPO:+ --repo $REPO}" /threads "repo=$REPO" ;;
+    read_framed "chatbox threads${REPO:+ --repo $REPO}" /threads "repo=$(urlenc "$REPO")" ;;
   ack)
-    http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" --data-urlencode "thread=$THREAD" ;;
+    # `--all` marks the whole inbox read and is a flag the server has always accepted on /ack; the
+    # client parsed it for every command and then did not send it here, so the one documented way to
+    # clear an inbox answered "error: pass message=<id>, thread=<id> or all=1" - naming the flag the
+    # caller had passed.
+    if [ -n "$ALL" ]; then
+      http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" \
+        --data-urlencode "thread=$THREAD" --data-urlencode "all=1"
+    else
+      http_post /ack --data-urlencode "id=$ID" --data-urlencode "message=$MESSAGE" \
+        --data-urlencode "thread=$THREAD"
+    fi ;;
   peers)
     read_framed "chatbox peers" /peers "" ;;
   token)
@@ -802,7 +875,7 @@ case "$cmd" in
     _dfails=0
     while :; do
       : > "$_hdr"
-      http_get_wait_hdr /inbox "id=$ID&wait=$_wait" "$_max" "$_hdr" > "$_tmp" 2>/dev/null &
+      http_get_wait_hdr /inbox "id=$(urlenc "$ID")&wait=$_wait" "$_max" "$_hdr" > "$_tmp" 2>/dev/null &
       _child=$!
       wait "$_child"; _rc=$?
       _child=""

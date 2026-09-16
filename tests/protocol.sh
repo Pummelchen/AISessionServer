@@ -5872,6 +5872,156 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 51. The client's credential is not an argument, the environment beats the config file, and every
+#     value in a query is encoded
+# The client put the token in the query of every read and the body of every write, so `ps` showed it
+# to every other user on the machine; it sourced ~/.chatbox *over* the environment, so
+# `CHATBOX_URL=http://staging chatbox say` posted to the file's board instead, with no warning; it
+# pasted ids into the URL raw, so an id with a space or an `&` - which the server accepts - either
+# made curl refuse the whole URL ("Malformed input", exit 3) or quietly turned the rest of the query
+# into a different request; and it parsed `--all` for every command but never sent it on `ack`, so
+# the one documented way to clear an inbox answered "pass message=<id>, thread=<id> or all=1".
+# ---------------------------------------------------------------------------
+if [ -f "$CLI" ]; then
+  cl51dir="$SCRATCH/client-req-${RUN}"
+  cl51rec="$SCRATCH/client-req-args-${RUN}.txt"
+  cl51cfg="$SCRATCH/client-req-cfg-${RUN}"
+  cl51authcopy="$SCRATCH/client-req-auth-${RUN}.txt"
+  rm -rf "$cl51dir" "$cl51authcopy"
+  mkdir -p "$cl51dir"
+  cat > "$cl51dir/curl" <<'STUB'
+#!/bin/sh
+# A stand-in for curl. It records what it was asked to do, and it looks at any config file it was
+# handed (`-K`): the one thing that must never be an argument is the credential.
+printf 'ARGV %s\n' "$*" >> "$CL51_REC"
+_prev=""
+for _a in "$@"; do
+  if [ "$_prev" = "-K" ]; then
+    printf 'AUTHFILE %s mode=%s\n' "$_a" \
+      "$(stat -f '%Lp' "$_a" 2>/dev/null || stat -c '%a' "$_a" 2>/dev/null)" >> "$CL51_REC"
+    cp "$_a" "$CL51_AUTHCOPY" 2>/dev/null
+  fi
+  _prev="$_a"
+done
+exit 7
+STUB
+  chmod +x "$cl51dir/curl"
+  : > "$cl51rec"
+  cl51_secret="tk-51-${RUN}-secret"
+  printf 'export CHATBOX_URL=http://from-file.invalid:1\nexport CHATBOX_TOKEN=tk-from-file\n' > "$cl51cfg"
+  cl51_rc=0
+  CHATBOX_URL="http://wanted.invalid:2" CHATBOX_TOKEN="$cl51_secret" \
+    CHATBOX_CONFIG="$cl51cfg" CL51_REC="$cl51rec" CL51_AUTHCOPY="$cl51authcopy" \
+    PATH="$cl51dir:$PATH" sh "$CLI" inbox --id "a b&c" \
+    > "$SCRATCH/client-req-${RUN}.log" 2>&1 || cl51_rc=$?
+  equals "the stub transport fails the way an unreachable server does" "$cl51_rc" "7"
+  contains "the board named in the environment is the one used" "$(cat "$cl51rec")" \
+    "http://wanted.invalid:2/inbox"
+  lacks "and the board named in the config file is not used at all" "$(cat "$cl51rec")" "from-file.invalid"
+  contains "an id with a space and an ampersand is percent-encoded" "$(cat "$cl51rec")" "id=a%20b%26c"
+  contains "the credential travels in a curl config file" "$(cat "$cl51rec")" "ARGV -K "
+  lacks "so no argument carries it" "$(grep '^ARGV' "$cl51rec")" "$cl51_secret"
+  contains "the config file is readable only by its owner" "$(grep '^AUTHFILE' "$cl51rec")" "mode=600"
+  contains "and carries the bearer header rather than a query parameter" "$(cat "$cl51authcopy")" \
+    "Authorization: Bearer $cl51_secret"
+  cl51_authpath="$(sed -n 's/^AUTHFILE \([^ ]*\) .*/\1/p' "$cl51rec" | head -1)"
+  if [ -n "$cl51_authpath" ] && [ ! -f "$cl51_authpath" ]; then
+    ok "and it is removed when the client exits"
+  else
+    no "and it is removed when the client exits" "still there: $(snip "$cl51_authpath")"
+  fi
+  rm -rf "$cl51dir" "$cl51authcopy"
+
+  # The same three properties against a real board: an id the server accepts, with a space and an
+  # `&` in it, is addressable; two unread messages can be cleared with `ack --all`; and the ack
+  # without any of message/thread/all still refuses, so the fix did not make every ack global.
+  cl51port="${CHATBOX_CLIENT_PORT:-8774}"
+  cl51base="http://127.0.0.1:$cl51port"
+  cl51db="$SCRATCH/client-req-${RUN}.sqlite"
+  cl51tok="$SCRATCH/client-req-${RUN}.token"
+  rm -f "$cl51db" "$cl51db-wal" "$cl51db-shm"
+  printf '%s\n' "$TOKEN" > "$cl51tok"
+  chmod 600 "$cl51tok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$cl51port" --db "$cl51db" --token-file "$cl51tok" \
+    > "$SCRATCH/client-req-${RUN}.server.log" 2>&1 &
+  cl51pid=$!
+  cl51ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS --max-time 2 "$cl51base/health?token=$TOKEN" >/dev/null 2>&1; then cl51ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$cl51ready" = 1 ]; then
+    cl51odd="it cli $RUN a&b"
+    cli51() { CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$cl51base" CHATBOX_TOKEN="$TOKEN" sh "$CLI" "$@"; }
+    cli51 register --id "$cl51odd" --node n-cli51 >/dev/null 2>&1
+    cli51 register --id "it-cli-$RUN-b" --node n-cli51 >/dev/null 2>&1
+    cli51 say --from "it-cli-$RUN-b" --to "$cl51odd" --body "cli-one-$RUN" >/dev/null 2>&1
+    cli51 say --from "it-cli-$RUN-b" --to "$cl51odd" --body "cli-two-$RUN" >/dev/null 2>&1
+    cl51_inbox="$(cli51 inbox --id "$cl51odd" 2>&1)"; cl51_irc=$?
+    equals "a real inbox for an id with a space and an ampersand succeeds" "$cl51_irc" "0"
+    contains "and the messages are in it" "$cl51_inbox" "cli-two-$RUN"
+    cl51_ack="$(cli51 ack --id "$cl51odd" --all 2>&1)"; cl51_arc=$?
+    equals "ack --all succeeds" "$cl51_arc" "0"
+    contains "and marks the whole inbox read" "$cl51_ack" "ok acked 2"
+    contains "so the inbox is empty afterwards" "$(cli51 inbox --id "$cl51odd" 2>&1)" "empty"
+    cl51_bad="$(cli51 ack --id "$cl51odd" 2>&1)"; cl51_brc=$?
+    equals "while an ack with no message, thread or all still refuses" "$cl51_brc" "2"
+    contains "and names what is missing" "$cl51_bad" "pass message=<id>, thread=<id> or all=1"
+  else
+    no "the client request-path fixture started" "no answer on $cl51base"
+  fi
+  kill "$cl51pid" 2>/dev/null
+  wait "$cl51pid" 2>/dev/null
+  rm -f "$cl51db" "$cl51db-wal" "$cl51db-shm" "$cl51tok" "$SCRATCH/client-req-${RUN}.log" \
+        "$SCRATCH/client-req-${RUN}.server.log" "$SCRATCH/client-req-args-${RUN}.txt" \
+        "$SCRATCH/client-req-cfg-${RUN}"
+else
+  printf '  skip  the client request path (set CHATBOX_CLI or keep chatbox-cli.sh in the tree)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 52. The client is held to the standard's shell checks
+# Two shellcheck findings were defects, not opinions: a variable used as a printf *format* (a value
+# containing `%` is reinterpreted), and a temporary file the same shell wrote and then read through
+# (`rm -f` on the error path, which an interrupt skips). Both are fixed in the shape of the code,
+# not waived, and this is the pin: the client parses under `sh -n` and `dash -n`, the two shapes are
+# absent, and `shellcheck -s sh` has nothing to say about it except the one documented dynamic
+# `source` (SC1090) that cannot be avoided - the client is *meant* to source the operator's config
+# file, and its path is a variable.
+# ---------------------------------------------------------------------------
+if [ -f "$CLI" ]; then
+  if sh -n "$CLI" >/dev/null 2>&1; then
+    ok "the client parses under sh -n"
+  else
+    no "the client parses under sh -n" "$(sh -n "$CLI" 2>&1 | head -2 | tr '\n' '~')"
+  fi
+  if command -v dash >/dev/null 2>&1; then
+    if dash -n "$CLI" >/dev/null 2>&1; then
+      ok "and under dash -n"
+    else
+      no "and under dash -n" "$(dash -n "$CLI" 2>&1 | head -2 | tr '\n' '~')"
+    fi
+  else
+    printf '  skip  the dash parse (needs dash)\n'
+  fi
+  lacks "no printf takes its format from a variable" "$(cat "$CLI")" 'printf "$_fc_seq"'
+  lacks "and nothing writes a temporary file it then reads through" "$(cat "$CLI")" "chatbox-canon."
+  if command -v shellcheck >/dev/null 2>&1; then
+    cl52_sc="$(shellcheck -s sh -f gcc "$CLI" 2>&1 | grep -v 'SC1090' | grep -v '^$')"
+    if [ -z "$cl52_sc" ]; then
+      ok "shellcheck has nothing to say but the documented dynamic source"
+    else
+      no "shellcheck has nothing to say but the documented dynamic source" \
+        "$(printf '%s' "$cl52_sc" | head -3 | tr '\n' '~')"
+    fi
+  else
+    printf '  skip  shellcheck on the client (needs shellcheck)\n'
+  fi
+else
+  printf '  skip  the client lint (set CHATBOX_CLI or keep chatbox-cli.sh in the tree)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
