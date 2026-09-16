@@ -164,6 +164,15 @@ func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
     return sec_identity_create(identities[0])
 }
 
+/// A file's permission bits as three octal digits ("600"), or "" when they cannot be read. `stat`
+/// rather than Foundation: this is a number the kernel already has, and a formatter for it would be
+/// one more thing that can differ between machines.
+func fileMode(_ path: String) -> String {
+    var info = stat()
+    guard stat(path, &info) == 0 else { return "" }
+    return String(format: "%03o", info.st_mode & 0o777)
+}
+
 private func hasControlByte(_ s: String) -> Bool {
     // `CharacterSet.controlCharacters` is Cc *and* Cf, so this covers the C1 block and the Unicode
     // *format* characters as well as the ASCII controls: the bidi overrides and isolates, the
@@ -448,6 +457,17 @@ final class Store: @unchecked Sendable {
     init(path: String, migrating: Bool = true, readOnly: Bool = false, queue: DispatchQueue) {
         self.path = path
         self.queue = queue
+        // The database is the message history, and the WAL beside it is the same history until it is
+        // folded back: neither is for other users on the machine. The process umask is already 077
+        // (set in `main`), which covers a file SQLite creates; this covers one that was already there,
+        // created by an earlier start or by hand under a looser umask.
+        if !readOnly {
+            let mode = fileMode(path)
+            if !mode.isEmpty && mode != "600" {
+                chmod(path, 0o600)
+                FileHandle.standardError.write("chatbox: tightened \(path) from mode \(mode) to 600\n".data(using: .utf8)!)
+            }
+        }
         // `readOnly` exists for the prune dry run: `sqlite3_open` *creates* a file that is not there,
         // and any successful open can leave a `-wal`/`-shm` behind, so a mode whose whole promise is
         // "nothing was removed" must not be handed a connection that can write at all.
@@ -3266,6 +3286,12 @@ func verifyCopy(_ path: String, atLeast snapshot: [String: Int]) -> String? {
     }
     return nil
 }
+
+// Every file this process creates holds message history or a copy of it: the database, the WAL
+// beside it, and a `--backup` copy. The umask is what decides their mode, and the default (022) made
+// them world-readable. 077 is the rule, and `Store.init` also tightens a database that already
+// existed under a looser one.
+umask(0o077)
 
 checkArguments(CommandLine.arguments)
 

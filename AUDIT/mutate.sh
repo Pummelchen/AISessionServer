@@ -1192,6 +1192,23 @@ m('281-audit0090-tokenprose',
   r'''        if rows.isEmpty { return (200, "no credentials issued\n") }
         if req.flag("json") { return (200, jsonRows(rows, key: "tokens", matching: matchingTokens)) }''')
 
+# AUDIT #0072: nothing this process creates may be world-readable. The umask covers the files SQLite
+# creates (the database, and the WAL that is the same history until it is folded back); the chmod
+# covers a database that was already there under a looser mode from an earlier start.
+m('279-audit0072-umask',
+  r'''umask(0o077)''',
+  r'''umask(0o022)''')
+m('280-audit0072-nochmod',
+  r'''        if !readOnly {
+            let mode = fileMode(path)
+            if !mode.isEmpty && mode != "600" {
+                chmod(path, 0o600)
+                FileHandle.standardError.write("chatbox: tightened \(path) from mode \(mode) to 600\n".data(using: .utf8)!)
+            }
+        }
+''',
+  r'''''')
+
 m('272-audit0040-nodeadline',
   r'''            if idleTimeout > 0 {
                 queue.asyncAfter(deadline: .now() + .seconds(idleTimeout), execute: refusalIdle)

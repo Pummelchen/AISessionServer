@@ -5788,6 +5788,90 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 50. The history is not world-readable
+# Every file this process creates is message history - the database, the write-ahead log beside it,
+# and a `--backup` copy - and all three were created under the inherited umask (022 on most
+# machines), i.e. readable by every other user on the host. The umask is now 077, and a database that
+# was already there under a looser mode is tightened rather than inherited.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  md50port="${CHATBOX_MODE_PORT:-8776}"
+  md50base="http://127.0.0.1:$md50port"
+  md50db="$SCRATCH/mode-${RUN}.sqlite"
+  md50copy="$SCRATCH/mode-${RUN}.copy.sqlite"
+  md50tok="$SCRATCH/mode-${RUN}.token"
+  md50log1="$SCRATCH/mode-${RUN}.log"
+  md50log2="$SCRATCH/mode-${RUN}.log2"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    md50_mode() { stat -f '%Lp' "$1" 2>/dev/null || printf '?'; }
+  else
+    md50_mode() { stat -c '%a' "$1" 2>/dev/null || printf '?'; }
+  fi
+  rm -f "$md50db" "$md50db-wal" "$md50db-shm" "$md50copy" "$md50tok"
+  printf '%s\n' "$TOKEN" > "$md50tok"
+  chmod 600 "$md50tok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$md50port" --db "$md50db" --token-file "$md50tok" > "$md50log1" 2>&1 &
+  md50pid=$!
+  md50ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS --max-time 2 "$md50base/health?token=$TOKEN" >/dev/null 2>&1; then md50ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$md50ready" = 1 ]; then
+    # One write, so that the write-ahead log exists to be looked at.
+    curl -sS --max-time 10 -G -X POST --data-urlencode "token=$TOKEN" \
+      --data-urlencode "id=it-$RUN-md" --data-urlencode "node=n-md" "$md50base/register" >/dev/null
+    equals "a board the server creates is for its owner only" "$(md50_mode "$md50db")" "600"
+    if [ -f "$md50db-wal" ]; then
+      equals "and so is the write-ahead log beside it" "$(md50_mode "$md50db-wal")" "600"
+    else
+      no "and so is the write-ahead log beside it" "there is no $md50db-wal to check"
+    fi
+  else
+    no "the file-mode fixture started" "no answer on port $md50port"
+  fi
+  kill "$md50pid" 2>/dev/null
+  wait "$md50pid" 2>/dev/null
+
+  # A database created earlier, under the old default, is tightened rather than inherited.
+  if [ -f "$md50db" ]; then
+    chmod 644 "$md50db"
+    equals "the fixture really starts from a loosened database" "$(md50_mode "$md50db")" "644"
+    "$CHATBOX_BIN" --port "$md50port" --db "$md50db" --token-file "$md50tok" > "$md50log2" 2>&1 &
+    md50pid2=$!
+    md50ready2=0
+    for _ in $(seq 1 50); do
+      if curl -fsS --max-time 2 "$md50base/health?token=$TOKEN" >/dev/null 2>&1; then md50ready2=1; break; fi
+      sleep 0.2
+    done
+    if [ "$md50ready2" = 1 ]; then
+      equals "a board that was already there is tightened, not inherited" "$(md50_mode "$md50db")" "600"
+      contains "and the start says so in the log" "$(cat "$md50log2")" \
+        "tightened $md50db from mode 644 to 600"
+    else
+      no "the loosened-database fixture restarted" "no answer on port $md50port"
+    fi
+    kill "$md50pid2" 2>/dev/null
+    wait "$md50pid2" 2>/dev/null
+  else
+    no "there is a database to loosen" "no $md50db"
+  fi
+
+  # A backup is the same history in another file, and it is written by VACUUM INTO rather than by
+  # SQLite's own file creation, so the umask is what has to cover it.
+  rm -f "$md50copy"
+  md50_backup="$("$CHATBOX_BIN" --db "$md50db" --backup "$md50copy" 2>&1)"; md50_brc=$?
+  if [ "$md50_brc" -eq 0 ] && [ -f "$md50copy" ]; then
+    equals "a backup copy is not world-readable either" "$(md50_mode "$md50copy")" "600"
+  else
+    no "a backup copy is not world-readable either" "exit=$md50_brc: $(snip "$md50_backup")"
+  fi
+  rm -f "$md50db" "$md50db-wal" "$md50db-shm" "$md50copy" "$md50tok" "$md50log1" "$md50log2"
+else
+  printf '  skip  the file modes (needs CHATBOX_BIN)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
