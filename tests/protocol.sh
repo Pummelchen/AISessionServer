@@ -5761,11 +5761,11 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
     for _id in "$js49a" "$js49b"; do
       js49 register --data-urlencode "id=$_id" --data-urlencode "node=n-js49" >/dev/null
     done
-    js49 send="$(js49 message --data-urlencode "from=$js49a" --data-urlencode "to=$js49b" \
+    js49_sent="$(js49 message --data-urlencode "from=$js49a" --data-urlencode "to=$js49b" \
       --data-urlencode "body=js-$RUN")"
     equals "the json fixture has a conversation the scoped caller is not in" \
       "$(jsonnum "$(js49get "threads?json=1&token=$TOKEN")" matching)" "1"
-    contains "so the conversation is really there to be hidden" "$js49 send" "ok posted"
+    contains "so the conversation is really there to be hidden" "$js49_sent" "ok posted"
     js49_issued="$(js49 token --data-urlencode "node=n-js49-stranger" --data-urlencode "namespaces=*")"
     js49_secret="$(field "$js49_issued" secret)"
     if [ -n "$js49_secret" ]; then
