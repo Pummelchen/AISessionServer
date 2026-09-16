@@ -193,23 +193,34 @@ m('38-nopollauth', '''        switch authorize(req) {
         }
 
         // A waiting session that is still connected is alive''', '''        // A waiting session that is still connected is alive''')
-m('39-anontoken', '''        let who: Principal
+m('39-anontoken', r'''        let who: Principal
         switch authorize(req) {
         case .denied(let status, let body):
+            req.principal = "denied"
             finish(req, conn: conn, status: status, body: body)
             return
         case .ok(let principal):
             who = principal
-        }''', '''        let who: Principal
+            // Who the request was served as, for the log. A scoped credential is named by the machine
+            // it belongs to and the id of the credential itself; the secret is never written.
+            req.principal = principal.isBootstrap
+                ? "bootstrap"
+                : "node=\(principal.node) token=\(principal.tokenId)"
+        }''', r'''        let who: Principal
         if req.path.hasPrefix("/token") {
             who = .bootstrap
+            req.principal = "bootstrap"
         } else {
             switch authorize(req) {
             case .denied(let status, let body):
+                req.principal = "denied"
                 finish(req, conn: conn, status: status, body: body)
                 return
             case .ok(let principal):
                 who = principal
+                req.principal = principal.isBootstrap
+                    ? "bootstrap"
+                    : "node=\(principal.node) token=\(principal.tokenId)"
             }
         }''')
 # L1: a contradicting query token and header are resolved silently again.
@@ -811,8 +822,8 @@ m('187-trk15-noiseonstdout', '''    FileHandle.standardError.write((line + "\\n"
   '''    FileHandle.standardOutput.write((line + "\\n").data(using: .utf8)!)''', target='mcp')
 
 # TRK-16: the read-only view — served as HTML, and it must not write.
-m('188-trk16-plaintype', '''            respond(conn, status: 200, body: uiPage(), contentType: "text/html; charset=utf-8")''',
-  '''            respond(conn, status: 200, body: uiPage(), contentType: "text/plain; charset=utf-8")''')
+m('188-trk16-plaintype', '''            finish(req, conn: conn, status: 200, body: uiPage(), contentType: "text/html; charset=utf-8")''',
+  '''            finish(req, conn: conn, status: 200, body: uiPage(), contentType: "text/plain; charset=utf-8")''')
 m('189-trk16-writecall', '''        const query = window.location.search;''',
   '''        const query = window.location.search; fetch('/message');''')
 m('190-trk16-flatthreads', '''        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }''',
@@ -1127,6 +1138,32 @@ m('261-audit0043-splitrecipients',
 
 # AUDIT #0043: the recipients of a thread are senders *and* everyone with a delivery row; a reply
 # that only answers the senders reaches nobody who was merely told.
+# AUDIT #0039: a request line carrying a control byte is refused, so no peer can write a log line.
+# AUDIT #0039: the log flattens what a peer supplied, so even a request line that got past the
+# refusal cannot end the record's line. Removing this leaves the refusal as the only defence.
+m('266-audit0039-noflatten',
+  r'''        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)''',
+  r'''        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(req.method) \(req.path) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)''')
+
+m('263-audit0039-nocontrolcheck',
+  r'''        if hasControlByte(req.method) || hasControlByte(req.path) {
+            req.principal = "malformed"
+            finish(req, conn: conn, status: 400, body: "error: the request line contains control characters\n")
+            return
+        }
+''',
+  r'''''')
+
+# AUDIT #0039: the log line has to be a record - time, peer, principal - not just method and route.
+m('264-audit0039-nocontext',
+  r'''        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)''',
+  r'''        FileHandle.standardError.write("chatbox: \(req.method) \(req.path) -> \(status)\n".data(using: .utf8)!)''')
+
+# AUDIT #0039: issuing, revoking, registering and storing are audited actions.
+m('265-audit0039-noaudit',
+  r'''        FileHandle.standardError.write("chatbox: \(nowISO()) audit \(oneLine(what))\n".data(using: .utf8)!)''',
+  r'''''')
+
 m('262-audit0043-sendersonly',
   r'''          UNION
           SELECT d.agent AS a FROM deliveries d JOIN messages m ON m.id = d.message_id

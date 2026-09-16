@@ -1015,6 +1015,10 @@ struct Request {
     /// The peer address, when the server could determine it. Used to warn when a
     /// freshly issued secret crosses a network in the clear.
     var peer = ""
+    /// Who the request was served as, rendered once by `dispatch` so every log line can name it:
+    /// `bootstrap`, `denied`, or the node and credential id behind a scoped token. Never a secret -
+    /// the id is what the credential listing already shows.
+    var principal = ""
 
     func p(_ key: String, _ def: String = "") -> String {
         (params[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? def)
@@ -1283,6 +1287,17 @@ final class Chatbox: @unchecked Sendable {
     /// Route a parsed request — including the one route that answers later.
     func dispatch(_ req: Request, conn: NWConnection) {
         dispatchPrecondition(condition: .onQueue(queue))
+        var req = req
+        req.peer = peerNote(conn)
+        // A request line is not a place for control bytes. A bare LF in the target used to reach the
+        // log, so one request could write a line of its own into the record an operator reads after
+        // an incident - and the same bytes reached the 404 body. It is refused before anything acts
+        // on it, and every echo of it (the log, the 404 body) is flattened as well.
+        if hasControlByte(req.method) || hasControlByte(req.path) {
+            req.principal = "malformed"
+            finish(req, conn: conn, status: 400, body: "error: the request line contains control characters\n")
+            return
+        }
         if req.chunked {
             finish(req, conn: conn, status: 400, body: "error: chunked bodies are not supported — send Content-Length\n")
             return
@@ -1290,13 +1305,17 @@ final class Chatbox: @unchecked Sendable {
         let who: Principal
         switch authorize(req) {
         case .denied(let status, let body):
+            req.principal = "denied"
             finish(req, conn: conn, status: status, body: body)
             return
         case .ok(let principal):
             who = principal
+            // Who the request was served as, for the log. A scoped credential is named by the machine
+            // it belongs to and the id of the credential itself; the secret is never written.
+            req.principal = principal.isBootstrap
+                ? "bootstrap"
+                : "node=\(principal.node) token=\(principal.tokenId)"
         }
-        var req = req
-        if case let .hostPort(host, _) = conn.endpoint { req.peer = "\(host)" }
         if req.method == "GET", req.path == "/inbox" {
             let wait = waitSeconds(req)
             if wait > 0 { beginInboxWait(req, who: who, seconds: wait, conn: conn); return }
@@ -1306,8 +1325,7 @@ final class Chatbox: @unchecked Sendable {
             return
         }
         if req.method == "GET", req.path == "/ui" {
-            FileHandle.standardError.write("chatbox: GET /ui -> 200\n".data(using: .utf8)!)
-            respond(conn, status: 200, body: uiPage(), contentType: "text/html; charset=utf-8")
+            finish(req, conn: conn, status: 200, body: uiPage(), contentType: "text/html; charset=utf-8")
             return
         }
         let answer = handle(req, who)
@@ -1349,7 +1367,7 @@ final class Chatbox: @unchecked Sendable {
         case ("POST", "/token"): return reply(createToken(req, who))
         case ("GET", "/token"): return reply(listTokens(req, who))
         case ("POST", "/token/revoke"): return reply(revokeToken(req, who))
-        default: return Reply(404, "not found: \(req.method) \(req.path)\n\n" + usage(publicURL))
+        default: return Reply(404, "not found: \(oneLine(req.method)) \(oneLine(req.path))\n\n" + usage(publicURL))
         }
     }
 
@@ -1520,6 +1538,7 @@ final class Chatbox: @unchecked Sendable {
         SELECT node, agent, harness, session, ip, repos FROM agents WHERE id = ?
         """, [id]).first ?? [:]
         let storedRepos = stored["repos"] ?? ""
+        audit("registered id=\(oneLine(id)) node=\(oneLine(stored["node"] ?? "")) repos=\(storedRepos.isEmpty ? "(none)" : oneLine(storedRepos))")
         return (200, """
         ok registered
         id: \(id)
@@ -1815,6 +1834,7 @@ final class Chatbox: @unchecked Sendable {
                           + (unseen.count == 1 ? "that session" : "those sessions") + "\n")
             }
         }
+        audit("message id=\(msgId) thread=\(threadId) repo=\(effRepo.isEmpty ? "-" : effRepo) from=\(oneLine(from)) recipients=\(delivered.count)")
         return Reply(200, """
         ok posted
         message: \(msgId)
@@ -2474,6 +2494,7 @@ final class Chatbox: @unchecked Sendable {
         // leaves the machine and a TLS listener is encrypted, so the warning is for
         // the one case that is actually exposed — a plain listener reached from
         // somewhere else.
+        audit("credential issued id=\(id) node=\(oneLine(node)) expires=\(expiresAt.isEmpty ? "never" : expiresAt)")
         let exposure = tlsEnabled || req.peer.isEmpty || isLoopback(req.peer)
             ? ""
             : "\nwarning: this was issued over a non-loopback connection (\(req.peer)) with no TLS\n"
@@ -2544,6 +2565,7 @@ final class Chatbox: @unchecked Sendable {
             FileHandle.standardError.write("chatbox: the revoke of \(id) did not run: \(store.lastError())\n".data(using: .utf8)!)
             return (500, "error: the revocation did not run — \(oneLine(id)) is still valid (\(oneLine(store.lastError())))\n")
         }
+        audit("credential revoked id=\(oneLine(id))")
         return (200, """
         ok revoked \(id)
         Every request presenting it is rejected from now on. Other credentials and
@@ -2649,10 +2671,32 @@ final class Chatbox: @unchecked Sendable {
     /// Log the outcome and answer. Every route ends here exactly once, whether it
     /// was answered inline or after a long-poll wait.
     func finish(_ req: Request, conn: NWConnection, status: Int, body: String,
+                contentType: String = "text/plain; charset=utf-8",
                 headers: [String: String] = [:]) {
         dispatchPrecondition(condition: .onQueue(queue))
-        FileHandle.standardError.write("chatbox: \(req.method) \(req.path) -> \(status)\n".data(using: .utf8)!)
-        respond(conn, status: status, body: body, headers: headers)
+        // One line per request, and it has to be a record rather than a note: when it happened, who
+        // asked, as whom, what they asked for and what came back. It used to be `METHOD PATH ->
+        // STATUS` and nothing else, so an operator could not order events after an incident,
+        // attribute an authentication failure, or tell which credential issued or revoked one.
+        // `oneLine` is belt and braces - the request line is refused upstream if it carries a
+        // control byte - because a log line a peer can end is a log a peer can write into.
+        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)
+        respond(conn, status: status, body: body, contentType: contentType, headers: headers)
+    }
+
+    /// The peer's address, for a log line. `-` when the connection has no nameable endpoint, which is
+    /// what a log line must say rather than nothing.
+    private func peerNote(_ conn: NWConnection) -> String {
+        if case let .hostPort(host, _) = conn.endpoint { return "\(host)" }
+        return "-"
+    }
+
+    /// One line per action an operator has to be able to reconstruct after an incident, with the ids
+    /// it touched. The *secret* of a credential never appears here; only its id, which the credential
+    /// listing already shows.
+    private func audit(_ what: String) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        FileHandle.standardError.write("chatbox: \(nowISO()) audit \(oneLine(what))\n".data(using: .utf8)!)
     }
 
     func respond(_ conn: NWConnection, status: Int, body: String,
@@ -2813,7 +2857,7 @@ final class Chatbox: @unchecked Sendable {
     /// A body that stops before the length it announced is a request that was never made, and the
     /// sender is the one party who cannot tell that from a slow server. Nothing is stored.
     private func truncatedBody(_ conn: NWConnection, promised: Int) {
-        FileHandle.standardError.write("chatbox: body shorter than Content-Length -> 400\n".data(using: .utf8)!)
+        FileHandle.standardError.write("chatbox: \(nowISO()) \(peerNote(conn)) body shorter than Content-Length -> 400\n".data(using: .utf8)!)
         respond(conn, status: 400, body: """
         error: the body is shorter than the \(promised) bytes Content-Length announced — \
         nothing was stored. Send exactly the bytes you declare.
@@ -2824,7 +2868,7 @@ final class Chatbox: @unchecked Sendable {
     /// Answer rather than drop the connection: an oversized report is an ordinary mistake,
     /// and a sender that is told nothing has no way to learn what went wrong.
     private func tooLarge(_ conn: NWConnection) {
-        FileHandle.standardError.write("chatbox: request over \(maxBody) bytes -> 413\n".data(using: .utf8)!)
+        FileHandle.standardError.write("chatbox: \(nowISO()) \(peerNote(conn)) request over \(maxBody) bytes -> 413\n".data(using: .utf8)!)
         respond(conn, status: 413, body: """
         error: request too large — the limit is \(maxBody) bytes, and it covers the whole \
         request (request line, headers and body). Raise it with --max-body, or send the \

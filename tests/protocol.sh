@@ -5248,6 +5248,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 44. The request log is a record, and a peer cannot write into it
+# The line was `chatbox: METHOD PATH -> STATUS`: no time, no peer, no principal, and nothing about the
+# ids an action touched. After an incident an operator could not order events, attribute an
+# authentication failure, or say which credential was issued or revoked. And because the request
+# target was echoed verbatim, a target carrying a bare LF let one request write a line of its own into
+# that record - the same bytes reached the 404 body.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_SERVER_LOG:-}" ] && [ -f "${CHATBOX_SERVER_LOG:-}" ]; then
+  log44="$CHATBOX_SERVER_LOG"
+  curl -sS --max-time 20 "$URL/health?token=$TOKEN" >/dev/null
+  log44_line="$(tail -n 5 "$log44" | grep 'GET /health -> 200' | tail -n 1)"
+  case "$log44_line" in
+    "chatbox: "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z*" principal=bootstrap")
+      ok "a log line carries a timestamp, the peer, the route and the principal" ;;
+    *) no "a log line carries a timestamp, the peer, the route and the principal" \
+         "got [$(snip "$log44_line")]" ;;
+  esac
+  contains "the peer that asked is named" "$log44_line" "127.0.0.1"
+  curl -sS --max-time 20 "$URL/health" >/dev/null
+  contains "a refused request is attributed to no credential" \
+    "$(tail -n 5 "$log44" | grep 'GET /health -> 401' | tail -n 1)" "principal=denied"
+
+  # A scoped credential is named by its machine and its credential id - never its secret.
+  log44_issued="$(post /token --data-urlencode "node=node-logprobe" --data-urlencode "namespaces=*")"
+  log44_tok="$(field "$log44_issued" secret)"
+  log44_id="$(field "$log44_issued" id)"
+  if [ -n "$log44_tok" ] && [ -n "$log44_id" ]; then
+    scoped_get /health "$log44_tok" >/dev/null
+    contains "a scoped request names the machine and the credential" \
+      "$(tail -n 5 "$log44" | grep 'GET /health -> 200' | tail -n 1)" \
+      "node=node-logprobe token=$log44_id"
+    contains "and issuing a credential is an audited action" \
+      "$(tail -n 20 "$log44" | grep 'audit credential issued' | tail -n 1)" "id=$log44_id"
+    lacks "and the log never contains the secret" "$(tail -n 40 "$log44")" "$log44_tok"
+  else
+    no "a log-probe credential was issued" "$(snip "$log44_issued")"
+  fi
+
+  log44_reg="it-$RUN-log-audit"
+  post /register --data-urlencode "id=$log44_reg" --data-urlencode "node=node-log-audit" >/dev/null
+  contains "a registration is audited with what was stored" \
+    "$(tail -n 10 "$log44" | grep 'audit registered' | tail -n 1)" "id=$log44_reg node=node-log-audit"
+  log44_sent="$(post /message --data-urlencode "from=$log44_reg" --data-urlencode "to=$B" \
+    --data-urlencode "body=logaudit-$RUN")"
+  log44_tid="$(field "$log44_sent" thread)"
+  log44_msg="$(tail -n 10 "$log44" | grep 'audit message' | tail -n 1)"
+  contains "a stored message is audited with its thread" "$log44_msg" "thread=$log44_tid"
+  contains "and its sender and recipient count" "$log44_msg" "from=$log44_reg recipients=1"
+  post /token/revoke --data-urlencode "id=$log44_id" >/dev/null
+  contains "a revocation is audited" \
+    "$(tail -n 10 "$log44" | grep 'audit credential revoked' | tail -n 1)" "id=$log44_id"
+
+  # A request line is not a place for control bytes: one request must not be able to write a line of
+  # its own into the record. A bare LF inside the target is what did it; `nc` is how a client sends
+  # one at all, because curl encodes it.
+  if command -v nc >/dev/null 2>&1; then
+    log44_port="$(printf '%s' "$URL" | sed -n 's|.*:\([0-9][0-9]*\)$|\1|p')"
+    log44_inj="$(printf 'GET /x\nFORGEDBYCLIENT HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n' \
+      | nc -w 2 127.0.0.1 "$log44_port" 2>/dev/null)"
+    contains "a request line with a control byte is refused" "$log44_inj" "400"
+    lacks "and the refusal does not echo it back" "$log44_inj" "FORGEDBYCLIENT"
+    contains "while the log records it flattened onto one line" \
+      "$(tail -n 5 "$log44" | grep 'GET /x' | tail -n 1)" "GET /x FORGEDBYCLIENT"
+    equals "and the log gains no line of the peer's making" \
+      "$(grep -c '^FORGEDBYCLIENT' "$log44")" "0"
+  else
+    printf '  skip  the log-injection probe (needs nc)\n'
+  fi
+else
+  printf '  skip  the request log (set CHATBOX_SERVER_LOG)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
