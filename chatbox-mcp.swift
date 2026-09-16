@@ -19,14 +19,14 @@ let configToken = ProcessInfo.processInfo.environment["CHATBOX_TOKEN"] ?? ""
 let protocolVersion = "2024-11-05"
 
 func note(_ line: String) {
-    FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
+    FileHandle.standardError.write(Data((line + "\n").utf8))
 }
 
 func emit(_ object: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
           var text = String(data: data, encoding: .utf8) else { return }
     text += "\n"
-    FileHandle.standardOutput.write(text.data(using: .utf8)!)
+    FileHandle.standardOutput.write(Data(text.utf8))
 }
 
 /// What one HTTP call reported. See the note in `call`: a completion handler is `@Sendable`.

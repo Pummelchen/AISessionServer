@@ -308,7 +308,7 @@ m('56-dupmarkers', '''        // An explicit to=a,b,a should not deliver, mark o
 # A negative window is a mistake, not a way to switch reporting off.
 m('57-negallowed', '''if staleAfterValue < 0 {
     // A negative window used to mean "off", which fails open on a typo.
-    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds \u2014 got '\\(staleAfterRaw)'\\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --stale-after must be 0 (off) or a positive number of seconds \u2014 got '\\(staleAfterRaw)'\\n".utf8))
     exit(2)
 }
 ''', '')
@@ -431,7 +431,7 @@ m('85-octalwait', '''    _w="$(printf '%s' "$4" | sed 's/^0*//')"
 # The whole point of the flag: a TLS setup that fails must stop the server, not
 # quietly leave it listening in the clear under a name that promised otherwise.
 m('86-tlsfallback', '''    guard let identity = loadTLSIdentity(p12Path: tlsIdentityPath, password: tlsPassword) else {
-        FileHandle.standardError.write("chatbox: refusing to start — TLS was asked for and could not be set up\\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: refusing to start — TLS was asked for and could not be set up\\n".utf8))
         exit(2)
     }
     tlsIdentity = identity''',
@@ -446,19 +446,19 @@ m('88-tlsnowarn', '''        let exposure = tlsEnabled || req.peer.isEmpty || is
 # A flag that is present with no usable value is a mistake, not a request for
 # plain HTTP — and it used to serve plain HTTP.
 m('89-tlsnovalue', '''if (argPresent("--tls-identity") || argPresent("--tls-password-file")) && tlsIdentityPath.isEmpty {
-    FileHandle.standardError.write("chatbox: --tls-identity was given without a usable path — refusing to start rather than serve in the clear\\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --tls-identity was given without a usable path — refusing to start rather than serve in the clear\\n".utf8))
     exit(2)
 }
 ''', '')
 # A flag nobody recognises is a mistake, and silently ignoring one left the board in
 # the clear behind a flag that looked like it had turned encryption on.
 m('90-unknownflag', '''        guard knownFlags.contains(name) else {
-            FileHandle.standardError.write("chatbox: unknown flag '\\(name)' — refusing to start rather than ignore it\\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: unknown flag '\\(name)' — refusing to start rather than ignore it\\n".utf8))
             exit(2)
         }
 ''', '')
 m('91-duplicateflag', '''        guard seen.insert(name).inserted else {
-            FileHandle.standardError.write("chatbox: '\\(name)' given more than once\\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: '\\(name)' given more than once\\n".utf8))
             exit(2)
         }
 ''', '')
@@ -501,7 +501,7 @@ m('97-capfixed', '''            if buf.count > self.maxBody || announced > self.
   '''            if buf.count > 8192 || announced > 8192 {''')
 # A cap that cannot hold a request line and its headers refuses everything.
 m('98-capnovalidate', '''if maxBodyValue < 512 || maxBodyValue > maxBodyCeiling {
-    FileHandle.standardError.write("chatbox: --max-body must be between 512 and \\(maxBodyCeiling) bytes (a request line and its headers need the floor; the ceiling is what bounds memory) — got '\\(maxBodyRaw)'\\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --max-body must be between 512 and \\(maxBodyCeiling) bytes (a request line and its headers need the floor; the ceiling is what bounds memory) — got '\\(maxBodyRaw)'\\n".utf8))
     exit(2)
 }
 ''', '')
@@ -529,7 +529,7 @@ m('102-chunkedok', '''        if req.chunked {
 m('103-capceiling', '''if maxBodyValue < 512 || maxBodyValue > maxBodyCeiling {''', '''if maxBodyValue < 512 {''')
 # A trailing flag is a mistake, not a silent default.
 m('104-novalueflag', '''        if valueFlags.contains(name) && !hasInlineValue && i + 1 >= argv.count {
-            FileHandle.standardError.write("chatbox: '\\(name)' needs a value\\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: '\\(name)' needs a value\\n".utf8))
             exit(2)
         }
 ''', '')
@@ -829,8 +829,8 @@ m('184-trk15-notoolrequired', '''    for required in tool.required where (args[r
 m('185-trk15-noiserror', '''    let ok = status >= 200 && status < 300''', '''    let ok = true''', target='mcp')
 m('186-trk15-unknownmethod', '''        if !isNotification { fail(id: id, code: -32601, "method not found: \\(method)") }''',
   '''        break''', target='mcp')
-m('187-trk15-noiseonstdout', '''    FileHandle.standardError.write((line + "\\n").data(using: .utf8)!)''',
-  '''    FileHandle.standardOutput.write((line + "\\n").data(using: .utf8)!)''', target='mcp')
+m('187-trk15-noiseonstdout', '''    FileHandle.standardError.write(Data((line + "\\n").utf8))''',
+  '''    FileHandle.standardOutput.write(Data((line + "\\n").utf8))''', target='mcp')
 
 # TRK-16: the read-only view — served as HTML, and it must not write.
 m('188-trk16-plaintype', '''            finish(req, conn: conn, status: 200, body: uiPage(), contentType: "text/html; charset=utf-8")''',
@@ -933,7 +933,7 @@ m('228-trk17-serveridtrim', r'''let serverID = serverIDRaw''',
 
 # The outcome of a forward goes to the log as well as to the sender: an operator asking "did that
 # ever reach the other board" days later is reading the log, not the sender's screen.
-m('229-trk17-nolog', r'''        FileHandle.standardError.write(line.data(using: .utf8)!)
+m('229-trk17-nolog', r'''        FileHandle.standardError.write(Data(line.utf8))
         return note''', r'''        _ = line
         return note''')
 
@@ -952,12 +952,12 @@ m('233-audit0019-mcpplus', r'''        case 0x41...0x5A, 0x61...0x7A, 0x30...0x3
 
 # AUDIT #0022: a credential write that did not happen must not be reported as one.
 m('234-audit0022-issueguard', r'''        guard stored.rc == SQLITE_DONE, stored.changes == 1 else {
-            FileHandle.standardError.write("chatbox: the credential insert failed: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the credential insert failed: \(store.lastError())\n".utf8))
             return (500, "error: the credential was not stored — nothing was issued (\(oneLine(store.lastError())))\n")
         }
 ''', '')
 m('235-audit0022-revokeguard', r'''        guard revoked.rc == SQLITE_DONE, revoked.changes == 1 else {
-            FileHandle.standardError.write("chatbox: the revoke of \(id) did not run: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the revoke of \(id) did not run: \(store.lastError())\n".utf8))
             return (500, "error: the revocation did not run — \(oneLine(id)) is still valid (\(oneLine(store.lastError())))\n")
         }
 ''', '')
@@ -965,12 +965,12 @@ m('235-audit0022-revokeguard', r'''        guard revoked.rc == SQLITE_DONE, revo
 # AUDIT #0020: the send path is one transaction, and a refused delivery must not be ignored.
 m('236-audit0020-deliveryguard', r'''            guard delivery.rc == SQLITE_DONE else {
                 store.run("ROLLBACK", [])
-                FileHandle.standardError.write("chatbox: the delivery to \(r) failed: \(store.lastError())\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: the delivery to \(r) failed: \(store.lastError())\n".utf8))
                 return Reply(500, "error: the message could not be delivered to \(oneLine(r)) — nothing was written\n")
             }
 ''', '')
 m('237-audit0020-registerguard', r'''        guard wrote.rc == SQLITE_DONE else {
-            FileHandle.standardError.write("chatbox: the registration of \(id) failed: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the registration of \(id) failed: \(store.lastError())\n".utf8))
             return (500, "error: the registration was not stored — \(oneLine(id)) is not registered (\(oneLine(store.lastError())))\n")
         }
 ''', '')
@@ -1056,7 +1056,7 @@ m('246-audit0041-portfallback',
 let portRaw = argValue("--port", "8787")
 let portValue = UInt16(portRaw) ?? 0
 if portValue < 1 {
-    FileHandle.standardError.write("chatbox: --port must be between 1 and 65535 — got '\(portRaw)'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --port must be between 1 and 65535 — got '\(portRaw)'\n".utf8))
     exit(2)
 }
 let port = portValue''',
@@ -1087,11 +1087,11 @@ m('250-audit0025-unframed',
 m('252-audit0042-nofilecheck',
   r'''    let prunePath = NSString(string: dbPath).expandingTildeInPath
     guard FileManager.default.fileExists(atPath: prunePath) else {
-        FileHandle.standardError.write("chatbox: \(prunePath) does not exist — refusing to create a board to prune\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(prunePath) does not exist — refusing to create a board to prune\n".utf8))
         exit(1)
     }
     if case .problem(let why) = readBoard(prunePath) {
-        FileHandle.standardError.write("chatbox: \(why) — refusing to open it for prune\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(why) — refusing to open it for prune\n".utf8))
         exit(1)
     }''',
   r'''    let prunePath = NSString(string: dbPath).expandingTildeInPath''')
@@ -1203,7 +1203,7 @@ m('280-audit0072-nochmod',
             let mode = fileMode(path)
             if !mode.isEmpty && mode != "600" {
                 chmod(path, 0o600)
-                FileHandle.standardError.write("chatbox: tightened \(path) from mode \(mode) to 600\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: tightened \(path) from mode \(mode) to 600\n".utf8))
             }
         }
 ''',
@@ -1310,10 +1310,17 @@ EOF
   rm -f "$_t"
 ''', target='cli')
 
+# AUDIT #0007: no UTF-8 conversion is force-unwrapped. The pin has to be textual - `Data(s.utf8)` and
+# `s.data(using: .utf8)!` are the same program once compiled, so no behaviour can tell them apart -
+# and this cell puts one site back in the source the harness names in CHATBOX_SRC.
+m('288-audit0007-forceunwrap',
+  r'''            FileHandle.standardError.write(Data("chatbox: '\(name)' needs a value\n".utf8))''',
+  r'''            FileHandle.standardError.write("chatbox: '\(name)' needs a value\n".data(using: .utf8)!)''')
+
 # AUDIT #0040: how many refusals may be in flight at once is bounded, not only how long each lives.
 m('273-audit0040-nocap',
   r'''            if refusedConnections.count >= maxConnections {
-                FileHandle.standardError.write("chatbox: \(nowISO()) \(peerNote(conn)) refused without an answer: \(maxConnections) refusal(s) already in flight\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(peerNote(conn)) refused without an answer: \(maxConnections) refusal(s) already in flight\n".utf8))
                 conn.cancel()
                 return
             }
@@ -1331,7 +1338,7 @@ let shutdownHandler: @Sendable () -> Void = {
     server.requestShutdown()
     listener.cancel()
     store.checkpointWAL()
-    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))
     // The queue is serial, so everything already accepted has run by the time this runs; the held
     // answers end on their own timers within half a second. This is the grace they get to leave.
     server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
@@ -1339,7 +1346,7 @@ let shutdownHandler: @Sendable () -> Void = {
 stopSource.setEventHandler(handler: shutdownHandler)
 stopSourceInt.setEventHandler(handler: shutdownHandler)
 hupSource.setEventHandler {
-    FileHandle.standardError.write("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".utf8))
 }
 stopSource.resume()
 stopSourceInt.resume()
@@ -1360,7 +1367,7 @@ let shutdownHandler: @Sendable () -> Void = {
     server.requestShutdown()
     listener.cancel()
     store.checkpointWAL()
-    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))
     // The queue is serial, so everything already accepted has run by the time this runs; the held
     // answers end on their own timers within half a second. This is the grace they get to leave.
     server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
@@ -1368,7 +1375,7 @@ let shutdownHandler: @Sendable () -> Void = {
 stopSource.setEventHandler(handler: shutdownHandler)
 stopSourceInt.setEventHandler(handler: shutdownHandler)
 hupSource.setEventHandler {
-    FileHandle.standardError.write("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".utf8))
 }
 stopSource.resume()
 stopSourceInt.resume()
@@ -1381,7 +1388,7 @@ let shutdownHandler: @Sendable () -> Void = {
     server.requestShutdown()
     listener.cancel()
     store.checkpointWAL()
-    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))
     server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
 }
 stopSource.setEventHandler(handler: shutdownHandler)
@@ -1392,8 +1399,8 @@ stopSourceInt.resume()''')
 # AUDIT #0044: the log has to be folded back on the way out, or the stopped board leaves it behind.
 m('271-audit0044-nocheckpoint',
   r'''    store.checkpointWAL()
-    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)''',
-  r'''    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended — exiting\n".data(using: .utf8)!)''')
+    FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))''',
+  r'''    FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended — exiting\n".utf8))''')
 
 m('267-audit0046-noindex',
   '''        exec("CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender);")
@@ -1409,8 +1416,8 @@ m('268-audit0046-nodelindex',
   '''''')
 
 m('266-audit0039-noflatten',
-  r'''        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)''',
-  r'''        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(req.method) \(req.path) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)''')
+  r'''        FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".utf8))''',
+  r'''        FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(req.method) \(req.path) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".utf8))''')
 
 m('263-audit0039-nocontrolcheck',
   r'''        if hasControlByte(req.method) || hasControlByte(req.path) {
@@ -1423,12 +1430,12 @@ m('263-audit0039-nocontrolcheck',
 
 # AUDIT #0039: the log line has to be a record - time, peer, principal - not just method and route.
 m('264-audit0039-nocontext',
-  r'''        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)''',
-  r'''        FileHandle.standardError.write("chatbox: \(req.method) \(req.path) -> \(status)\n".data(using: .utf8)!)''')
+  r'''        FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".utf8))''',
+  r'''        FileHandle.standardError.write(Data("chatbox: \(req.method) \(req.path) -> \(status)\n".utf8))''')
 
 # AUDIT #0039: issuing, revoking, registering and storing are audited actions.
 m('265-audit0039-noaudit',
-  r'''        FileHandle.standardError.write("chatbox: \(nowISO()) audit \(oneLine(what))\n".data(using: .utf8)!)''',
+  r'''        FileHandle.standardError.write(Data("chatbox: \(nowISO()) audit \(oneLine(what))\n".utf8))''',
   r'''''')
 
 m('262-audit0043-sendersonly',
@@ -1454,7 +1461,7 @@ m('254-audit0042-noconflict',
   r'''let operatorModes = [("--backup", backupRaw), ("--verify-backup", verifyRaw), ("--prune", pruneRaw)]
     .filter { !$0.1.isEmpty }.map { $0.0 }
 if operatorModes.count > 1 {
-    FileHandle.standardError.write("chatbox: \(operatorModes.joined(separator: " and ")) ask for different things — give one operator mode\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(operatorModes.joined(separator: " and ")) ask for different things — give one operator mode\n".utf8))
     exit(2)
 }
 ''',
@@ -1555,6 +1562,7 @@ run_one() { # label, binary, port
   out=$(CHATBOX_URL="http://127.0.0.1:$_port" CHATBOX_TOKEN="$(cat "$SC/mut-token")" \
         CHATBOX_SERVER_LOG="$SC/mut/$_label.log" CHATBOX_DB="$SC/mut/$_label.sqlite" \
         CHATBOX_CLI="$CLI_FOR_RUN" CHATBOX_BIN="$BIN_FOR_RUN" CHATBOX_MCP="$MCP_FOR_RUN" \
+        CHATBOX_SRC="${SRC_FOR_RUN:-}" \
         sh "$FROZEN/tests/protocol.sh" 2>&1)
   rc=$?
   kill "$_p" 2>/dev/null; wait "$_p" 2>/dev/null
@@ -1587,6 +1595,7 @@ xcrun swiftc -O "$FROZEN/chatbox.swift" -o "$base_bin" 2>/dev/null
 xcrun swiftc -O "$FROZEN/chatbox-mcp.swift" -o "$SC/mut/base-mcp" 2>/dev/null
 CLI_FOR_RUN="$FROZEN/chatbox-cli.sh"
 BIN_FOR_RUN="$base_bin"
+SRC_FOR_RUN="$FROZEN/chatbox.swift"
 last=$(run_one base "$base_bin" "$port"); brc=$?
 printf '%-20s %-8s %s\n' "base (must be green)" "$([ $brc -eq 0 ] && echo GREEN || echo RED)" "$last"
 # The base cell must be green before anything is measured against it: a red base makes every "red"
@@ -1609,6 +1618,7 @@ for f in "$SC"/mut/*.swift; do
   CLI_FOR_RUN="$FROZEN/chatbox-cli.sh"
   BIN_FOR_RUN="$bin"
   MCP_FOR_RUN="$SC/mut/base-mcp"
+  SRC_FOR_RUN="$f"
   last=$(run_one "$name" "$bin" "$port"); rc=$?
   report "$name" "$rc" "$last"
   port=$((port + 1))
@@ -1623,6 +1633,7 @@ for f in "$SC"/mut/*.sh; do
   CLI_FOR_RUN="$f"
   BIN_FOR_RUN="$base_bin"
   MCP_FOR_RUN="$SC/mut/base-mcp"
+  SRC_FOR_RUN="$f"
   last=$(run_one "$name" "$base_bin" "$port"); rc=$?
   report "$name" "$rc" "$last"
   port=$((port + 1))
@@ -1643,6 +1654,7 @@ for f in "$SC"/mut-mcp/*.swift; do
   CLI_FOR_RUN="$FROZEN/chatbox-cli.sh"
   BIN_FOR_RUN="$base_bin"
   MCP_FOR_RUN="$bin"
+  SRC_FOR_RUN="$f"
   last=$(run_one "$name" "$base_bin" "$port"); rc=$?
   report "$name" "$rc" "$last"
   port=$((port + 1))
@@ -1669,7 +1681,7 @@ relative_cell() {
       CHATBOX_URL="http://127.0.0.1:$_rc" CHATBOX_TOKEN="$(cat "$SC/mut-token")" \
       CHATBOX_DB="tests/.scratch/relative.sqlite" \
       CHATBOX_SERVER_LOG="tests/.scratch/relative.log" \
-      CHATBOX_BIN="$base_bin" sh tests/protocol.sh ) > "$SC/mut/relative.out" 2>&1
+      CHATBOX_BIN="$base_bin" CHATBOX_SRC="$FROZEN/chatbox.swift" sh tests/protocol.sh ) > "$SC/mut/relative.out" 2>&1
   rc=$?
   kill "$_rp" 2>/dev/null; wait "$_rp" 2>/dev/null
   return $rc

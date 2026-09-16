@@ -125,7 +125,7 @@ private func isLoopback(_ host: String) -> Bool {
 func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
     let p = NSString(string: p12Path).expandingTildeInPath
     guard let data = FileManager.default.contents(atPath: p) else {
-        FileHandle.standardError.write("chatbox: cannot read --tls-identity \(p)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: cannot read --tls-identity \(p)\n".utf8))
         return nil
     }
     var items: CFArray?
@@ -142,7 +142,7 @@ func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
     // `security export` alike — so the question is whether an identity came out, and
     // the status is only worth printing when none did.
     guard let list = items as? [[String: Any]] else {
-        FileHandle.standardError.write("chatbox: cannot open --tls-identity \(p): OSStatus \(status) — wrong password, or not a PKCS#12 bundle\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: cannot open --tls-identity \(p): OSStatus \(status) — wrong password, or not a PKCS#12 bundle\n".utf8))
         return nil
     }
     var identities: [SecIdentity] = []
@@ -158,7 +158,7 @@ func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
     // arbitrary one is presented along with its private key — an operator who bundled
     // a CA or a client-auth key next to the server key would publish the wrong one.
     guard identities.count == 1 else {
-        FileHandle.standardError.write("chatbox: --tls-identity \(p) holds \(identities.count) identities — a server identity must be the only one in the bundle (OSStatus \(status))\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --tls-identity \(p) holds \(identities.count) identities — a server identity must be the only one in the bundle (OSStatus \(status))\n".utf8))
         return nil
     }
     return sec_identity_create(identities[0])
@@ -465,7 +465,7 @@ final class Store: @unchecked Sendable {
             let mode = fileMode(path)
             if !mode.isEmpty && mode != "600" {
                 chmod(path, 0o600)
-                FileHandle.standardError.write("chatbox: tightened \(path) from mode \(mode) to 600\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: tightened \(path) from mode \(mode) to 600\n".utf8))
             }
         }
         // `readOnly` exists for the prune dry run: `sqlite3_open` *creates* a file that is not there,
@@ -473,7 +473,7 @@ final class Store: @unchecked Sendable {
         // "nothing was removed" must not be handed a connection that can write at all.
         let flags = readOnly ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
         if sqlite3_open_v2(path, &db, flags, nil) != SQLITE_OK {
-            FileHandle.standardError.write("chatbox: cannot open db at \(path)\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: cannot open db at \(path)\n".utf8))
             exit(1)
         }
         // `journal_mode=WAL` writes to the database header and is refused on a read-only connection;
@@ -559,7 +559,7 @@ final class Store: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else {
-            FileHandle.standardError.write("chatbox: sql error: \(String(cString: sqlite3_errmsg(db)))\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: sql error: \(String(cString: sqlite3_errmsg(db)))\n".utf8))
             return nil
         }
         for (i, v) in binds.enumerated() {
@@ -576,7 +576,7 @@ final class Store: @unchecked Sendable {
         defer { sqlite3_finalize(st) }
         let rc = sqlite3_step(st)
         if rc != SQLITE_DONE && rc != SQLITE_ROW {
-            FileHandle.standardError.write("chatbox: step error: \(String(cString: sqlite3_errmsg(db)))\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: step error: \(String(cString: sqlite3_errmsg(db)))\n".utf8))
             return -1
         }
         return sqlite3_last_insert_rowid(db)
@@ -624,7 +624,7 @@ final class Store: @unchecked Sendable {
                 // BUSY, IOERR, CORRUPT, NOMEM, or anything else: the rows collected so far are a
                 // *partial* answer, and a partial answer that looks complete is worse than an error.
                 readFailed = true
-                FileHandle.standardError.write("chatbox: read failed after \(out.count) row(s): \(String(cString: sqlite3_errmsg(db)))\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: read failed after \(out.count) row(s): \(String(cString: sqlite3_errmsg(db)))\n".utf8))
             }
             break
         }
@@ -693,7 +693,7 @@ final class Store: @unchecked Sendable {
         // scoped credential would fail with "unknown token" while the bootstrap credential kept
         // working. A server that cannot migrate must not start.
         if !rows("PRAGMA table_info(\(table))").compactMap({ $0["name"] }).contains(column) {
-            FileHandle.standardError.write("chatbox: cannot add \(table).\(column) to \(path) — refusing to serve a half-migrated board\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: cannot add \(table).\(column) to \(path) — refusing to serve a half-migrated board\n".utf8))
             exit(1)
         }
     }
@@ -1646,7 +1646,7 @@ final class Chatbox: @unchecked Sendable {
         // discarded, so a refused INSERT still produced "ok registered" with the empty identity the
         // re-read found.
         guard wrote.rc == SQLITE_DONE else {
-            FileHandle.standardError.write("chatbox: the registration of \(id) failed: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the registration of \(id) failed: \(store.lastError())\n".utf8))
             return (500, "error: the registration was not stored — \(oneLine(id)) is not registered (\(oneLine(store.lastError())))\n")
         }
         let stored = store.rows("""
@@ -1776,7 +1776,7 @@ final class Chatbox: @unchecked Sendable {
         // queue, so the transaction cannot interleave with another request.
         let began = store.runReporting("BEGIN IMMEDIATE", [])
         guard began.rc == SQLITE_DONE else {
-            FileHandle.standardError.write("chatbox: could not begin the send transaction: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: could not begin the send transaction: \(store.lastError())\n".utf8))
             return Reply(500, "error: the message could not be stored — nothing was written\n")
         }
 
@@ -1839,7 +1839,7 @@ final class Chatbox: @unchecked Sendable {
             // gone, which is the case answering 404 protects.
             store.run("ROLLBACK", [])
             if attempt.rc != SQLITE_DONE {
-                FileHandle.standardError.write("chatbox: the message insert failed: \(store.lastError())\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: the message insert failed: \(store.lastError())\n".utf8))
                 return Reply(500, "error: the message could not be stored — nothing was written\n")
             }
             return Reply(404, "error: no thread \(threadId) — send without thread= to open one\n")
@@ -1849,7 +1849,7 @@ final class Chatbox: @unchecked Sendable {
         let touched = store.runReporting("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), from])
         guard touched.rc == SQLITE_DONE else {
             store.run("ROLLBACK", [])
-            FileHandle.standardError.write("chatbox: the sender's liveness stamp failed: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the sender's liveness stamp failed: \(store.lastError())\n".utf8))
             return Reply(500, "error: the message could not be stored — nothing was written\n")
         }
 
@@ -1859,20 +1859,20 @@ final class Chatbox: @unchecked Sendable {
             """, [String(msgId), r, nowISO(), store.nodeOf(r) ?? ""])
             guard delivery.rc == SQLITE_DONE else {
                 store.run("ROLLBACK", [])
-                FileHandle.standardError.write("chatbox: the delivery to \(r) failed: \(store.lastError())\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: the delivery to \(r) failed: \(store.lastError())\n".utf8))
                 return Reply(500, "error: the message could not be delivered to \(oneLine(r)) — nothing was written\n")
             }
         }
         let stamped = store.runReporting("UPDATE threads SET last_at=? WHERE id=?", [nowISO(), String(threadId)])
         guard stamped.rc == SQLITE_DONE else {
             store.run("ROLLBACK", [])
-            FileHandle.standardError.write("chatbox: the thread stamp failed: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the thread stamp failed: \(store.lastError())\n".utf8))
             return Reply(500, "error: the message could not be stored — nothing was written\n")
         }
         let committed = store.runReporting("COMMIT", [])
         guard committed.rc == SQLITE_DONE else {
             store.run("ROLLBACK", [])
-            FileHandle.standardError.write("chatbox: the send transaction would not commit: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the send transaction would not commit: \(store.lastError())\n".utf8))
             return Reply(500, "error: the message could not be stored — nothing was written\n")
         }
         // The answer reports the delivery rows that exist, not the list this route intended.
@@ -2063,7 +2063,7 @@ final class Chatbox: @unchecked Sendable {
         let line = note.hasPrefix("forwarded_to:")
             ? "chatbox: message \(plan.msgID) forwarded to \(peerURL)\n"
             : "chatbox: message \(plan.msgID) could not be forwarded to \(peerURL): \(why)\n"
-        FileHandle.standardError.write(line.data(using: .utf8)!)
+        FileHandle.standardError.write(Data(line.utf8))
         return note
     }
 
@@ -2230,7 +2230,7 @@ final class Chatbox: @unchecked Sendable {
         head += "Cache-Control: no-cache\r\n"
         head += "Connection: close\r\n\r\n"
         conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
-        FileHandle.standardError.write("chatbox: GET /events -> 200 (stream, up to \(seconds)s)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: GET /events -> 200 (stream, up to \(seconds)s)\n".utf8))
         let start = boardState()
         sendEvent(conn, name: "hello", data: eventData(start))
         // A disconnect has to end the stream: without this the tick would keep querying and sending
@@ -2357,7 +2357,7 @@ final class Chatbox: @unchecked Sendable {
             if error != nil { conn.cancel() }
         }
         FileHandle.standardError.write(
-            "chatbox: GET /inbox waiting up to \(seconds)s for \(id)\n".data(using: .utf8)!)
+            Data("chatbox: GET /inbox waiting up to \(seconds)s for \(id)\n".utf8))
         let now = Date()
         pollInbox(req, id: id, deadline: now.addingTimeInterval(TimeInterval(seconds)),
                   nextTouch: now.addingTimeInterval(longPollTouchInterval(staleAfter)),
@@ -2634,7 +2634,7 @@ final class Chatbox: @unchecked Sendable {
         // Nothing is printed before the row exists: only one copy of the secret is ever shown, and a
         // credential that was not stored cannot authenticate.
         guard stored.rc == SQLITE_DONE, stored.changes == 1 else {
-            FileHandle.standardError.write("chatbox: the credential insert failed: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the credential insert failed: \(store.lastError())\n".utf8))
             return (500, "error: the credential was not stored — nothing was issued (\(oneLine(store.lastError())))\n")
         }
         // CodeQL flags this response as cleartext transmission of sensitive data,
@@ -2710,7 +2710,7 @@ final class Chatbox: @unchecked Sendable {
             if !when.isEmpty { return (200, "ok \(id) was already revoked at \(when)\n") }
         }
         guard revoked.rc == SQLITE_DONE, revoked.changes == 1 else {
-            FileHandle.standardError.write("chatbox: the revoke of \(id) did not run: \(store.lastError())\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: the revoke of \(id) did not run: \(store.lastError())\n".utf8))
             return (500, "error: the revocation did not run — \(oneLine(id)) is still valid (\(oneLine(store.lastError())))\n")
         }
         audit("credential revoked id=\(oneLine(id))")
@@ -2828,7 +2828,7 @@ final class Chatbox: @unchecked Sendable {
         // attribute an authentication failure, or tell which credential issued or revoked one.
         // `oneLine` is belt and braces - the request line is refused upstream if it carries a
         // control byte - because a log line a peer can end is a log a peer can write into.
-        FileHandle.standardError.write("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(req.peer.isEmpty ? "-" : req.peer) \(oneLine(req.method)) \(oneLine(req.path)) -> \(status) principal=\(req.principal.isEmpty ? "-" : req.principal)\n".utf8))
         respond(conn, status: status, body: body, contentType: contentType, headers: headers)
     }
 
@@ -2844,7 +2844,7 @@ final class Chatbox: @unchecked Sendable {
     /// listing already shows.
     private func audit(_ what: String) {
         dispatchPrecondition(condition: .onQueue(queue))
-        FileHandle.standardError.write("chatbox: \(nowISO()) audit \(oneLine(what))\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(nowISO()) audit \(oneLine(what))\n".utf8))
     }
 
     func respond(_ conn: NWConnection, status: Int, body: String,
@@ -2885,7 +2885,7 @@ final class Chatbox: @unchecked Sendable {
             // separately — a deadline alone only bounds how long each one lives, not how many a peer
             // can open in that time.
             if refusedConnections.count >= maxConnections {
-                FileHandle.standardError.write("chatbox: \(nowISO()) \(peerNote(conn)) refused without an answer: \(maxConnections) refusal(s) already in flight\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(peerNote(conn)) refused without an answer: \(maxConnections) refusal(s) already in flight\n".utf8))
                 conn.cancel()
                 return
             }
@@ -2895,7 +2895,7 @@ final class Chatbox: @unchecked Sendable {
                 guard !refusal.isCancelled else { return }
                 guard let self = self, let conn = conn else { return }
                 self.refusedConnections.remove(identity)
-                FileHandle.standardError.write("chatbox: \(nowISO()) \(self.peerNote(conn)) refused connection closed after \(self.idleTimeout)s without a request\n".data(using: .utf8)!)
+                FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(self.peerNote(conn)) refused connection closed after \(self.idleTimeout)s without a request\n".utf8))
                 conn.cancel()
             }
             if idleTimeout > 0 {
@@ -2934,7 +2934,7 @@ final class Chatbox: @unchecked Sendable {
         let idle = DispatchWorkItem { [weak self, weak conn] in
             guard !deadline.isCancelled else { return }
             guard let self = self, let conn = conn, self.liveConnections.contains(identity) else { return }
-            FileHandle.standardError.write("chatbox: idle connection closed after \(self.idleTimeout)s\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: idle connection closed after \(self.idleTimeout)s\n".utf8))
             conn.cancel()
         }
         if idleTimeout > 0 {
@@ -3029,7 +3029,7 @@ final class Chatbox: @unchecked Sendable {
 
     /// The connection ceiling, answered rather than dropped.
     private func tooManyConnections(_ conn: NWConnection) {
-        FileHandle.standardError.write("chatbox: over \(maxConnections) connections -> 503\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: over \(maxConnections) connections -> 503\n".utf8))
         respond(conn, status: 503, body: """
         error: the server is at its connection limit (\(maxConnections)) — retry shortly, or raise \
         it with --max-connections.
@@ -3040,7 +3040,7 @@ final class Chatbox: @unchecked Sendable {
     /// A body that stops before the length it announced is a request that was never made, and the
     /// sender is the one party who cannot tell that from a slow server. Nothing is stored.
     private func truncatedBody(_ conn: NWConnection, promised: Int) {
-        FileHandle.standardError.write("chatbox: \(nowISO()) \(peerNote(conn)) body shorter than Content-Length -> 400\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(peerNote(conn)) body shorter than Content-Length -> 400\n".utf8))
         respond(conn, status: 400, body: """
         error: the body is shorter than the \(promised) bytes Content-Length announced — \
         nothing was stored. Send exactly the bytes you declare.
@@ -3051,7 +3051,7 @@ final class Chatbox: @unchecked Sendable {
     /// Answer rather than drop the connection: an oversized report is an ordinary mistake,
     /// and a sender that is told nothing has no way to learn what went wrong.
     private func tooLarge(_ conn: NWConnection) {
-        FileHandle.standardError.write("chatbox: \(nowISO()) \(peerNote(conn)) request over \(maxBody) bytes -> 413\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(nowISO()) \(peerNote(conn)) request over \(maxBody) bytes -> 413\n".utf8))
         respond(conn, status: 413, body: """
         error: request too large — the limit is \(maxBody) bytes, and it covers the whole \
         request (request line, headers and body). Raise it with --max-body, or send the \
@@ -3085,7 +3085,7 @@ func checkArguments(_ argv: [String]) {
     while i < argv.count {
         let raw = argv[i]
         guard raw.hasPrefix("--") else {
-            FileHandle.standardError.write("chatbox: unexpected argument '\(raw)'\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: unexpected argument '\(raw)'\n".utf8))
             exit(2)
         }
         // `--name=value` is one token; `--name value` is two, and the value is whatever
@@ -3093,22 +3093,22 @@ func checkArguments(_ argv: [String]) {
         let name = String(raw.prefix(while: { $0 != "=" }))
         let hasInlineValue = raw.contains("=")
         guard knownFlags.contains(name) else {
-            FileHandle.standardError.write("chatbox: unknown flag '\(name)' — refusing to start rather than ignore it\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: unknown flag '\(name)' — refusing to start rather than ignore it\n".utf8))
             exit(2)
         }
         guard seen.insert(name).inserted else {
-            FileHandle.standardError.write("chatbox: '\(name)' given more than once\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: '\(name)' given more than once\n".utf8))
             exit(2)
         }
         // Every flag here takes a value, so a trailing one is a mistake — and silently
         // falling back to the default is the same failure as a misspelt flag: the server
         // starts with a setting nobody asked for.
         if valueFlags.contains(name) && !hasInlineValue && i + 1 >= argv.count {
-            FileHandle.standardError.write("chatbox: '\(name)' needs a value\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: '\(name)' needs a value\n".utf8))
             exit(2)
         }
         if boolFlags.contains(name) && hasInlineValue {
-            FileHandle.standardError.write("chatbox: '\(name)' does not take a value\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: '\(name)' does not take a value\n".utf8))
             exit(2)
         }
         i += (hasInlineValue || boolFlags.contains(name)) ? 1 : 2
@@ -3302,7 +3302,7 @@ checkArguments(CommandLine.arguments)
 let portRaw = argValue("--port", "8787")
 let portValue = UInt16(portRaw) ?? 0
 if portValue < 1 {
-    FileHandle.standardError.write("chatbox: --port must be between 1 and 65535 — got '\(portRaw)'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --port must be between 1 and 65535 — got '\(portRaw)'\n".utf8))
     exit(2)
 }
 let port = portValue
@@ -3315,11 +3315,11 @@ let tokenFile = argValue("--token-file", "")
 // with `auth: OPEN (no token)`: every route as bootstrap, no diagnostic, no log line. Open mode is
 // asked for by name (`--token open`) or by passing no token flag at all.
 if argPresent("--token") && tokenArg.isEmpty {
-    FileHandle.standardError.write("chatbox: --token was given but is empty — refusing to start an open board (use --token open to ask for one by name)\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --token was given but is empty — refusing to start an open board (use --token open to ask for one by name)\n".utf8))
     exit(2)
 }
 if argPresent("--token-file") && tokenFile.isEmpty {
-    FileHandle.standardError.write("chatbox: --token-file was given but names no file — refusing to start an open board\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --token-file was given but names no file — refusing to start an open board\n".utf8))
     exit(2)
 }
 // Prefer --token-file: a token passed as argv is visible to every local user in `ps`.
@@ -3327,7 +3327,7 @@ let tokenFromFile: String = {
     guard !tokenFile.isEmpty else { return "" }
     let p = NSString(string: tokenFile).expandingTildeInPath
     guard let s = try? String(contentsOfFile: p, encoding: .utf8) else {
-        FileHandle.standardError.write("chatbox: cannot read --token-file \(p)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: cannot read --token-file \(p)\n".utf8))
         exit(1)
     }
     return s.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3335,7 +3335,7 @@ let tokenFromFile: String = {
 // A token file that exists but is empty used to mean "no token", which silently
 // started an OPEN board. Refuse instead: open mode must be asked for by name.
 if !tokenFile.isEmpty && tokenFromFile.isEmpty {
-    FileHandle.standardError.write("chatbox: --token-file \(tokenFile) is empty — refusing to start an open board\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --token-file \(tokenFile) is empty — refusing to start an open board\n".utf8))
     exit(1)
 }
 let token = !tokenArg.isEmpty ? tokenArg : (tokenFromFile.isEmpty ? nil : tokenFromFile)
@@ -3350,7 +3350,7 @@ let staleAfterRaw = argValue("--stale-after", "604800")
 let staleAfterValue = Int(staleAfterRaw) ?? -1
 if staleAfterValue < 0 {
     // A negative window used to mean "off", which fails open on a typo.
-    FileHandle.standardError.write("chatbox: --stale-after must be 0 (off) or a positive number of seconds — got '\(staleAfterRaw)'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --stale-after must be 0 (off) or a positive number of seconds — got '\(staleAfterRaw)'\n".utf8))
     exit(2)
 }
 let staleAfter = staleAfterValue
@@ -3372,15 +3372,15 @@ let verifyRaw = argValue("--verify-backup", "")
 // any of them acts.
 let pruneRaw = argValue("--prune", "")
 if argPresent("--backup") && backupRaw.isEmpty {
-    FileHandle.standardError.write("chatbox: --backup needs a destination path\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --backup needs a destination path\n".utf8))
     exit(2)
 }
 if argPresent("--verify-backup") && verifyRaw.isEmpty {
-    FileHandle.standardError.write("chatbox: --verify-backup needs a path to check\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --verify-backup needs a path to check\n".utf8))
     exit(2)
 }
 if !backupRaw.isEmpty && !verifyRaw.isEmpty {
-    FileHandle.standardError.write("chatbox: --backup and --verify-backup do different things — give one of them\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --backup and --verify-backup do different things — give one of them\n".utf8))
     exit(2)
 }
 // One operator mode at a time. Each of these runs and exits, so a second one was silently ignored:
@@ -3389,7 +3389,7 @@ if !backupRaw.isEmpty && !verifyRaw.isEmpty {
 let operatorModes = [("--backup", backupRaw), ("--verify-backup", verifyRaw), ("--prune", pruneRaw)]
     .filter { !$0.1.isEmpty }.map { $0.0 }
 if operatorModes.count > 1 {
-    FileHandle.standardError.write("chatbox: \(operatorModes.joined(separator: " and ")) ask for different things — give one operator mode\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(operatorModes.joined(separator: " and ")) ask for different things — give one operator mode\n".utf8))
     exit(2)
 }
 if !verifyRaw.isEmpty {
@@ -3398,11 +3398,11 @@ if !verifyRaw.isEmpty {
     // board happens to live in the home directory is how a verified backup becomes a mystery.
     if argPresent("--db") {
         if let problem = verifyBoard(verifyRaw, against: dbPath) {
-            FileHandle.standardError.write("chatbox: \(problem)\n".data(using: .utf8)!)
+            FileHandle.standardError.write(Data("chatbox: \(problem)\n".utf8))
             exit(1)
         }
     } else if case .problem(let why) = readBoard(verifyRaw) {
-        FileHandle.standardError.write("chatbox: \(why)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(why)\n".utf8))
         exit(1)
     }
     let shown = NSString(string: verifyRaw).expandingTildeInPath
@@ -3415,13 +3415,13 @@ if !backupRaw.isEmpty {
     // An explicit --db, because the default is `~/chatbox.sqlite` and a backup of the wrong
     // board is indistinguishable from a backup of an empty one.
     guard argPresent("--db") else {
-        FileHandle.standardError.write("chatbox: --backup needs an explicit --db <path> — refusing to guess which board to copy\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --backup needs an explicit --db <path> — refusing to guess which board to copy\n".utf8))
         exit(2)
     }
     let sourcePath = NSString(string: dbPath).expandingTildeInPath
     let destPath = NSString(string: backupRaw).expandingTildeInPath
     guard FileManager.default.fileExists(atPath: sourcePath) else {
-        FileHandle.standardError.write("chatbox: \(sourcePath) does not exist — nothing to back up\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(sourcePath) does not exist — nothing to back up\n".utf8))
         exit(1)
     }
     // The counts *before* the copy, which is what the copy is proved against: a live board moves
@@ -3431,12 +3431,12 @@ if !backupRaw.isEmpty {
     switch readBoard(sourcePath) {
     case .counts(let c): sourceCounts = c
     case .problem(let why):
-        FileHandle.standardError.write("chatbox: \(why) — refusing to copy it as if it were a board\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(why) — refusing to copy it as if it were a board\n".utf8))
         exit(1)
     }
     var db: OpaquePointer?
     guard sqlite3_open_v2(sourcePath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-        FileHandle.standardError.write("chatbox: cannot open \(sourcePath)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: cannot open \(sourcePath)\n".utf8))
         exit(1)
     }
     defer { sqlite3_close(db) }
@@ -3446,7 +3446,7 @@ if !backupRaw.isEmpty {
     // a half-written file is worse than an error message.
     var st: OpaquePointer?
     guard sqlite3_prepare_v2(db, "VACUUM INTO ?", -1, &st, nil) == SQLITE_OK else {
-        FileHandle.standardError.write("chatbox: cannot prepare the copy of \(sourcePath)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: cannot prepare the copy of \(sourcePath)\n".utf8))
         exit(1)
     }
     sqlite3_bind_text(st, 1, destPath, -1, transientDestructor())
@@ -3454,7 +3454,7 @@ if !backupRaw.isEmpty {
     sqlite3_finalize(st)
     if rc != SQLITE_DONE {
         let reason = String(cString: sqlite3_errmsg(db))
-        FileHandle.standardError.write("chatbox: the copy to \(destPath) failed: \(reason) — nothing was verified\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: the copy to \(destPath) failed: \(reason) — nothing was verified\n".utf8))
         exit(1)
     }
     // The copy is verified in the same command: a backup nobody read is not a backup. If it is not
@@ -3462,7 +3462,7 @@ if !backupRaw.isEmpty {
     // one — and because leaving it would make the obvious retry fail on "already exists".
     if let problem = verifyCopy(destPath, atLeast: sourceCounts) {
         try? FileManager.default.removeItem(atPath: destPath)
-        FileHandle.standardError.write("chatbox: \(problem) — the copy was removed\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(problem) — the copy was removed\n".utf8))
         exit(1)
     }
     print("source: \(sourcePath) (\(fileSize(sourcePath)) bytes)")
@@ -3492,31 +3492,31 @@ let pruneCeiling = 36500
 // Present but unusable is a mistake, not a request to start the server: an operator who typed
 // `--prune` and got a running board back would reasonably believe the board was pruned.
 if argPresent("--prune") && pruneRaw.isEmpty {
-    FileHandle.standardError.write("chatbox: --prune needs a number of days\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --prune needs a number of days\n".utf8))
     exit(2)
 }
 if argPresent("--prune-dry-run") && pruneRaw.isEmpty {
-    FileHandle.standardError.write("chatbox: --prune-dry-run means nothing without --prune\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --prune-dry-run means nothing without --prune\n".utf8))
     exit(2)
 }
 if !pruneRaw.isEmpty {
     guard let pruneDays = Int(pruneRaw), pruneDays >= 0, pruneDays <= pruneCeiling else {
-        FileHandle.standardError.write("chatbox: --prune needs a number of days between 0 and \(pruneCeiling) (0 means every acknowledged message, whatever its age) — got '\(pruneRaw)'\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --prune needs a number of days between 0 and \(pruneCeiling) (0 means every acknowledged message, whatever its age) — got '\(pruneRaw)'\n".utf8))
         exit(2)
     }
     // An explicit --db, because the default is `~/chatbox.sqlite` and a prune aimed at the
     // wrong board is indistinguishable from one that found nothing to do.
     guard argPresent("--db") else {
-        FileHandle.standardError.write("chatbox: --prune needs an explicit --db <path> — refusing to guess which board to prune\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --prune needs an explicit --db <path> — refusing to guess which board to prune\n".utf8))
         exit(2)
     }
     let prunePath = NSString(string: dbPath).expandingTildeInPath
     guard FileManager.default.fileExists(atPath: prunePath) else {
-        FileHandle.standardError.write("chatbox: \(prunePath) does not exist — refusing to create a board to prune\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(prunePath) does not exist — refusing to create a board to prune\n".utf8))
         exit(1)
     }
     if case .problem(let why) = readBoard(prunePath) {
-        FileHandle.standardError.write("chatbox: \(why) — refusing to open it for prune\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: \(why) — refusing to open it for prune\n".utf8))
         exit(1)
     }
     let dryRun = argPresent("--prune-dry-run")
@@ -3529,7 +3529,7 @@ if !pruneRaw.isEmpty {
             .prune(olderThanDays: pruneDays, dryRun: dryRun)
     }
     guard let result = pruned else {
-        FileHandle.standardError.write("chatbox: the prune failed and was rolled back — nothing was changed\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: the prune failed and was rolled back — nothing was changed\n".utf8))
         exit(1)
     }
     print("database: \(dbPath)")
@@ -3551,7 +3551,7 @@ let maxBodyValue = Int(maxBodyRaw) ?? 0
 // 4 MB is the guard the receive loop used to carry on its own.
 let maxBodyCeiling = 4 * 1024 * 1024
 if maxBodyValue < 512 || maxBodyValue > maxBodyCeiling {
-    FileHandle.standardError.write("chatbox: --max-body must be between 512 and \(maxBodyCeiling) bytes (a request line and its headers need the floor; the ceiling is what bounds memory) — got '\(maxBodyRaw)'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --max-body must be between 512 and \(maxBodyCeiling) bytes (a request line and its headers need the floor; the ceiling is what bounds memory) — got '\(maxBodyRaw)'\n".utf8))
     exit(2)
 }
 let maxBody = maxBodyValue
@@ -3562,7 +3562,7 @@ let maxBody = maxBodyValue
 let idleRaw = argValue("--idle-timeout", "30")
 let idleValue = Int(idleRaw) ?? -1
 if idleValue < 0 || idleValue > 3600 {
-    FileHandle.standardError.write("chatbox: --idle-timeout must be between 0 (no deadline) and 3600 seconds — got '\(idleRaw)'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --idle-timeout must be between 0 (no deadline) and 3600 seconds — got '\(idleRaw)'\n".utf8))
     exit(2)
 }
 let idleTimeout = idleValue
@@ -3570,7 +3570,7 @@ let idleTimeout = idleValue
 let maxConnRaw = argValue("--max-connections", "256")
 let maxConnValue = Int(maxConnRaw) ?? 0
 if maxConnValue < 1 || maxConnValue > 65535 {
-    FileHandle.standardError.write("chatbox: --max-connections must be between 1 and 65535 — got '\(maxConnRaw)'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --max-connections must be between 1 and 65535 — got '\(maxConnRaw)'\n".utf8))
     exit(2)
 }
 let maxConnections = maxConnValue
@@ -3578,7 +3578,7 @@ let maxConnections = maxConnValue
 let maxRowsRaw = argValue("--max-rows", "500")
 let maxRowsValue = Int(maxRowsRaw) ?? 0
 if maxRowsValue < 1 || maxRowsValue > 1000000 {
-    FileHandle.standardError.write("chatbox: --max-rows must be between 1 and 1000000 — got '\(maxRowsRaw)'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --max-rows must be between 1 and 1000000 — got '\(maxRowsRaw)'\n".utf8))
     exit(2)
 }
 let maxRows = maxRowsValue
@@ -3595,7 +3595,7 @@ let serverID = serverIDRaw
 // names the flag that fixes it. There is no trimming here on purpose — a leading or trailing space
 // is exactly the shape that would arrive empty on the peer.
 if !validBoardID(serverID) {
-    FileHandle.standardError.write("chatbox: --server-id must be a name with no whitespace, control or format characters and no comma — got '\(oneLine(serverIDRaw))'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --server-id must be a name with no whitespace, control or format characters and no comma — got '\(oneLine(serverIDRaw))'\n".utf8))
     exit(2)
 }
 let peerRaw = argValue("--peer", "")
@@ -3604,48 +3604,48 @@ if !peerRaw.isEmpty {
     guard var comps = URLComponents(string: peerRaw),
           let scheme = comps.scheme?.lowercased(), scheme == "http" || scheme == "https",
           let host = comps.host, !host.isEmpty else {
-        FileHandle.standardError.write("chatbox: --peer must be an http(s) URL naming a board — got '\(oneLine(peerRaw))'\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --peer must be an http(s) URL naming a board — got '\(oneLine(peerRaw))'\n".utf8))
         exit(2)
     }
     // A peer is a board, not a request: a query or a fragment cannot mean anything here, and
     // keeping one would put it in the middle of every forwarded URL rather than at the end.
     if comps.query != nil || comps.fragment != nil {
-        FileHandle.standardError.write("chatbox: --peer names a board, not a request — drop the query or fragment from '\(oneLine(peerRaw))'\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --peer names a board, not a request — drop the query or fragment from '\(oneLine(peerRaw))'\n".utf8))
         exit(2)
     }
     // Credentials in the URL are refused because the peer URL is *echoed*: /health prints it for
     // any credential to read, and so does every answer that names the peer. `--peer-token` exists
     // for the secret, and it is not printed.
     if comps.user != nil || comps.password != nil {
-        FileHandle.standardError.write("chatbox: --peer must not carry credentials — they would be printed by /health; use --peer-token\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --peer must not carry credentials — they would be printed by /health; use --peer-token\n".utf8))
         exit(2)
     }
     if let peerPort = comps.port, peerPort < 1 || peerPort > 65535 {
-        FileHandle.standardError.write("chatbox: --peer must name a port between 1 and 65535 — got '\(peerPort)'\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --peer must name a port between 1 and 65535 — got '\(peerPort)'\n".utf8))
         exit(2)
     }
     // Stored without a trailing slash, so appending "/message" cannot double it.
     while comps.path.hasSuffix("/") { comps.path.removeLast() }
     guard let normalized = comps.string else {
-        FileHandle.standardError.write("chatbox: --peer is not a usable URL — got '\(oneLine(peerRaw))'\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --peer is not a usable URL — got '\(oneLine(peerRaw))'\n".utf8))
         exit(2)
     }
     peerURL = normalized
 }
 if argPresent("--peer") && peerURL.isEmpty {
-    FileHandle.standardError.write("chatbox: --peer needs a board URL — refusing to start with a peer that names nothing\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --peer needs a board URL — refusing to start with a peer that names nothing\n".utf8))
     exit(2)
 }
 let peerToken = argValue("--peer-token", "")
 if peerURL.isEmpty && !peerToken.isEmpty {
-    FileHandle.standardError.write("chatbox: --peer-token means nothing without --peer\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --peer-token means nothing without --peer\n".utf8))
     exit(2)
 }
 // A token with a line break in it was silently dropped by the HTTP layer, so the forward went out
 // unauthenticated and was answered 401 — a misconfiguration reported as a peer problem. Refused
 // where the operator can see it instead.
 if !peerToken.isEmpty && hasControlByte(peerToken) {
-    FileHandle.standardError.write("chatbox: --peer-token must be one line, without control characters\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --peer-token must be one line, without control characters\n".utf8))
     exit(2)
 }
 // A peer that is this board cannot be forwarded to: the request would arrive here while this board
@@ -3660,14 +3660,14 @@ if !peerURL.isEmpty, let peerComps = URLComponents(string: peerURL) {
     }
     for address in Host.current().addresses { selfHosts.insert(address.lowercased()) }
     if peerPort == Int(port), selfHosts.contains((peerComps.host ?? "").lowercased()) {
-        FileHandle.standardError.write("chatbox: --peer names this board (port \(port)) — a forward would be a duplicate, not a delivery\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: --peer names this board (port \(port)) — a forward would be a duplicate, not a delivery\n".utf8))
         exit(2)
     }
 }
 let maxHopsRaw = argValue("--max-hops", "4")
 let maxHopsValue = Int(maxHopsRaw) ?? 0
 if maxHopsValue < 1 || maxHopsValue > 64 {
-    FileHandle.standardError.write("chatbox: --max-hops must be between 1 and 64 — got '\(maxHopsRaw)'\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --max-hops must be between 1 and 64 — got '\(maxHopsRaw)'\n".utf8))
     exit(2)
 }
 let maxHops = maxHopsValue
@@ -3683,11 +3683,11 @@ let tlsPasswordFile = argValue("--tls-password-file", "")
 // cleartext board behind a flag that promised encryption, which is the exact failure
 // the rest of this block exists to prevent.
 if (argPresent("--tls-identity") || argPresent("--tls-password-file")) && tlsIdentityPath.isEmpty {
-    FileHandle.standardError.write("chatbox: --tls-identity was given without a usable path — refusing to start rather than serve in the clear\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --tls-identity was given without a usable path — refusing to start rather than serve in the clear\n".utf8))
     exit(2)
 }
 if tlsIdentityPath.isEmpty && !tlsPasswordFile.isEmpty {
-    FileHandle.standardError.write("chatbox: --tls-password-file means nothing without --tls-identity\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --tls-password-file means nothing without --tls-identity\n".utf8))
     exit(2)
 }
 // macOS will not open a bundle with an empty passphrase (measured: every
@@ -3695,14 +3695,14 @@ if tlsIdentityPath.isEmpty && !tlsPasswordFile.isEmpty {
 // errSecAuthFailed), so demanding the file turns a confusing "wrong password" into a
 // clear one.
 if !tlsIdentityPath.isEmpty && tlsPasswordFile.isEmpty {
-    FileHandle.standardError.write("chatbox: --tls-identity needs --tls-password-file — macOS cannot open a PKCS#12 bundle with no passphrase\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: --tls-identity needs --tls-password-file — macOS cannot open a PKCS#12 bundle with no passphrase\n".utf8))
     exit(2)
 }
 var tlsPassword = ""
 if !tlsIdentityPath.isEmpty && !tlsPasswordFile.isEmpty {
     let p = NSString(string: tlsPasswordFile).expandingTildeInPath
     guard let s = try? String(contentsOfFile: p, encoding: .utf8) else {
-        FileHandle.standardError.write("chatbox: cannot read --tls-password-file \(p)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: cannot read --tls-password-file \(p)\n".utf8))
         exit(2)
     }
     tlsPassword = s.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3710,7 +3710,7 @@ if !tlsIdentityPath.isEmpty && !tlsPasswordFile.isEmpty {
 var tlsIdentity: sec_identity_t? = nil
 if !tlsIdentityPath.isEmpty {
     guard let identity = loadTLSIdentity(p12Path: tlsIdentityPath, password: tlsPassword) else {
-        FileHandle.standardError.write("chatbox: refusing to start — TLS was asked for and could not be set up\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: refusing to start — TLS was asked for and could not be set up\n".utf8))
         exit(2)
     }
     tlsIdentity = identity
@@ -3751,7 +3751,7 @@ let listener: NWListener
 do {
     listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
 } catch {
-    FileHandle.standardError.write("chatbox: cannot listen on \(port): \(error)\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: cannot listen on \(port): \(error)\n".utf8))
     exit(1)
 }
 listener.newConnectionHandler = { conn in server.serve(conn: conn) }
@@ -3782,7 +3782,7 @@ listener.stateUpdateHandler = { state in
         // exits, so without a flush the banner never reaches chatbox.log.
         fflush(stdout)
     case .failed(let e):
-        FileHandle.standardError.write("chatbox: listener failed: \(e)\n".data(using: .utf8)!)
+        FileHandle.standardError.write(Data("chatbox: listener failed: \(e)\n".utf8))
         exit(1)
     default: break
     }
@@ -3811,7 +3811,7 @@ let shutdownHandler: @Sendable () -> Void = {
     server.requestShutdown()
     listener.cancel()
     store.checkpointWAL()
-    FileHandle.standardError.write("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))
     // The queue is serial, so everything already accepted has run by the time this runs; the held
     // answers end on their own timers within half a second. This is the grace they get to leave.
     server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
@@ -3819,7 +3819,7 @@ let shutdownHandler: @Sendable () -> Void = {
 stopSource.setEventHandler(handler: shutdownHandler)
 stopSourceInt.setEventHandler(handler: shutdownHandler)
 hupSource.setEventHandler {
-    FileHandle.standardError.write("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".data(using: .utf8)!)
+    FileHandle.standardError.write(Data("chatbox: \(nowISO()) SIGHUP ignored — this board logs to stderr; rotate it with copytruncate, or stop it with SIGTERM\n".utf8))
 }
 stopSource.resume()
 stopSourceInt.resume()

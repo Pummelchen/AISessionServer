@@ -6022,6 +6022,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 53. No UTF-8 conversion in the sources is force-unwrapped
+# `String.data(using:)` returns nil for an encoding it cannot represent, and the code carried 86
+# `...data(using: .utf8)!` sites - every log line and every refusal, in both binaries. UTF-8 is
+# total, so `Data(s.utf8)` has nothing to unwrap and no `!` to leave behind, and the compiler proves
+# it at every site. The check reads the source *under test* when the harness names one: a compiled
+# mutant and the base binary are indistinguishable here - the shape exists only in the text - so the
+# matrix passes the mutated source in CHATBOX_SRC. Without it the tree's own two sources are checked.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_SRC:-}" ]; then
+  case "$CHATBOX_SRC" in
+    *.swift) un53_files="$CHATBOX_SRC" ;;
+    *)       un53_files="" ;;
+  esac
+else
+  un53_dir="$(dirname "$CLI")"
+  un53_files=""
+  [ -f "$un53_dir/chatbox.swift" ] && un53_files="$un53_dir/chatbox.swift"
+  if [ -f "$un53_dir/chatbox-mcp.swift" ]; then
+    un53_files="$un53_files $un53_dir/chatbox-mcp.swift"
+  fi
+fi
+if [ -n "$un53_files" ]; then
+  un53_total=0
+  for _f in $un53_files; do
+    un53_total=$((un53_total + $(grep -c 'data(using: .utf8)!' "$_f" 2>/dev/null)))
+  done
+  equals "no UTF-8 conversion in the source under test is force-unwrapped" "$un53_total" "0"
+else
+  printf '  skip  the UTF-8 unwrap check (a client mutation: the server source is not under test)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
