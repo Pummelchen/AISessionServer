@@ -130,14 +130,14 @@
       "file_line": "chatbox.swift (63 sites), chatbox-mcp.swift",
       "title": "63 force-unwrapped String.data(using:.utf8)! conversions",
       "category": "unsafe",
-      "status": "START",
+      "status": "DONE",
       "host_used": "node1",
       "discovered_by": "L0 swiftlint baseline",
       "evidence_before": "swiftlint rule non_optional_string_data_conversion x63 (AUDIT/baseline/swiftlint.json)",
       "fix_summary": "Use the non-failable `Data(_:)` initializer (or a tiny helper) so no `!` remains on a conversion that cannot fail.",
-      "evidence_after": "",
-      "commit": "",
-      "notes": "",
+      "evidence_after": "TEST: 86 sites are rewritten - 84 in `chatbox.swift`, 2 in `chatbox-mcp.swift` - and the rewrite is provably message-preserving: reversing it (`Data(x.utf8)` back to `x.data(using: .utf8)!`) reproduces the committed sources **byte for byte**, and the strict standard typechecks both at 0/0. Section 53 counts the shape in the source *under test*; the harness now passes that source in `CHATBOX_SRC` for every cell (the mutated file, or the frozen server source for the base and relative cells), so the static check can see a mutant as well as the tree. On the pre-fix sources the count is 86 and the check fails. Mutant `288-audit0007-forceunwrap` puts the flag-value refusal back in the old shape and is red at 1084 passed / 1 failed. The two remaining `data(using: .utf8)` uses are `if let`/`guard let` bindings that handle the optional, not force-unwraps. Base cell GREEN at 1085 passed / 0 failed on 4cf2566 (chatbox.swift sha256 a0752d01a557ba1e); relative cell GREEN, 0 false passes; documented build 0 warnings.",
+      "commit": "4cf2566",
+      "notes": "The pin has to be textual and the ledger says why rather than pretending otherwise: UTF-8 cannot fail, so `Data(s.utf8)` and `s.data(using: .utf8)!` are the same program once compiled and no behaviour distinguishes them. What the messages *say* is pinned functionally elsewhere - section 42 asserts the startup refusals, section 44 the request log line, section 29 the /health errors, section 46 the shutdown lines - so a rewrite that dropped a message would be red there. The first pass of the rewrite mis-detected two string literals whose interpolations contain quotes (`\\(... ? \"-\" : ...)` and `joined(separator: \" and \")`), producing `\"-Data(\"`; the compiler rejected both immediately, they were repaired by hand, and the reverse-transform proof above covers every site including those two. The 24 matrix cells whose anchors contained the old shape were re-anchored and **each one compiled** to prove the new text is still valid Swift.",
       "blocked_reason": ""
     },
     {

@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 42 | done: 53 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 41 | done: 54 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -49,7 +49,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0047](#0047) | S1 | M4 | `tests/protocol.sh:1505` | --port and --stale-after silently fall back to defaults on an unusable value; no check | test | **DONE** | node1 | phase-B/L6-tests |
 | [0048](#0048) | S1 | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **DONE** | node1 | phase-B/L6-tests |
 | [0006](#0006) | S2 | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **DONE** | node1 | L0 |
-| [0007](#0007) | S2 | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **START** | node1 | L0 swiftlint baseline |
+| [0007](#0007) | S2 | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **DONE** | node1 | L0 swiftlint baseline |
 | [0008](#0008) | S2 | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **DONE** | node1 | L0 shellcheck baseline |
 | [0009](#0009) | S2 | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **DONE** | node1 | L0 shellcheck baseline |
 | [0010](#0010) | S2 | M4 | `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941` | Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329) | test | **START** | node1 | L0 shellcheck baseline |
@@ -781,9 +781,12 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 - **Severity / category / module:** S2 / unsafe / M1/M2
 - **Location:** `chatbox.swift (63 sites), chatbox-mcp.swift`
 - **Title:** 63 force-unwrapped String.data(using:.utf8)! conversions
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** swiftlint rule non_optional_string_data_conversion x63 (AUDIT/baseline/swiftlint.json)
 - **Fix:** Use the non-failable `Data(_:)` initializer (or a tiny helper) so no `!` remains on a conversion that cannot fail.
+- **Evidence (after):** TEST: 86 sites are rewritten - 84 in `chatbox.swift`, 2 in `chatbox-mcp.swift` - and the rewrite is provably message-preserving: reversing it (`Data(x.utf8)` back to `x.data(using: .utf8)!`) reproduces the committed sources **byte for byte**, and the strict standard typechecks both at 0/0. Section 53 counts the shape in the source *under test*; the harness now passes that source in `CHATBOX_SRC` for every cell (the mutated file, or the frozen server source for the base and relative cells), so the static check can see a mutant as well as the tree. On the pre-fix sources the count is 86 and the check fails. Mutant `288-audit0007-forceunwrap` puts the flag-value refusal back in the old shape and is red at 1084 passed / 1 failed. The two remaining `data(using: .utf8)` uses are `if let`/`guard let` bindings that handle the optional, not force-unwraps. Base cell GREEN at 1085 passed / 0 failed on 4cf2566 (chatbox.swift sha256 a0752d01a557ba1e); relative cell GREEN, 0 false passes; documented build 0 warnings.
+- **Commit:** `4cf2566`
+- **Notes:** The pin has to be textual and the ledger says why rather than pretending otherwise: UTF-8 cannot fail, so `Data(s.utf8)` and `s.data(using: .utf8)!` are the same program once compiled and no behaviour distinguishes them. What the messages *say* is pinned functionally elsewhere - section 42 asserts the startup refusals, section 44 the request log line, section 29 the /health errors, section 46 the shutdown lines - so a rewrite that dropped a message would be red there. The first pass of the rewrite mis-detected two string literals whose interpolations contain quotes (`\(... ? "-" : ...)` and `joined(separator: " and ")`), producing `"-Data("`; the compiler rejected both immediately, they were repaired by hand, and the reverse-transform proof above covers every site including those two. The 24 matrix cells whose anchors contained the old shape were re-anchored and **each one compiled** to prove the new text is still valid Swift.
 
 ### 0008
 
