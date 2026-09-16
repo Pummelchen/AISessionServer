@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 38 | done: 57 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 36 | done: 59 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -52,7 +52,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0007](#0007) | S2 | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **DONE** | node1 | L0 swiftlint baseline |
 | [0008](#0008) | S2 | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **DONE** | node1 | L0 shellcheck baseline |
 | [0009](#0009) | S2 | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **DONE** | node1 | L0 shellcheck baseline |
-| [0010](#0010) | S2 | M4 | `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941` | Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329) | test | **START** | node1 | L0 shellcheck baseline |
+| [0010](#0010) | S2 | M4 | `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941` | Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329) | test | **DONE** | node1 | L0 shellcheck baseline |
 | [0014](#0014) | S2 | M1 | `chatbox.swift:2426` | CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change | unsafe | **DONE** | node1 | L0 |
 | [0049](#0049) | S2 | repo | `.github/workflows/codeql.yml:57` | CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned | test | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0050](#0050) | S2 | repo | `aisessionserver-wiki/Deployment.md:92` | Local test runbook starts the disposable server on the suite's own staleness port | docs | **DONE** | node1 | phase-B/L7-ops |
@@ -104,7 +104,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0087](#0087) | S3 | repo | `.github/traffic.json:4` | Canned view count served as the live 'Views (14d)' README badge | placeholder | **START** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0088](#0088) | S3 | M1 | `chatbox.swift:1617` | Local `who` shadows the Principal parameter in message() | style | **START** | node1 | phase-B/L3-line-level |
 | [0089](#0089) | S3 | M1 | `chatbox.swift:260` | The '?' element of the repo-key character check is unreachable | dead | **START** | node1 | phase-B/L3-line-level |
-| [0095](#0095) | S3 | M4 | `tests/protocol.sh (every fixture section)` | A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port | test | **START** | node1 | new-this-session (the audit/0090 matrix base cell) |
+| [0095](#0095) | S3 | M4 | `tests/protocol.sh (every fixture section)` | A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port | test | **DONE** | node1 | new-this-session (the audit/0090 matrix base cell) |
 
 ## Task detail
 
@@ -817,10 +817,12 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 - **Severity / category / module:** S2 / test / M4
 - **Location:** `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941`
 - **Title:** Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329)
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** AUDIT/baseline/shellcheck-suite.txt - 12 findings; SC3057 is a real parsing hazard in parameter expansion.
-- **Fix:** Triage each: fix the real ones (SC3057/SC2059) and add targeted directives with justification where the pattern is deliberate.
-- **Notes:** A check that silently mis-parses is a vacuous check (the file's own design rule).
+- **Fix:** All thirteen findings are fixed in the shape of the code. Three were real portability defects rather than style: `${@:2}` in the `pb`, `bk` and `bo` helpers is a bash/ksh extension and dash answers `Bad substitution`, so those helpers are rewritten with `shift; "$@"`. Two `printf "$var"` formats become `printf '%b' "$var"` (the request text carries `\r\n` escapes and a stray `%` would otherwise be read as a directive). Five `[ -n "$(printf ... | grep ...)" ]` patterns become `grep -q`. `ID28` is used - the credential it names is revoked at the end of section 28 rather than left live on the board. `fed_cleanup` is called at the end of section 38 as well as through its `EXIT` trap, so it is visibly invoked rather than only reachable through a signal.
+- **Evidence (after):** TEST: `shellcheck -s sh tests/protocol.sh` goes from **13 findings to 0**, `sh -n` and `dash -n` are clean, and section 54 pins it - the three checks run on `$0`, the file that is running, so a finding introduced later fails the suite itself. The three `${@:2}` sites were reproduced as a real defect before the fix: `dash -c 'f() { echo "${@:2}"; }; f a b'` exits **2** with `Bad substitution`, so the suite's own claim to be POSIX `sh` was false at exactly those helpers. The full suite after the fix: **1088 passed / 0 failed** (1085 + section 54's three checks), with the `pb`/`bk`/`bo` sections (25-27), the `grep -q` sites (sections 19, 22, 24) and section 28's revoke all exercised in that run.
+- **Commit:** `f042c4c`
+- **Notes:** No mutant cell: the harness mutates the sources under test (server, client, adapter), not the suite, so there is nothing to mutate here - the pin is the linter run against the file that is executing, and it fires in every run including every matrix cell. The two `printf` fixes are behaviour-preserving for the current fixture text (`\r\n` is exactly what `%b` expands) and are what makes a `%` in the text safe. The `grep -q` changes stop the pipeline early on a match, which is fine for a `printf` producer.
 
 ### 0014
 
@@ -1517,11 +1519,14 @@ CONFIDENCE: high
 - **Severity / category / module:** S3 / test / M4
 - **Location:** `tests/protocol.sh (every fixture section)`
 - **Title:** A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** Section 49's fixture was started and then the suite exited at the next line (a `set -u` unbound variable in the check, fixed in 656f78e), so the `kill "$js49pid"` that ends the section never ran and the server kept listening on 8777. The next full run's section 49 could not bind 8777 and reported `FAIL the json fixture started - no answer on http://127.0.0.1:8777`, which reads as a product failure; `lsof` showed `tests/.scratch/mut/base --port 8777 --db .../json-t64129.*.sqlite`, an orphan of the previous run. Nothing in the suite checks that the ports it is about to use are free, and every fixture section has the same shape: the cleanup is at the end of the section, so any early exit (a `set -u` abort, an interrupt, a killed run) leaves one server per section it had reached.
 
 WHY IT MATTERS: a runner that reports 'no answer' for a port somebody else holds sends the next person after the wrong bug - here it cost a full suite run before the orphan was found - and in CI a leaked fixture turns one failure into a run that keeps failing on every retry.
-- **Fix:** To be fixed with #0010 (suite hygiene): probe the suite's fixture ports before the first section and stop with a diagnostic that names the port and says a previous run may have left a fixture behind, rather than letting each section report its own 'no answer'; and kill the fixtures on exit (a trap over the pids the sections already track) so an aborted run cleans up after itself.
+- **Fix:** Before the first check, the suite reads its own fixture ports out of the `CHATBOX_*_PORT:-N` defaults in its own text, probes each one, and exits **2** naming the ports already answering, with the two causes (an orphaned fixture from an interrupted run, a board started on a fixture port) and the `CHATBOX_ALLOW_HELD_PORTS=1` override. Deriving the list from the file means a new fixture cannot be forgotten.
+- **Evidence (after):** TEST (gate, manual and recorded as such): a board answering on a fixture port (8788) makes `sh tests/protocol.sh` exit **2** before any check with `FATAL: the suite binds these ports itself and they are already answering: 8788` plus the three-line explanation; with every fixture port free the same invocation prints its header and proceeds to section 1; `CHATBOX_ALLOW_HELD_PORTS=1` runs anyway (verified). The full suite after the change is green at **1088 passed / 0 failed**; the fix's own port probes are the only added work, and they cost nothing when the ports are free (a refused connection returns immediately). This check cannot live inside the suite it guards - a self-test of the guard is the guard - and the mutation harness mutates the sources under test rather than the suite, so there is no cell for it.
+- **Commit:** `9eaf18a`
+- **Notes:** What this does **not** do is kill the orphans. That was the finding's other half and it was considered and rejected: the fixture pids are per-section local variables, and a trap that guessed at them would kill processes it does not own - a cleanup that misfires is worse than the state it cleans. Detecting the state is the half that cannot misfire, and the wiki/README runbook now uses a port the suite does not bind (#0050), so the operator case does not arise by following the docs. The failure mode this replaces cost a full suite run: an orphaned fixture from the aborted section-49 run held 8777, and the next run reported `the json fixture started - no answer on http://127.0.0.1:8777`, which reads as a product failure rather than a held port.
 
 ## Destructive or system-changing operations (command + rollback, logged before running)
 
