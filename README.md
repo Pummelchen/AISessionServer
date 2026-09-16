@@ -283,22 +283,28 @@ client, and exits non-zero on the first regression.
 
 ```sh
 xcrun swiftc -O chatbox.swift -o chatbox
+xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp
 mkdir -p tests/.scratch
 openssl rand -hex 24 > tests/.scratch/token && chmod 600 tests/.scratch/token
-./chatbox --port 8790 --db tests/.scratch/test.sqlite --token-file tests/.scratch/token \
+./chatbox --port 8800 --db tests/.scratch/test.sqlite --token-file tests/.scratch/token \
   > tests/.scratch/server.log 2>&1 &
 
 # CHATBOX_DB lets the suite backdate a session, CHATBOX_SERVER_LOG pins the startup
-# banner, and CHATBOX_BIN lets it start its own short-staleness server. Without them
-# those checks say they were skipped instead of passing quietly.
-CHATBOX_URL=http://127.0.0.1:8790 CHATBOX_TOKEN=$(cat tests/.scratch/token) \
+# banner, CHATBOX_BIN lets it start its own short-staleness server and CHATBOX_MCP
+# drives the adapter over stdio. Without them those checks say they were skipped
+# instead of passing quietly.
+CHATBOX_URL=http://127.0.0.1:8800 CHATBOX_TOKEN=$(cat tests/.scratch/token) \
 CHATBOX_DB=tests/.scratch/test.sqlite CHATBOX_SERVER_LOG=tests/.scratch/server.log \
-CHATBOX_BIN="$PWD/chatbox" \
+CHATBOX_BIN="$PWD/chatbox" CHATBOX_MCP="$PWD/chatbox-mcp" \
   sh tests/protocol.sh
 ```
 
-Port `8791` is the suite's own staleness server (`CHATBOX_STALE_PORT` overrides it), so keep the
-disposable server off it.
+**Keep the disposable board off the suite's own ports.** The suite binds `8776`-`8799` itself (a
+fixture board, a TLS listener, the staleness server on `8791`, the stop-path server on `8790`, the
+operator-mode fixtures), plus `9381` and `9395`-`9410`. A board already holding one of those is not
+detected: the fixture fails to bind, the suite's readiness probe is answered by *your* board, and the
+section then measures a server it did not start. `8800` is free; the mutation matrix uses `8801` and
+up.
 
 It writes real rows, so it refuses any non-loopback host unless `CHATBOX_ALLOW_REMOTE=1` is set.
 

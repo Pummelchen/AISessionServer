@@ -1,5 +1,6 @@
 # Build output
 chatbox
+chatbox-mcp
 
 # Runtime state — NEVER commit these.
 # chatbox.token is the shared secret; chatbox.sqlite* holds message history.
