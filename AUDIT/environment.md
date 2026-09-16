@@ -16,7 +16,7 @@ default is loopback, it is never a machine-specific address, and no such address
 client at all. Task #0093 records it. Everything after that merge was re-verified on the merged tree
 (base cell GREEN 1027/0, relative-path cell GREEN, 0 false passes, both binaries strict-typecheck 0/0),
 and CI (`35131154108`) and CodeQL (`35131157602`) were dispatched from the merged revision
-(`8e0f52d`). **Both stayed queued for 30 minutes without starting** (polled every 45s from 00:57 to 01:25; GitHub never picked them up), so monitoring stopped as instructed. The ids remain for collection: CI `35131154108`, CodeQL `35131157602`. The last *completed* runs on this branch are the pre-merge CI `35017564533` (success) and CodeQL `34992397530` (success); the merged workflows differ from them only by main's `runs-on: xcode-27` label.
+(`8e0f52d`). Both sat **queued for about 35 minutes** (polled every 45s) and then ran: CI `35131154108` and CodeQL `35131157602` both **succeeded** on the merged revision. The earlier runs on the pre-merge revision were CI `35017564533` (success) and CodeQL `34992397530` (success); the merged workflows differ from them by main's `runs-on: xcode-27` label.
 
 ## Scope honesty note (read first)
 

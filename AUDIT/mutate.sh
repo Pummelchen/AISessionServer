@@ -1149,7 +1149,7 @@ m('261-audit0043-splitrecipients',
 # deadline leaves the socket in `.preparing` for ever.
 # AUDIT #0045: a GET whose read failed is an error, not an empty answer.
 m('274-audit0045-noreadcheck',
-  r'''        if req.method == "GET", store.readFailed {''',
+  r'''        if req.method == "GET", answer.status < 500, store.readFailed {''',
   r'''        if false, store.readFailed {''')
 
 # AUDIT #0045: a send whose recipient read failed must not store unreachable mail.
