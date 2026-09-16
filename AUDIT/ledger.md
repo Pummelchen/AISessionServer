@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 54 | done: 38 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
+**Open: 53 | done: 39 | blocked: 0 | total: 92** (S0 7, S1 31, S2 47, S3 7)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -45,7 +45,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0043](#0043) | S1 | M1 | `chatbox.swift:298` | Agent ids may contain ',', but recipients are stored comma-joined and re-split, so a reply can be delivered to an unintended session | bug | **DONE** | node1 | phase-B/L2-server-http |
 | [0044](#0044) | S1 | M1 | `chatbox.swift:3232` | No SIGTERM/SIGINT/SIGHUP handling: no drain, no WAL checkpoint, no log reopen | bug | **START** | node1 | phase-B/L7-ops |
 | [0045](#0045) | S1 | M1 | `chatbox.swift:484` | Store.rows treats every non-ROW step result as end-of-data, returning partial results as complete | incomplete | **START** | node1 | phase-B/L3-line-level |
-| [0046](#0046) | S1 | M1 | `chatbox.swift:827` | Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender) | perf | **AUDIT** | node1 | phase-B/L5-performance |
+| [0046](#0046) | S1 | M1 | `chatbox.swift:827` | Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender) | perf | **DONE** | node1 | phase-B/L5-performance |
 | [0047](#0047) | S1 | M4 | `tests/protocol.sh:1505` | --port and --stale-after silently fall back to defaults on an unusable value; no check | test | **DONE** | node1 | phase-B/L6-tests |
 | [0048](#0048) | S1 | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **DONE** | node1 | phase-B/L6-tests |
 | [0006](#0006) | S2 | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **DONE** | node1 | L0 |
@@ -701,7 +701,7 @@ CONFIDENCE: medium
 - **Severity / category / module:** S1 / perf / M1
 - **Location:** `chatbox.swift:827`
 - **Title:** Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender)
-- **Status:** AUDIT
+- **Status:** DONE
 - **Evidence (before):** nodeThreadsSQL (827-832) and visibleAgentsWhere (836-843) test `m.sender IN (SELECT id FROM agents WHERE node = ?)` and `d.node = ?`; node(_:participatesIn:) (846-855) uses the same. The only indexes are deliveries(agent), deliveries(agent,acked_at), tokens(hash), messages(thread_id) (420-446). EXPLAIN QUERY PLAN: SCAN messages, SCAN deliveries, SCAN agents. Measured on a 500k-message/500k-delivery board: participation check 94 ms; visibleAgentsWhere 127 ms.
 
 WHY IT MATTERS: Every scoped GET /thread (2060), reply (1489), GET /threads (2103), every scoped send via visibleAgentIds (1566) and every scoped /peers (2162-2163) runs this on the serial queue. deliveries is the fastest-growing table, so scoped-request latency rises linearly with board history.
@@ -710,6 +710,7 @@ CONFIDENCE: high
 - **Fix:** The schema gains `idx_msg_sender ON messages(sender)`, `idx_del_node ON deliveries(node, message_id)` and `idx_agents_node ON agents(node)`, so the scoped visibility rules - which ask for a machine's sessions' messages and for its delivery rows - are answered by index lookups instead of scans. All three are `IF NOT EXISTS` in the migration the server already runs at startup, so an existing board gains them on the next start.
 - **Evidence (after):** TEST (gate): measured on a 50,000-message / 50,000-delivery board. The participation check's plan went from `SCAN agents` + `SCAN d` to `SEARCH agents USING INDEX idx_agents_node (node=?)` + `SEARCH d USING COVERING INDEX idx_del_node (node=?)`; the `visibleAgentsWhere` listing the scoped `/peers` runs went from four `SCAN m`/`SCAN d` steps to zero - every step a `SEARCH` on `idx_msg_sender`, `idx_del_node`, `idx_agents_node` or `idx_msg_thread`. Three runs of the peers query took 0.073s before and 0.043s after, and the participation check 0.023s before and 0.016s after; the pre-fix cost is linear in the board's history (Phase A measured 94ms and 127ms on a 500k board), which is why the plans rather than the stopwatch are what the suite pins. Section 45 adds five checks on a 2,000-row fixture: no `SCAN m` and no `SCAN d` in the participation plan, `idx_del_node` named in it, no `SCAN m`/`SCAN d` in the registry listing's plan, and `idx_msg_sender` named there. Base cell GREEN at 1014 passed / 0 failed; mutants `267-audit0046-noindex` (all three indexes removed - the pre-fix schema) and `268-audit0046-nodelindex` (only the deliveries index removed, the table that grows without bound) are red; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.
 AUDIT (gate): re-read cold. The three indexes follow the existing migration block and its style, and they serve the rules as written - the node is the leading column of `idx_del_node` because that is what the rule filters on, and `messages(sender)` is exactly the `m.sender IN (SELECT id FROM agents WHERE node = ?)` predicate. `EXPLAIN QUERY PLAN` was checked at the fixture's size as well as at 50k, because a tiny table can make a planner prefer a scan and a check that only passes on a big board is a check that will flake. The remaining `USE TEMP B-TREE FOR ORDER BY` in the registry listing is the `ORDER BY a.id` over the *agents* table, which is bounded by the registry and not by history; it is left alone deliberately, and the check asserts only the two tables that grow.
+- **Commit:** `0fb51ed`
 - **Notes:** Rejected alternatives: (a) a `thread_participants` table maintained on every send - it would answer the question in one lookup, but it is new state to keep correct on delete, prune and migration, and the indexes make the existing rules cheap enough (measured); (b) a CTE/temp table deriving the node's threads once per request - the same win for the biggest query, but it rewrites five call sites rather than adding three indexes, and the planner already shares the subqueries it can; (c) indexing `deliveries(message_id)` instead - the primary key `(message_id, agent)` already gives that lookup a covering index; (d) `ANALYZE` on startup - statistics help the planner choose, but the choice here is an equality on an indexed column, and running `ANALYZE` on a live board is a write on every start.
 
 ### 0047
