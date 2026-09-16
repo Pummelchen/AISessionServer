@@ -1196,6 +1196,11 @@ final class Chatbox: @unchecked Sendable {
     /// count so a connection that reports both `failed` and `cancelled` cannot be subtracted twice.
     private var liveConnections = Set<ObjectIdentifier>()
 
+    /// Refused connections that are still open: a socket the process holds while it waits to answer
+    /// "too many connections". They are not `liveConnections` - refusing one must not keep the server
+    /// at its limit - but they are sockets, so they get the idle deadline and a ceiling of their own.
+    private var refusedConnections = Set<ObjectIdentifier>()
+
     /// Set when the process has been asked to stop. The answers that are *held* - a long poll, an
     /// event stream - check it on their next tick, so a restart ends them with an answer instead of
     /// a cut socket, and neither can outlive the process that promised to hold it.
@@ -2768,10 +2773,45 @@ final class Chatbox: @unchecked Sendable {
             // Answer rather than drop: a peer that is told nothing cannot tell a busy server from
             // a broken one, and the refusal is cheap because nothing has been read yet. The socket
             // still has to be started before it can carry the answer, and it is deliberately not
-            // counted — refusing it must not keep the server at its limit.
+            // counted among the *served* connections — refusing it must not keep the server at its
+            // limit.
+            //
+            // It is still a socket this process holds, though, and `.ready` arrives only after the
+            // TLS handshake: a peer that opens TCP to a TLS board and says nothing would sit in
+            // `.preparing` for ever. The idle deadline covers the refusal branch exactly as it covers
+            // a served connection, and how many refusals may be in flight at once is bounded
+            // separately — a deadline alone only bounds how long each one lives, not how many a peer
+            // can open in that time.
+            if refusedConnections.count >= maxConnections {
+                FileHandle.standardError.write("chatbox: \(nowISO()) \(peerNote(conn)) refused without an answer: \(maxConnections) refusal(s) already in flight\n".data(using: .utf8)!)
+                conn.cancel()
+                return
+            }
+            refusedConnections.insert(identity)
+            let refusal = Deadline()
+            let refusalIdle = DispatchWorkItem { [weak self, weak conn] in
+                guard !refusal.isCancelled else { return }
+                guard let self = self, let conn = conn else { return }
+                self.refusedConnections.remove(identity)
+                FileHandle.standardError.write("chatbox: \(nowISO()) \(self.peerNote(conn)) refused connection closed after \(self.idleTimeout)s without a request\n".data(using: .utf8)!)
+                conn.cancel()
+            }
+            if idleTimeout > 0 {
+                queue.asyncAfter(deadline: .now() + .seconds(idleTimeout), execute: refusalIdle)
+            }
             conn.stateUpdateHandler = { state in
-                if case .ready = state { self.tooManyConnections(conn) }
-                if case .failed = state { conn.cancel() }
+                switch state {
+                case .ready:
+                    refusal.cancel()
+                    self.refusedConnections.remove(identity)
+                    self.tooManyConnections(conn)
+                case .failed, .cancelled:
+                    refusal.cancel()
+                    self.refusedConnections.remove(identity)
+                    conn.cancel()
+                default:
+                    break
+                }
             }
             conn.start(queue: queue)
             return

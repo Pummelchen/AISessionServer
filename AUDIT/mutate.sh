@@ -1145,6 +1145,25 @@ m('261-audit0043-splitrecipients',
 # indexes - the pre-fix schema.
 # AUDIT #0044: a stop has to be a stop. This is the pre-fix state: no signal is handled at all, so
 # SIGTERM kills the process where it stands and SIGHUP takes the board down.
+# AUDIT #0040: a refused connection that never speaks is closed on the idle deadline. Removing the
+# deadline leaves the socket in `.preparing` for ever.
+m('272-audit0040-nodeadline',
+  r'''            if idleTimeout > 0 {
+                queue.asyncAfter(deadline: .now() + .seconds(idleTimeout), execute: refusalIdle)
+            }
+''',
+  r'''''')
+
+# AUDIT #0040: how many refusals may be in flight at once is bounded, not only how long each lives.
+m('273-audit0040-nocap',
+  r'''            if refusedConnections.count >= maxConnections {
+                FileHandle.standardError.write("chatbox: \(nowISO()) \(peerNote(conn)) refused without an answer: \(maxConnections) refusal(s) already in flight\n".data(using: .utf8)!)
+                conn.cancel()
+                return
+            }
+''',
+  r'''''')
+
 m('269-audit0044-nosignal',
   r'''signal(SIGTERM, SIG_IGN)
 signal(SIGINT, SIG_IGN)

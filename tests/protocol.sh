@@ -1638,6 +1638,50 @@ CNF
       kill "$silent_tls" 2>/dev/null
       wait "$silent_tls" 2>/dev/null
 
+      # The refusal branch holds a socket too, and `.ready` arrives only after the handshake, so a
+      # peer refused *at* the ceiling and then silent would sit in `.preparing` for ever: the ceiling
+      # bounded the connections that behaved, not the ones that did not. A second server with a
+      # ceiling of one and the same two-second deadline, because the fixture above uses the default
+      # 256 and would need 257 sockets to reach its limit.
+      ceilsrvport="${CHATBOX_TLS_CEILING_PORT:-8788}"
+      "$CHATBOX_BIN" --port "$ceilsrvport" --db "$tlsdir/ceiling.sqlite" --token-file "$tlsdir/token" \
+        --idle-timeout 2 --max-connections 1 \
+        --tls-identity "$tlsdir/id.p12" --tls-password-file "$tlsdir/pw" > "$tlsdir/ceiling.log" 2>&1 &
+      ceilpid=$!
+      ceilready=0
+      for _ in $(seq 1 50); do
+        if curl -fsS --max-time 3 --cacert "$tlsdir/cert.pem" \
+             "https://127.0.0.1:$ceilsrvport/health?token=$TOKEN" >/dev/null 2>&1; then ceilready=1; break; fi
+        sleep 0.2
+      done
+      if [ "$ceilready" = 1 ]; then
+        # The one slot, held by a long poll, so the next connection is refused.
+        ( curl -sS --max-time 15 --cacert "$tlsdir/cert.pem" -o /dev/null \
+            "https://127.0.0.1:$ceilsrvport/inbox?id=it-$RUN-ceil-holder&wait=12&token=$TOKEN" ) &
+        ceilhold=$!
+        sleep 1
+        # ... and a refused peer that opens TCP and never speaks TLS. It never becomes `.ready`, so
+        # only the deadline can close it.
+        ( sleep 20 | nc -w 15 127.0.0.1 "$ceilsrvport" >/dev/null 2>&1 ) &
+        ceilstall=$!
+        sleep 0.5
+        # A second one while the first is still in flight: the ceiling of one applies to refusals too,
+        # or a peer can open them faster than the deadline closes them and there is no ceiling at all.
+        ( sleep 6 | nc -w 5 127.0.0.1 "$ceilsrvport" >/dev/null 2>&1 ) &
+        ceilstall2=$!
+        sleep 4
+        contains "a refused connection that never speaks is closed on the deadline" \
+          "$(cat "$tlsdir/ceiling.log")" "refused connection closed after 2s"
+        contains "and the number of refusals in flight is bounded too" \
+          "$(cat "$tlsdir/ceiling.log")" "refused without an answer"
+        kill "$ceilstall" "$ceilstall2" "$ceilhold" 2>/dev/null
+        wait "$ceilstall" "$ceilstall2" "$ceilhold" 2>/dev/null
+      else
+        no "the refusal-ceiling fixture started" "no answer on $ceilsrvport"
+      fi
+      kill "$ceilpid" 2>/dev/null
+      wait "$ceilpid" 2>/dev/null
+
       # And plain HTTP does not reach a TLS listener, so the port cannot be downgraded.
       # 52 and 56 are the two shapes of "the server answered nothing HTTP-shaped";
       # which one appears depends on the TLS stack, so both are accepted.
