@@ -1311,7 +1311,7 @@ BANNER
   for lead in 08 09; do
     cb say --from "$FS" --to "$FB" --body "leading-zero wait $lead $RUN" >/dev/null 2>&1
     lz="$(cb inbox --id "$FB" --wait "$lead" 2>&1)"; lzrc=$?
-    if [ "$lzrc" -eq 0 ] && [ -n "$(printf '%s' "$lz" | grep "leading-zero wait $lead $RUN")" ]; then
+    if [ "$lzrc" -eq 0 ] && printf '%s' "$lz" | grep -q "leading-zero wait $lead $RUN"; then
       ok "a wait of '$lead' on inbox polls instead of aborting"
     else
       no "a wait of '$lead' on inbox polls instead of aborting" \
@@ -1758,7 +1758,7 @@ CNF
         # letting curl ignore the option.
         mix_out="$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL="http://127.0.0.1:$tlsport" \
           CHATBOX_TOKEN="$TOKEN" CHATBOX_CACERT="$tlsdir/cert.pem" sh "$CLI" health 2>&1)"; mix_rc=$?
-        if [ "$mix_rc" -ne 0 ] && [ -n "$(printf '%s' "$mix_out" | grep CACERT)" ]; then
+        if [ "$mix_rc" -ne 0 ] && printf '%s' "$mix_out" | grep -q CACERT; then
           ok "the client refuses a CA paired with a plain http URL"
         else
           no "the client refuses a CA paired with a plain http URL" \
@@ -1768,7 +1768,7 @@ CNF
           sh "$CLI" health 2>&1)"; nocert_rc=$?
         # Not merely "it failed": a usage error, a missing shell or an unreachable host
         # also fail, so the refusal has to name the certificate.
-        if [ "$nocert_rc" -ne 0 ] && [ -n "$(printf '%s' "$nocert" | grep -i certificate)" ]; then
+        if [ "$nocert_rc" -ne 0 ] && printf '%s' "$nocert" | grep -qi certificate; then
           ok "the client refuses a certificate it cannot verify"
         else
           no "the client refuses a certificate it cannot verify" \
@@ -2133,7 +2133,7 @@ if [ -f "$CLI" ] && command -v git >/dev/null 2>&1; then
   # error instead of a round trip, and that is what this pins: the refusal has to come from the
   # client, before any request is made, and name the key.
   say_bad="$(cli_run say --from "$SB2" --repo 'not a key' --body x 2>&1)"; say_bad_rc=$?
-  if [ "$say_bad_rc" -ne 0 ] && [ -n "$(printf '%s' "$say_bad" | grep "is not a usable repo key")" ]; then
+  if [ "$say_bad_rc" -ne 0 ] && printf '%s' "$say_bad" | grep -q "is not a usable repo key"; then
     ok "say refuses an unusable key locally, without asking the server"
   else
     no "say refuses an unusable key locally, without asking the server" \
@@ -2629,8 +2629,10 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
     sleep 0.2
   done
   if [ "$pready" = 1 ]; then
-    pb() { curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
-      "http://127.0.0.1:$pport/$1" "${@:2}"; }
+    # ${@:2} is a bash/ksh extension: dash answers "Bad substitution", so the suite was not POSIX
+    # sh at the three helpers that used it. `shift` is the portable spelling.
+    pb() { _pb="$1"; shift; curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      "http://127.0.0.1:$pport/$_pb" "$@"; }
     pb register --data-urlencode "id=it-$RUN-pr-a" --data-urlencode "node=node-pr" >/dev/null
     pb register --data-urlencode "id=it-$RUN-pr-b" --data-urlencode "node=node-pr" >/dev/null
     # settled: delivered to a, acked.  unread: delivered to a, never acked.
@@ -2767,7 +2769,7 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
     pb ack --data-urlencode "id=it-$RUN-pr-a" --data-urlencode "message=$blocked_id" >/dev/null
     sqlite3 "$pdb" "UPDATE messages SET created_at='2020-01-01T00:00:00Z' WHERE id=$blocked_id;" >/dev/null 2>&1
     blocked_out="$("$CHATBOX_BIN" --db "$pdb" --prune 30 2>&1)"; blocked_rc=$?
-    if [ "$blocked_rc" -ne 0 ] && [ -n "$(printf '%s' "$blocked_out" | grep 'rolled back')" ]; then
+    if [ "$blocked_rc" -ne 0 ] && printf '%s' "$blocked_out" | grep -q 'rolled back'; then
       ok "a prune that cannot delete says so and exits non-zero"
     else
       no "a prune that cannot delete says so and exits non-zero" \
@@ -3195,8 +3197,8 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
     sleep 0.2
   done
   if [ "$bready" = 1 ]; then
-    bk() { curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
-      "http://127.0.0.1:$bport/$1" "${@:2}"; }
+    bk() { _bk="$1"; shift; curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" \
+      "http://127.0.0.1:$bport/$_bk" "$@"; }
     # A board with something in it, written just now, so its rows are still in the WAL.
     bk register --data-urlencode "id=it-$RUN-bk-a" --data-urlencode "node=node-bk" \
       --data-urlencode "repos=example.test/$RUN/bk" >/dev/null
@@ -3583,7 +3585,7 @@ if command -v nc >/dev/null 2>&1 && [ -n "$cbport" ] && [ "$cbport" -eq "$cbport
   # A body that stops short of what it announced: the server must say so, and store nothing.
   msgs_before24="$(get /health | sed -n 's/^messages: //p')"
   tbody="POST /message?token=$TOKEN HTTP/1.1\r\nHost: chatbox\r\nContent-Length: 60\r\n\r\nfrom=x&body=short"
-  truncated24="$(printf "$tbody" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
+  truncated24="$(printf '%b' "$tbody" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
   contains "a body shorter than Content-Length is answered" "$truncated24" "400 Bad Request"
   contains "and the answer says nothing was stored" "$truncated24" "nothing was stored"
   if [ -n "$msgs_before24" ]; then
@@ -3596,7 +3598,7 @@ if command -v nc >/dev/null 2>&1 && [ -n "$cbport" ] && [ "$cbport" -eq "$cbport
   # Exactly the declared bytes are the body, and not one more: the surplus is neither body nor
   # parameter. `from=exact&body=ok` is 18 bytes; the `&to=phantom` behind it belongs to nothing.
   oversend="POST /message?token=$TOKEN HTTP/1.1\r\nHost: chatbox\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 18\r\n\r\nfrom=exact&body=ok&to=phantom"
-  surplus24="$(printf "$oversend" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
+  surplus24="$(printf '%b' "$oversend" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
   contains "a request that sends more than it declared is answered" "$surplus24" "ok posted"
   contains "the declared bytes are the body it stored" "$surplus24" "delivered_to: (nobody)"
   lacks "and the surplus is not a parameter" "$surplus24" "phantom"
@@ -3743,7 +3745,7 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
     sleep 0.2
   done
   if [ "$boready" = 1 ]; then
-    bo() { curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" "$bobase/$1" "${@:2}"; }
+    bo() { _bo="$1"; shift; curl -sS --max-time 20 -G -X POST --data-urlencode "token=$TOKEN" "$bobase/$_bo" "$@"; }
     bog() { curl -sS --max-time 20 "$bobase/$1?token=$TOKEN${2:+&$2}"; }
 
     # The bounds are discoverable without the command line that set them.
@@ -3979,6 +3981,10 @@ if [ -n "$TOK28B" ] && [ -n "$CHATBOX_DB" ] && command -v sqlite3 >/dev/null 2>&
 else
   printf '  skip  the expired-credential checks (needs a secret, CHATBOX_DB and sqlite3)\n'
 fi
+
+# The no-expiry credential is revoked here rather than left behind: it is a real credential on the
+# board, it still works, and the scratch file it was printed into is not a place for a live secret.
+post /token/revoke --data-urlencode "id=$ID28" >/dev/null
 
 # ---------------------------------------------------------------------------
 # 29. A credential reads its own conversations (TRK-27)
@@ -4839,6 +4845,9 @@ two"
 
   for fp in $fedpids; do kill "$fp" 2>/dev/null; done
   for fp in $fedpids; do wait "$fp" 2>/dev/null; done
+  # The same cleanup the EXIT trap runs, called here as well so the end of the section does not
+  # depend on the trap (and so it is visibly invoked rather than only reached through a signal).
+  fed_cleanup
 else
   printf '  skip  federation (set CHATBOX_BIN to the built server)\n'
 fi
@@ -6028,7 +6037,7 @@ if [ -f "$CLI" ]; then
   else
     printf '  skip  the dash parse (needs dash)\n'
   fi
-  lacks "no printf takes its format from a variable" "$(cat "$CLI")" 'printf "$_fc_seq"'
+  lacks "no printf takes its format from a variable" "$(cat "$CLI")" "printf \"\$_fc_seq\"" 
   lacks "and nothing writes a temporary file it then reads through" "$(cat "$CLI")" "chatbox-canon."
   if command -v shellcheck >/dev/null 2>&1; then
     cl52_sc="$(shellcheck -s sh -f gcc "$CLI" 2>&1 | grep -v 'SC1090' | grep -v '^$')"
@@ -6075,6 +6084,41 @@ if [ -n "$un53_files" ]; then
   equals "no UTF-8 conversion in the source under test is force-unwrapped" "$un53_total" "0"
 else
   printf '  skip  the UTF-8 unwrap check (a client mutation: the server source is not under test)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 54. The suite is held to the same shell checks as the client
+# The shell standard is POSIX sh: `sh -n`, `dash -n` and shellcheck. The suite had thirteen findings.
+# Three were not style at all - `${@:2}` is a bash/ksh extension that dash refuses with "Bad
+# substitution", so three helpers made the suite non-POSIX; two printf formats came from variables;
+# five were `[ -n "$(grep ...)" ]`; one credential variable was never used after being issued and one
+# cleanup function was only reachable through its trap. All are fixed in the shape of the code, and
+# this is the pin - the file that is running is the file that is checked.
+# ---------------------------------------------------------------------------
+if sh -n "$0" >/dev/null 2>&1; then
+  ok "the suite parses under sh -n"
+else
+  no "the suite parses under sh -n" "$(sh -n "$0" 2>&1 | head -2 | tr '\n' '~')"
+fi
+if command -v dash >/dev/null 2>&1; then
+  if dash -n "$0" >/dev/null 2>&1; then
+    ok "and under dash -n, the standard's second shell"
+  else
+    no "and under dash -n, the standard's second shell" "$(dash -n "$0" 2>&1 | head -2 | tr '\n' '~')"
+  fi
+else
+  printf '  skip  the dash parse of the suite (needs dash)\n'
+fi
+if command -v shellcheck >/dev/null 2>&1; then
+  sc54="$(shellcheck -s sh -f gcc "$0" 2>&1 | grep -v '^$')"
+  if [ -z "$sc54" ]; then
+    ok "shellcheck has nothing to say about the suite"
+  else
+    no "shellcheck has nothing to say about the suite" \
+      "$(printf '%s' "$sc54" | head -3 | tr '\n' '~')"
+  fi
+else
+  printf '  skip  shellcheck on the suite (needs shellcheck)\n'
 fi
 
 # ---------------------------------------------------------------------------
