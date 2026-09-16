@@ -115,7 +115,7 @@ m('18-timeouterror', '''            finish(req, conn: conn, status: 200, body: "
   '''            finish(req, conn: conn, status: 404, body: "no messages\\n")''')
 m('19-ackonwait', r'''        store.beginRequest()
         if store.hasUnread(forAgent: id) {
-            let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+            let rows = store.deliveries(forAgent: id, includeAcked: req.flag("all"))
             if store.readFailed {
                 finish(req, conn: conn, status: 500, body: "error: the store could not be read — the page would have been partial\n")
                 return
@@ -125,7 +125,7 @@ m('19-ackonwait', r'''        store.beginRequest()
             return
         }''', r'''        store.beginRequest()
         if store.hasUnread(forAgent: id) {
-            let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+            let rows = store.deliveries(forAgent: id, includeAcked: req.flag("all"))
             if store.readFailed {
                 finish(req, conn: conn, status: 500, body: "error: the store could not be read — the page would have been partial\n")
                 return
@@ -778,8 +778,8 @@ m('173-trk30-noidledeadline', '''        if idleTimeout > 0 {
         }''')
 m('174-trk30-oldestfirst', '''          FROM messages WHERE thread_id = ? ORDER BY id DESC LIMIT \\(limit)''',
   '''          FROM messages WHERE thread_id = ? ORDER BY id ASC LIMIT \\(limit)''')
-m('175-trk30-jsonflat', '''        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "agents", matching: matchingAgents)) }''',
-  '''        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }''')
+m('175-trk30-jsonflat', '''        if req.flag("json") { return (200, jsonRows(rows, key: "agents", matching: matchingAgents)) }''',
+  '''        if req.flag("json") { return (200, jsonArray(rows)) }''')
 # RETIRED AUDIT #0042: `178-trk30-migratealways` replaced the `migrating: !--prune-dry-run` flag with
 # `true`, i.e. "a dry run must not migrate the schema it is only reading". The prune dry run now opens
 # its own store with a **read-only** connection, so a migration cannot happen however the flag is set,
@@ -837,8 +837,8 @@ m('188-trk16-plaintype', '''            finish(req, conn: conn, status: 200, bod
   '''            finish(req, conn: conn, status: 200, body: uiPage(), contentType: "text/plain; charset=utf-8")''')
 m('189-trk16-writecall', '''        const query = window.location.search;''',
   '''        const query = window.location.search; fetch('/message');''')
-m('190-trk16-flatthreads', '''        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }''',
-  '''        if !req.p("json").isEmpty { return (200, jsonArray(rows)) }''')
+m('190-trk16-flatthreads', '''        if req.flag("json") { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }''',
+  '''        if req.flag("json") { return (200, jsonArray(rows)) }''')
 
 # TRK-17: federation. Each of these is a real defect — a message that is not forwarded, one that
 # is forwarded when it must not be, a loop guard that is not there, untrusted input that is
@@ -1166,6 +1166,18 @@ m('276-audit0045-nopruneguard',
   r'''        if readFailed { return abandon() }
 ''',
   r'''''')
+
+# AUDIT #0062: a flag is a flag. Every call site read "present and non-empty" as true, so `all=0`
+# answered with the read mail and `json=0` answered JSON; `ack?all=0&thread=N` marked the whole inbox
+# read. This is the pre-fix reading, put back in one place.
+m('278-audit0062-anyvalue',
+  r'''    func flag(_ key: String) -> Bool {
+        let v = p(key).lowercased()
+        return !(v.isEmpty || v == "0" || v == "false" || v == "no" || v == "off")
+    }''',
+  r'''    func flag(_ key: String) -> Bool {
+        return !p(key).isEmpty
+    }''')
 
 m('272-audit0040-nodeadline',
   r'''            if idleTimeout > 0 {

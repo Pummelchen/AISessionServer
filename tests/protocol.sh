@@ -5642,6 +5642,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 48. A flag means what it says
+# Every parameter was "on" for any non-empty value, so `all=0` answered with the messages the caller
+# had already read and `json=0` answered JSON - each one the opposite of what was written. Nine call
+# sites shared that reading, and `ack` is where it did real damage: it tests `all` before `thread`,
+# so `ack?all=0&thread=N` - a caller asking for one conversation - marked the whole inbox read.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  fl48port="${CHATBOX_FLAGS_PORT:-8778}"
+  fl48base="http://127.0.0.1:$fl48port"
+  fl48db="$SCRATCH/flags-${RUN}.sqlite"
+  fl48tok="$SCRATCH/flags-${RUN}.token"
+  rm -f "$fl48db" "$fl48db-wal" "$fl48db-shm"
+  printf '%s\n' "$TOKEN" > "$fl48tok"
+  chmod 600 "$fl48tok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$fl48port" --db "$fl48db" --token-file "$fl48tok" \
+    > "$SCRATCH/flags-${RUN}.log" 2>&1 &
+  fl48pid=$!
+  fl48ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS --max-time 2 "$fl48base/health?token=$TOKEN" >/dev/null 2>&1; then fl48ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$fl48ready" = 1 ]; then
+    fl48() { _flp="$1"; shift; curl -sS --max-time 10 -G -X POST --data-urlencode "token=$TOKEN" "$fl48base/$_flp" "$@"; }
+    fl48get() { curl -sS --max-time 10 "$fl48base/$1"; }
+    fl48a="it-$RUN-fl-a"
+    fl48b="it-$RUN-fl-b"
+    for _id in "$fl48a" "$fl48b"; do
+      fl48 register --data-urlencode "id=$_id" --data-urlencode "node=n-fl48" >/dev/null
+    done
+    fl48m1="$(fl48 message --data-urlencode "from=$fl48a" --data-urlencode "to=$fl48b" \
+      --data-urlencode "body=fl-one-$RUN")"
+    fl48m2="$(fl48 message --data-urlencode "from=$fl48a" --data-urlencode "to=$fl48b" \
+      --data-urlencode "body=fl-two-$RUN")"
+    fl48t1="$(field "$fl48m1" thread)"
+    fl48t2="$(field "$fl48m2" thread)"
+    # Two deliveries, both unread: every check below is about the flag only if that is really so.
+    equals "the flag fixture has both messages waiting" \
+      "$(jsonnum "$(fl48get "inbox?id=$fl48b&all=1&json=1&token=$TOKEN")" matching)" "2"
+    if [ -n "$fl48t1" ] && [ -n "$fl48t2" ] && [ "$fl48t1" != "$fl48t2" ]; then
+      ok "and they are two separate conversations, so one can be read without the other"
+    else
+      no "and they are two separate conversations, so one can be read without the other" \
+        "thread ids [$(snip "$fl48t1")] and [$(snip "$fl48t2")]"
+    fi
+    # `all=0` on the ack names one thread; `all` is tested first, so reading `all=0` as "on" marked
+    # the whole inbox read - and said so, which is how a caller could see it happen.
+    fl48ack="$(fl48 ack --data-urlencode "id=$fl48b" --data-urlencode "all=0" \
+      --data-urlencode "thread=$fl48t1")"
+    equals "an ack for one thread with all=0 acks that thread and no other" \
+      "$fl48ack" "ok acked 1 for $fl48b"
+    equals "so the second thread is still unread" \
+      "$(jsonnum "$(fl48get "inbox?id=$fl48b&json=1&token=$TOKEN")" matching)" "1"
+    # The unread inbox is what the default answers, and `all=0` is a spelling of it - not of "all".
+    equals "all=0 does not include the mail that was read" \
+      "$(jsonnum "$(fl48get "inbox?id=$fl48b&all=0&json=1&token=$TOKEN")" matching)" "1"
+    equals "while all=1 still includes it" \
+      "$(jsonnum "$(fl48get "inbox?id=$fl48b&all=1&json=1&token=$TOKEN")" matching)" "2"
+    # `json=0` asks for the human answer, and gets it.
+    fl48prose="$(fl48get "inbox?id=$fl48b&all=1&json=0&token=$TOKEN")"
+    contains "json=0 answers the text listing" "$fl48prose" "inbox for $fl48b"
+    lacks "and not the json one" "$fl48prose" '"matching"'
+  else
+    no "the flag fixture started" "no answer on $fl48base"
+  fi
+  kill "$fl48pid" 2>/dev/null
+  wait "$fl48pid" 2>/dev/null
+  rm -f "$fl48db" "$fl48db-wal" "$fl48db-shm" "$fl48tok" "$SCRATCH/flags-${RUN}.log"
+else
+  printf '  skip  the flag reading (needs CHATBOX_BIN)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

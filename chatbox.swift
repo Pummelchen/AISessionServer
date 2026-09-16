@@ -1075,6 +1075,14 @@ struct Request {
     func p(_ key: String, _ def: String = "") -> String {
         (params[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? def)
     }
+
+    /// A flag parameter: true when it is present and not one of the spellings of false. It used to be
+    /// "true for any non-empty value", so `all=0` included the messages the caller had already read
+    /// and `json=0` answered JSON — the opposite of what was written. Absent is false.
+    func flag(_ key: String) -> Bool {
+        let v = p(key).lowercased()
+        return !(v.isEmpty || v == "0" || v == "false" || v == "no" || v == "off")
+    }
 }
 
 private func percentDecode(_ s: String) -> String {
@@ -1959,7 +1967,7 @@ final class Chatbox: @unchecked Sendable {
         guard validId(id) else { return Reply(400, "error: id must be a single line, without control characters\n") }
         if let rejection = mayAct(as: id, who) { return Reply(rejection.0, rejection.1) }
         store.run("UPDATE agents SET last_seen=? WHERE id=?", [nowISO(), id])
-        let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+        let rows = store.deliveries(forAgent: id, includeAcked: req.flag("all"))
         // The ids travel in a header, not in the body: headers are structural, so a peer's message
         // body cannot add an id to the list a wake loop will acknowledge. Saying which messages a
         // page contains is what lets a client ack exactly those, instead of "everything unread" —
@@ -1975,14 +1983,14 @@ final class Chatbox: @unchecked Sendable {
     }
 
     func renderInbox(_ req: Request, id: String, rows: [[String: String]]) -> String {
-        let all = !req.p("all").isEmpty
+        let all = req.flag("all")
         // The listing is capped, so a session that falls behind would otherwise stop being told
         // about its older unread mail without a word — the opposite of what a durable delivery
         // model promises. Both answers state how many deliveries there are and how many of them
         // are in front of the reader.
         let matching = store.deliveryCount(forAgent: id, includeAcked: all)
         let shown = rows.count
-        if !req.p("json").isEmpty {
+        if req.flag("json") {
             // An object rather than the array every other route returns: this is the one answer
             // that has to say how much of itself it is showing.
             let messages = jsonArray(rows).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2378,7 +2386,7 @@ final class Chatbox: @unchecked Sendable {
         // spin with no backoff.
         store.beginRequest()
         if store.hasUnread(forAgent: id) {
-            let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+            let rows = store.deliveries(forAgent: id, includeAcked: req.flag("all"))
             if store.readFailed {
                 finish(req, conn: conn, status: 500, body: "error: the store could not be read — the page would have been partial\n")
                 return
@@ -2412,7 +2420,7 @@ final class Chatbox: @unchecked Sendable {
         let matching = store.messageCount(thread: id)
         let rows = store.threadPage(id, limit: maxRows)
         guard !rows.isEmpty else { return (404, "no thread \(oneLine(id))\n") }
-        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "messages", matching: matching)) }
+        if req.flag("json") { return (200, jsonRows(rows, key: "messages", matching: matching)) }
         let head = store.rows("SELECT repo, subject, created_at, created_by FROM threads WHERE id=?", [id]).first ?? [:]
         var out = "thread \(id)  repo: \((head["repo"] ?? "").isEmpty ? "-" : head["repo"]!)  subject: \(head["subject"] ?? "-")\n"
         out += "opened: \(head["created_at"] ?? "-") by \(head["created_by"] ?? "-")   "
@@ -2459,7 +2467,7 @@ final class Chatbox: @unchecked Sendable {
             + scope + " ORDER BY t.last_at DESC LIMIT \(maxRows)"
         let rows = store.rows(sql, binds)
         if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }
-        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }
+        if req.flag("json") { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }
         // The text answer states how many of how many it is showing, like every other listing: it
         // used to print the page size alone, so a truncated listing was indistinguishable from a
         // complete one and the operator had no reason to raise `--max-rows`.
@@ -2496,7 +2504,7 @@ final class Chatbox: @unchecked Sendable {
             UPDATE deliveries SET acked_at=? WHERE agent=? AND message_id=? AND (acked_at IS NULL OR acked_at='')
             """, [nowISO(), id, req.p("message")])
             rc = r.rc; n = Int(r.changes)
-        } else if !req.p("all").isEmpty {
+        } else if req.flag("all") {
             let r = store.runReporting("""
             UPDATE deliveries SET acked_at=? WHERE agent=? AND (acked_at IS NULL OR acked_at='')
             """, [nowISO(), id])
@@ -2536,7 +2544,7 @@ final class Chatbox: @unchecked Sendable {
                 : (isStale(seen, now: now) ? "stale" : "active")
             rows[i]["age"] = ageDescription(seen, now: now)
         }
-        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "agents", matching: matchingAgents)) }
+        if req.flag("json") { return (200, jsonRows(rows, key: "agents", matching: matchingAgents)) }
         var out = "registered agents — \(rows.count)\(matchingAgents > rows.count ? " of \(matchingAgents)" : "")\n"
         if matchingAgents > rows.count {
             out += "note: \(matchingAgents - rows.count) more are registered than are shown — raise --max-rows to see them\n"
@@ -2639,7 +2647,7 @@ final class Chatbox: @unchecked Sendable {
         let matchingTokens = store.tokenCount()
         let rows = store.tokensListing(limit: maxRows)
         if rows.isEmpty { return (200, "no credentials issued\n") }
-        if !req.p("json").isEmpty { return (200, jsonRows(rows, key: "tokens", matching: matchingTokens)) }
+        if req.flag("json") { return (200, jsonRows(rows, key: "tokens", matching: matchingTokens)) }
         var out = "credentials — \(rows.count)\(matchingTokens > rows.count ? " of \(matchingTokens)" : "")\n"
         if matchingTokens > rows.count {
             out += "note: \(matchingTokens - rows.count) more are issued than are shown — raise --max-rows to see them\n"
