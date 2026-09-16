@@ -14,7 +14,10 @@ merged into the audit branch (a merge commit; nothing already pushed was rewritt
 kept in the comment, and section 35's checks were re-pinned to what that design has to guarantee: the
 default is loopback, it is never a machine-specific address, and no such address is written into the
 client at all. Task #0093 records it. Everything after that merge was re-verified on the merged tree
-(base cell, relative-path cell, strict typechecks), and CI/CodeQL were re-dispatched from it.
+(base cell GREEN 1027/0, relative-path cell GREEN, 0 false passes, both binaries strict-typecheck 0/0),
+and CI (`35131154108`) and CodeQL (`35131157602`) were dispatched from the merged revision
+(`8e0f52d`). Both were still **queued** when this line was written; their conclusions are recorded
+when they settle.
 
 ## Scope honesty note (read first)
 
