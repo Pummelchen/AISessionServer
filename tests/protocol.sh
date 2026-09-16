@@ -5532,6 +5532,101 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 47. A read that failed is not an empty answer
+# `rows()` stepped the statement and returned whatever it had collected, so a read that failed
+# part-way answered "no such thread", "inbox empty" or "pruned: 0" — a truncated view presented as
+# the truth, with the SQLite error only in the log. The failure is now recorded: a GET whose read
+# failed answers 500, a held poll answers 500, a send whose recipient read failed writes nothing, and
+# a prune whose read failed rolls back.
+#
+# The injection is a SQLite **view** over the real table whose column expression raises (SQLite's
+# `abs()` overflows on the most negative integer). A view cannot be inserted into, so this exercises
+# reads only — which is exactly what the finding is about, and why no write happens after one is
+# installed.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  rf47port="${CHATBOX_READFAIL_PORT:-8779}"
+  rf47base="http://127.0.0.1:$rf47port"
+  rf47db="$SCRATCH/readfail-${RUN}.sqlite"
+  rf47tok="$SCRATCH/readfail-${RUN}.token"
+  rf47a="it-$RUN-rf-a"
+  rf47b="it-$RUN-rf-b"
+  rf47owner="it-$RUN-rf-owner"
+  rm -f "$rf47db" "$rf47db-wal" "$rf47db-shm"
+  printf '%s\n' "$TOKEN" > "$rf47tok"
+  chmod 600 "$rf47tok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$rf47port" --db "$rf47db" --token-file "$rf47tok" \
+    > "$SCRATCH/readfail-${RUN}.log" 2>&1 &
+  rf47pid=$!
+  rf47ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS --max-time 2 "$rf47base/health?token=$TOKEN" >/dev/null 2>&1; then rf47ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$rf47ready" = 1 ]; then
+    rf47() { _rfp="$1"; shift; curl -sS --max-time 10 -G -X POST --data-urlencode "token=$TOKEN" "$rf47base/$_rfp" "$@"; }
+    for _id in "$rf47a" "$rf47b"; do
+      rf47 register --data-urlencode "id=$_id" --data-urlencode "node=n-rf" >/dev/null
+    done
+    rf47sent="$(rf47 message --data-urlencode "from=$rf47a" --data-urlencode "to=$rf47b" \
+      --data-urlencode "body=rf-body-$RUN")"
+    rf47tid="$(field "$rf47sent" thread)"
+    contains "the read-failure fixture has a conversation to read" \
+      "$(curl -sS --max-time 10 "$rf47base/thread?id=$rf47tid&token=$TOKEN")" "rf-body-$RUN"
+
+    # Make `messages.body` unreadable: every query that selects it fails, while the table's other
+    # columns are still there.
+    sqlite3 "$rf47db" "ALTER TABLE messages RENAME TO messages_real;
+      CREATE VIEW messages AS SELECT id, thread_id, created_at, sender, repo, subject, abs(-9223372036854775808) AS body, reply_to, recipients, origin FROM messages_real;" >/dev/null 2>&1
+    rf47_thread="$(curl -sS --max-time 10 "$rf47base/thread?id=$rf47tid&token=$TOKEN")"
+    equals "a thread whose read failed is an error, not an empty thread" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$rf47base/thread?id=$rf47tid&token=$TOKEN")" "500"
+    contains "and the error names the store" "$rf47_thread" "could not be read"
+    equals "an inbox whose read failed is an error, not an empty inbox" \
+      "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$rf47base/inbox?id=$rf47b&all=1&token=$TOKEN")" "500"
+    sqlite3 "$rf47db" "DROP VIEW messages; ALTER TABLE messages_real RENAME TO messages;" >/dev/null 2>&1
+    contains "and the same read works again once the store is readable" \
+      "$(curl -sS --max-time 10 "$rf47base/thread?id=$rf47tid&token=$TOKEN")" "rf-body-$RUN"
+
+    # A send whose *recipient* read failed must not store mail nobody can be told about.
+    rf47 register --data-urlencode "id=$rf47owner" --data-urlencode "node=n-rf" \
+      --data-urlencode "repos=example.test/$RUN/rf" >/dev/null
+    sqlite3 "$rf47db" "ALTER TABLE agents RENAME TO agents_real;
+      CREATE VIEW agents AS SELECT id, node, agent, harness, session, ip, abs(-9223372036854775808) AS repos, note, registered_at, last_seen FROM agents_real;" >/dev/null 2>&1
+    rf47_send="$(rf47 message --data-urlencode "from=$rf47a" \
+      --data-urlencode "repo=example.test/$RUN/rf" --data-urlencode "body=rf-unresolved-$RUN")"
+    contains "a send whose recipients could not be read says so" "$rf47_send" "recipients could not be resolved"
+    sqlite3 "$rf47db" "DROP VIEW agents; ALTER TABLE agents_real RENAME TO agents;" >/dev/null 2>&1
+    equals "and stores nothing" \
+      "$(sqlite3 "$rf47db" "select count(*) from messages where body='rf-unresolved-$RUN';")" "0"
+    contains "while a send works again once the store is readable" \
+      "$(rf47 message --data-urlencode "from=$rf47a" --data-urlencode "repo=example.test/$RUN/rf" \
+         --data-urlencode "body=rf-resolved-$RUN")" "ok posted"
+  else
+    no "the read-failure fixture started" "no answer on $rf47base"
+  fi
+  kill "$rf47pid" 2>/dev/null
+  wait "$rf47pid" 2>/dev/null
+
+  # The operator mode reads too, and a partial candidate list is not a prune.
+  sqlite3 "$rf47db" "ALTER TABLE messages RENAME TO messages_real;
+    CREATE VIEW messages AS SELECT abs(-9223372036854775808) AS id, thread_id, created_at, sender, repo, subject, body, reply_to, recipients, origin FROM messages_real;" >/dev/null 2>&1
+  rf47_prune="$("$CHATBOX_BIN" --db "$rf47db" --prune 0 2>&1)"; rf47_prc=$?
+  if [ "$rf47_prc" -ne 0 ] && printf '%s' "$rf47_prune" | grep -q "rolled back"; then
+    ok "a prune whose read failed rolls back and says so"
+  else
+    no "a prune whose read failed rolls back and says so" \
+       "exit=$rf47_prc: $(printf '%s' "$rf47_prune" | head -1)"
+  fi
+  sqlite3 "$rf47db" "DROP VIEW messages; ALTER TABLE messages_real RENAME TO messages;" >/dev/null 2>&1
+  equals "and the message it could not see is still there" \
+    "$(sqlite3 "$rf47db" "select count(*) from messages where body='rf-body-$RUN';")" "1"
+  rm -f "$rf47db" "$rf47db-wal" "$rf47db-shm" "$rf47tok"
+else
+  printf '  skip  the read-failure answers (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

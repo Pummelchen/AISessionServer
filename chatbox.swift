@@ -562,20 +562,51 @@ final class Store: @unchecked Sendable {
         return sqlite3_last_insert_rowid(db)
     }
 
+    /// Set when a read did not run to completion — a `sqlite3_step` that was neither `SQLITE_ROW`
+    /// nor `SQLITE_DONE`. `rows` still returns what it collected, because most callers want rows and
+    /// cannot do anything else with the failure; what must not happen is that a *truncated* answer is
+    /// presented as a complete one, so the request path checks this and answers 500 instead. Cleared
+    /// by `beginRequest`.
+    private(set) var readFailed = false
+
+    /// Start a fresh read: one request's worth of statements. `dispatch` calls this before a route
+    /// runs, so the flag describes *this* answer rather than the last one.
+    func beginRequest() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        readFailed = false
+    }
+
     /// Query rows as dictionaries.
     func rows(_ sql: String, _ binds: [String?] = []) -> [[String: String]] {
-        guard let st = prepare(sql, binds) else { return [] }
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard let st = prepare(sql, binds) else {
+            // A statement that will not even prepare is a read that did not happen: the caller gets
+            // no rows, and the flag is what stops "no rows" being read as "nothing matched".
+            readFailed = true
+            return []
+        }
         defer { sqlite3_finalize(st) }
         var out: [[String: String]] = []
-        while sqlite3_step(st) == SQLITE_ROW {
-            var row: [String: String] = [:]
-            let n = sqlite3_column_count(st)
-            for i in 0..<n {
-                let name = String(cString: sqlite3_column_name(st, i))
-                if let c = sqlite3_column_text(st, i) { row[name] = String(cString: c) }
-                else { row[name] = "" }
+        while true {
+            let step = sqlite3_step(st)
+            if step == SQLITE_ROW {
+                var row: [String: String] = [:]
+                let n = sqlite3_column_count(st)
+                for i in 0..<n {
+                    let name = String(cString: sqlite3_column_name(st, i))
+                    if let c = sqlite3_column_text(st, i) { row[name] = String(cString: c) }
+                    else { row[name] = "" }
+                }
+                out.append(row)
+                continue
             }
-            out.append(row)
+            if step != SQLITE_DONE {
+                // BUSY, IOERR, CORRUPT, NOMEM, or anything else: the rows collected so far are a
+                // *partial* answer, and a partial answer that looks complete is worse than an error.
+                readFailed = true
+                FileHandle.standardError.write("chatbox: read failed after \(out.count) row(s): \(String(cString: sqlite3_errmsg(db)))\n".data(using: .utf8)!)
+            }
+            break
         }
         return out
     }
@@ -805,6 +836,10 @@ final class Store: @unchecked Sendable {
           AND NOT EXISTS (SELECT 1 FROM deliveries d
                           WHERE d.message_id = m.id AND (d.acked_at IS NULL OR d.acked_at = ''))
         """, [isoDaysAgo(days)])
+        // A read that failed part-way left a *partial* candidate list. Deleting what it did return
+        // would report success for a prune that never saw the rest of the table, so the transaction
+        // goes back with everything else.
+        if readFailed { return abandon() }
         if candidates.isEmpty {
             if !dryRun && run("COMMIT", []) < 0 { return abandon() }
             return (0, 0, 0)
@@ -1362,7 +1397,25 @@ final class Chatbox: @unchecked Sendable {
             finish(req, conn: conn, status: 200, body: uiPage(), contentType: "text/html; charset=utf-8")
             return
         }
+        store.beginRequest()
         let answer = handle(req, who)
+        if req.method == "GET", answer.status < 500, store.readFailed {
+            // The route built an answer from a read that did not finish — an empty thread, a short
+            // inbox, a registry missing rows. Answering it would present a truncated view as the
+            // truth, which is the one thing a partial read must never do. A GET's answer *is* the
+            // data, so a failed read means there is no answer to give. A write is different: its
+            // answer is the effect, and the routes that can be misled by a failed read handle that
+            // themselves (see `message`), because a blanket 500 would leave the caller unable to tell
+            // whether the write happened.
+            //
+            // `< 500` and not just `200`: a 404 or a 403 *built from* the failed read is the same
+            // lie in a different status — "no such thread" and "not your conversation" are answers
+            // the store could not actually give. A route that already reports a server-side failure
+            // has handled it: `/health` answers 503 with the store's own error, and overwriting that
+            // with a generic 500 would make the better answer worse.
+            finish(req, conn: conn, status: 500, body: "error: the store could not be read — the answer would have been partial (\(oneLine(store.lastError())))\n")
+            return
+        }
         if let plan = answer.forward {
             // The message is stored, and a peer still has to be told. The forward runs off the
             // serial queue so a peer that is slow, unreachable, or this board itself cannot hold up
@@ -1730,6 +1783,15 @@ final class Chatbox: @unchecked Sendable {
         // An explicit to=a,b,a should not deliver, mark or warn twice.
         var already = Set<String>()
         recipients = recipients.filter { already.insert($0).inserted }
+        // A recipient list built from a read that failed is a *partial* list: the repo's owners or
+        // the thread's participants came back short, and storing the message against it would leave
+        // mail nobody is delivered to. `--prune` never removes a message with no deliveries, so that
+        // mail would be unreachable and permanent. The transaction goes back instead — and the
+        // thread this send may have just opened goes with it.
+        if store.readFailed {
+            store.run("ROLLBACK", [])
+            return Reply(500, "error: the recipients could not be resolved — nothing was written\n")
+        }
 
         // The thread's existence is enforced by the insert, not by a read before it:
         // `INSERT … SELECT … WHERE EXISTS` stores the row only while the thread is still
@@ -1787,6 +1849,9 @@ final class Chatbox: @unchecked Sendable {
         }
         // The answer reports the delivery rows that exist, not the list this route intended.
         let delivered = store.recipientsWithDelivery(message: String(msgId))
+        // The message is committed; this list is a second read. If *it* failed, say so — "delivered
+        // to nobody" and "we could not read who" are different answers to the same question.
+        let deliveredKnown = !store.readFailed
 
         // A report sent to a machine that has gone away is still stored, but the
         // sender deserves to know nobody is likely to read it.
@@ -1811,9 +1876,10 @@ final class Chatbox: @unchecked Sendable {
             let seen = store.lastSeen(of: id)
             return seen.isEmpty ? "never registered" : ageDescription(seen, now: now)
         }
-        let deliveredTo = delivered.map { r in
-            unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r
-        }.joined(separator: ", ")
+        let deliveredTo = deliveredKnown
+            ? (delivered.isEmpty ? "(nobody)"
+               : delivered.map { r in unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r }.joined(separator: ", "))
+            : "(could not be read)"
 
         // TRK-17: one hop to the configured peer, for a message this board accepted from a sender
         // and cannot route — the repo has no owner here, which is the case the note below already
@@ -2310,8 +2376,13 @@ final class Chatbox: @unchecked Sendable {
         // something to report; it must not itself satisfy the wait, or a session
         // with read history would return instantly for ever and a wake loop would
         // spin with no backoff.
+        store.beginRequest()
         if store.hasUnread(forAgent: id) {
             let rows = store.deliveries(forAgent: id, includeAcked: !req.p("all").isEmpty)
+            if store.readFailed {
+                finish(req, conn: conn, status: 500, body: "error: the store could not be read — the page would have been partial\n")
+                return
+            }
             finish(req, conn: conn, status: 200, body: renderInbox(req, id: id, rows: rows),
                    headers: unreadHeader(rows))
             return
