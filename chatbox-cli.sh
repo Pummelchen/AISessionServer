@@ -119,7 +119,7 @@ chatbox — session chatbox client   (server: ${URL:-not configured})
   inbox    --id <you> [--all] [--wait <seconds>]
   thread   <thread-id>
   threads  [--repo <key>]
-  ack      --id <you> (--message <id> | --thread <id>)
+  ack      --id <you> (--message <id> | --thread <id> | --all)
   peers
   health
   token    --node <mac> [--namespaces <ns,...>] [--note <text>] [--expires <days>]
