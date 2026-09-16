@@ -263,6 +263,30 @@ if [ -n "${CHATBOX_BIN:-}" ]; then CHATBOX_BIN="$(abspath "$CHATBOX_BIN")"; fi
 printf 'chatbox protocol tests\n  server: %s\n  run:    %s\n\n' "$URL" "$RUN"
 
 # ---------------------------------------------------------------------------
+# The suite binds these ports itself; one already held is not detected by the sections.
+# A fixture that cannot bind exits ("Address already in use"), the section's readiness probe is then
+# answered by whatever holds the port, and the checks measure a server this suite did not start - an
+# orphaned fixture from a run that died mid-section, or an operator's board started on a port the
+# runbook did not warn about. Fail here, before the first check, naming the port.
+# ---------------------------------------------------------------------------
+if [ -z "${CHATBOX_ALLOW_HELD_PORTS:-}" ]; then
+  held=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$p/" 2>/dev/null; then held="$held $p"; fi
+  done <<EOF
+$(grep -o 'CHATBOX_[A-Z_]*PORT:-[0-9][0-9]*' "$0" | sed 's/.*:-//' | sort -u)
+EOF
+  if [ -n "$held" ]; then
+    printf 'FATAL: the suite binds these ports itself and they are already answering:%s\n' "$held" >&2
+    printf '  stop what holds them (an orphaned fixture from a run that was interrupted,\n' >&2
+    printf '  or a board started on a fixture port), or set CHATBOX_ALLOW_HELD_PORTS=1 to\n' >&2
+    printf '  run anyway - the sections that use them will then measure the wrong server.\n' >&2
+    exit 2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Reachability, and the auth mode the rest of the suite depends on
 # ---------------------------------------------------------------------------
 if ! curl -sS --max-time 20 -o /dev/null "$URL/health" 2>/dev/null; then
