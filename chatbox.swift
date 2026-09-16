@@ -2466,8 +2466,11 @@ final class Chatbox: @unchecked Sendable {
         let sql = "SELECT t.id, t.repo, t.subject, t.created_at, t.last_at, (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n FROM threads t"
             + scope + " ORDER BY t.last_at DESC LIMIT \(maxRows)"
         let rows = store.rows(sql, binds)
-        if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }
+        // `json=1` is the machine-readable contract of every listing, so an empty result is an empty
+        // *JSON* result. The prose answer is for a human; answering it to a caller that asked for JSON
+        // made "empty" look like "broken".
         if req.flag("json") { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }
+        if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }
         // The text answer states how many of how many it is showing, like every other listing: it
         // used to print the page size alone, so a truncated listing was indistinguishable from a
         // complete one and the operator had no reason to raise `--max-rows`.
@@ -2646,8 +2649,8 @@ final class Chatbox: @unchecked Sendable {
         }
         let matchingTokens = store.tokenCount()
         let rows = store.tokensListing(limit: maxRows)
-        if rows.isEmpty { return (200, "no credentials issued\n") }
         if req.flag("json") { return (200, jsonRows(rows, key: "tokens", matching: matchingTokens)) }
+        if rows.isEmpty { return (200, "no credentials issued\n") }
         var out = "credentials — \(rows.count)\(matchingTokens > rows.count ? " of \(matchingTokens)" : "")\n"
         if matchingTokens > rows.count {
             out += "note: \(matchingTokens - rows.count) more are issued than are shown — raise --max-rows to see them\n"

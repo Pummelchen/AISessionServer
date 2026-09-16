@@ -5715,6 +5715,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 49. An empty listing asked for as json is json
+# `json=1` is the machine-readable contract of every listing, but the two routes that can answer
+# "nothing" - /threads and /token - tested for emptiness first and returned a sentence: "no threads
+# yet", "no credentials issued". A caller parsing the answer got a syntax error where the truth was
+# "there are none", and an empty scoped listing is the state a credential is in most of the time.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  js49port="${CHATBOX_JSON_PORT:-8777}"
+  js49base="http://127.0.0.1:$js49port"
+  js49db="$SCRATCH/json-${RUN}.sqlite"
+  js49tok="$SCRATCH/json-${RUN}.token"
+  rm -f "$js49db" "$js49db-wal" "$js49db-shm"
+  printf '%s\n' "$TOKEN" > "$js49tok"
+  chmod 600 "$js49tok" 2>/dev/null
+  "$CHATBOX_BIN" --port "$js49port" --db "$js49db" --token-file "$js49tok" \
+    > "$SCRATCH/json-${RUN}.log" 2>&1 &
+  js49pid=$!
+  js49ready=0
+  for _ in $(seq 1 50); do
+    if curl -fsS --max-time 2 "$js49base/health?token=$TOKEN" >/dev/null 2>&1; then js49ready=1; break; fi
+    sleep 0.2
+  done
+  if [ "$js49ready" = 1 ]; then
+    js49() { _jp="$1"; shift; curl -sS --max-time 10 -G -X POST --data-urlencode "token=$TOKEN" "$js49base/$_jp" "$@"; }
+    js49get() { curl -sS --max-time 10 "$js49base/$1"; }
+
+    # A board with nothing on it at all: the empty answer is still the machine-readable one.
+    js49_threads="$(js49get "threads?json=1&token=$TOKEN")"
+    contains "an empty thread listing asked for as json is an object" "$js49_threads" '"threads"'
+    equals "with nothing matched" "$(jsonnum "$js49_threads" matching)" "0"
+    lacks "and not the sentence a human would read" "$js49_threads" "no threads"
+    js49_tokens="$(js49get "token?json=1&token=$TOKEN")"
+    contains "an empty credential listing asked for as json is an object" "$js49_tokens" '"tokens"'
+    lacks "and not the sentence either" "$js49_tokens" "no credentials"
+    # The prose forms are unchanged: this fix is about which answer wins, not about what a human is
+    # told when there is nothing to show.
+    contains "while the text thread listing is still text" "$(js49get "threads?token=$TOKEN")" "no threads yet"
+    contains "and the text credential listing is still text" "$(js49get "token?token=$TOKEN")" "no credentials issued"
+
+    # A board with a conversation on it, read by a credential scoped to a machine that is in none:
+    # the listing is empty for a reason, and the answer for it is still JSON.
+    js49a="it-$RUN-js-a"
+    js49b="it-$RUN-js-b"
+    for _id in "$js49a" "$js49b"; do
+      js49 register --data-urlencode "id=$_id" --data-urlencode "node=n-js49" >/dev/null
+    done
+    js49 send="$(js49 message --data-urlencode "from=$js49a" --data-urlencode "to=$js49b" \
+      --data-urlencode "body=js-$RUN")"
+    equals "the json fixture has a conversation the scoped caller is not in" \
+      "$(jsonnum "$(js49get "threads?json=1&token=$TOKEN")" matching)" "1"
+    contains "so the conversation is really there to be hidden" "$js49 send" "ok posted"
+    js49_issued="$(js49 token --data-urlencode "node=n-js49-stranger" --data-urlencode "namespaces=*")"
+    js49_secret="$(field "$js49_issued" secret)"
+    if [ -n "$js49_secret" ]; then
+      js49_scoped="$(curl -sS --max-time 10 -H "Authorization: Bearer $js49_secret" "$js49base/threads?json=1")"
+      contains "a scoped listing with nothing to show is an object" "$js49_scoped" '"threads"'
+      equals "with nothing matched, not a parse error" "$(jsonnum "$js49_scoped" matching)" "0"
+      lacks "and no prose where json was asked for" "$js49_scoped" "no threads"
+      js49 revoke --data-urlencode "id=$(field "$js49_issued" id)" >/dev/null
+    else
+      no "a scoped credential was issued for the json fixture" "$(snip "$js49_issued")"
+    fi
+  else
+    no "the json fixture started" "no answer on $js49base"
+  fi
+  kill "$js49pid" 2>/dev/null
+  wait "$js49pid" 2>/dev/null
+  rm -f "$js49db" "$js49db-wal" "$js49db-shm" "$js49tok" "$SCRATCH/json-${RUN}.log"
+else
+  printf '  skip  the empty json listings (needs CHATBOX_BIN)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"

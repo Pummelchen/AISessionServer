@@ -1179,6 +1179,19 @@ m('278-audit0062-anyvalue',
         return !p(key).isEmpty
     }''')
 
+# AUDIT #0090: an empty listing asked for as json must be json. These are the pre-fix branches:
+# emptiness answered first, so `json=1` on an empty or scoped-empty listing got the sentence.
+m('277-audit0090-jsonprose',
+  r'''        if req.flag("json") { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }
+        if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }''',
+  r'''        if rows.isEmpty { return (200, "no threads\(repo.isEmpty ? "" : " for \(repo)") yet\n") }
+        if req.flag("json") { return (200, jsonRows(rows, key: "threads", matching: matchingThreads)) }''')
+m('281-audit0090-tokenprose',
+  r'''        if req.flag("json") { return (200, jsonRows(rows, key: "tokens", matching: matchingTokens)) }
+        if rows.isEmpty { return (200, "no credentials issued\n") }''',
+  r'''        if rows.isEmpty { return (200, "no credentials issued\n") }
+        if req.flag("json") { return (200, jsonRows(rows, key: "tokens", matching: matchingTokens)) }''')
+
 m('272-audit0040-nodeadline',
   r'''            if idleTimeout > 0 {
                 queue.asyncAfter(deadline: .now() + .seconds(idleTimeout), execute: refusalIdle)
