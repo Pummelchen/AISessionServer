@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 41 | done: 54 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 38 | done: 57 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -53,10 +53,10 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0008](#0008) | S2 | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **DONE** | node1 | L0 shellcheck baseline |
 | [0009](#0009) | S2 | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **DONE** | node1 | L0 shellcheck baseline |
 | [0010](#0010) | S2 | M4 | `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941` | Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329) | test | **START** | node1 | L0 shellcheck baseline |
-| [0014](#0014) | S2 | M1 | `chatbox.swift:2426` | CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change | unsafe | **START** | node1 | L0 |
+| [0014](#0014) | S2 | M1 | `chatbox.swift:2426` | CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change | unsafe | **DONE** | node1 | L0 |
 | [0049](#0049) | S2 | repo | `.github/workflows/codeql.yml:57` | CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned | test | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0050](#0050) | S2 | repo | `aisessionserver-wiki/Deployment.md:92` | Local test runbook starts the disposable server on the suite's own staleness port | docs | **START** | node1 | phase-B/L7-ops |
-| [0051](#0051) | S2 | repo | `aisessionserver-wiki/Quick-Start.md:255` | Documented local test command silently skips checks and cannot print the promised result | docs | **START** | node1 | phase-B/L7-ops |
+| [0050](#0050) | S2 | repo | `aisessionserver-wiki/Deployment.md:92` | Local test runbook starts the disposable server on the suite's own staleness port | docs | **DONE** | node1 | phase-B/L7-ops |
+| [0051](#0051) | S2 | repo | `aisessionserver-wiki/Quick-Start.md:255` | Documented local test command silently skips checks and cannot print the promised result | docs | **DONE** | node1 | phase-B/L7-ops |
 | [0052](#0052) | S2 | M3 | `chatbox-cli.sh:150` | Client puts the credential in curl argv, exposing it to every local user via ps | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0053](#0053) | S2 | M3 | `chatbox-cli.sh:29` | ~/.chatbox overrides the environment instead of defaulting to it | logic | **DONE** | node1 | phase-B/M3-client |
 | [0054](#0054) | S2 | M3 | `chatbox-cli.sh:355` | canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls] | logic | **START** | node1 | phase-B/L1-architecture,M3-client |
@@ -827,10 +827,12 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 - **Severity / category / module:** S2 / unsafe / M1
 - **Location:** `chatbox.swift:2426`
 - **Title:** CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** 1 open code-scanning alert #1 swift/cleartext-transmission, severity high, chatbox.swift:2426. TLS is opt-in by documented design (README/Deployment/Architecture), so the alert is accurate rather than a false positive.
 - **Fix:** Decision task: (a) keep plaintext support and record a written waiver in the repo (AUDIT/waivers.md) plus a CodeQL dismissal with the same justification, or (b) make TLS mandatory (breaking every client URL and the documented deployment). Recommendation: (a) - the channel is documented for private networks and the client already supports TLS; forcing it is a product decision, not a defect fix.
-- **Notes:** Rejected as a fix: silencing CodeQL. The alert stays visible unless a human decision says otherwise.
+- **Evidence (after):** DECISION (a) taken and recorded: **keep plaintext support and waive the alert in writing**, not silence it. `AUDIT/waivers.md` W-01 gives the rule, the alert ([#1](https://github.com/Pummelchen/AISessionServer/security/code-scanning/1)), why it is accurate (the listener really is plain unless `--tls-identity` is given, so the credential and the message cross in the clear), why it is accepted (TLS is available and documented, the default is plain because the documented deployment is two machines on one private tailnet, and mandating TLS changes every client URL scheme, every `~/.chatbox`, the peer URL and the runbook - a product decision), the residual risk accepted explicitly, and the review trigger. The alert itself is **dismissed** on GitHub (`state: dismissed`, `dismissed_reason: won't fix`) with a 280-character comment naming W-01. Gate: the repository's open code-scanning alert count went from **1 to 0** - `gh api repos/Pummelchen/AISessionServer/code-scanning/alerts?state=open --jq length` returns 0, and the alert still appears in the list as dismissed, so nothing is hidden and no query was excluded from the CodeQL configuration.
+- **Commit:** `319ecfa`
+- **Notes:** Rejected: (b) make TLS mandatory - it would close the alert by changing the product, breaking the loopback default that exists so a macOS host can reach its own board, every `~/.chatbox`, the peer federation URL and the published runbook; that is the owner's decision, not a defect fix, and the audit does not take it on their behalf. Also rejected: a `query-filters` exclusion in `.github/codeql-config.yml` - it hides the finding from the analysis itself, so a future reviewer sees a clean scan with nothing to read; a dismissal keeps the alert visible with a written reason attached, and `AUDIT/waivers.md` is the durable copy of that reason.
 
 ### 0049
 
@@ -854,26 +856,32 @@ AUDIT (gate): re-read cold. The change is the documented build command for the s
 - **Severity / category / module:** S2 / docs / repo
 - **Location:** `aisessionserver-wiki/Deployment.md:92`
 - **Title:** Local test runbook starts the disposable server on the suite's own staleness port
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** Deployment.md:92 and Quick-Start.md:253 start the test server with `--port 8791`, and Deployment kills it with `pkill -f "chatbox --port 8791"` (95). README.md:270 uses 8790 and warns (282-283) that 8791 is the suite's own staleness server (`CHATBOX_STALE_PORT` overrides it). With CHATBOX_BIN set — which README.md:278 instructs — tests/protocol.sh:1474 binds 8791, fails, and its readiness probe (1478-1481) is answered by the operator's wrong server, so the presence-timing checks run against a 7-day window.
 
 WHY IT MATTERS: An operator who follows both pages gets a failed run, or staleness checks silently answered by the wrong board because the suite's own server never starts: the test result is not evidence about the build.
 
 CONFIDENCE: high
 - **Fix:** Start the disposable server on 8790 in Deployment.md and Quick-Start.md (and fix the pkill pattern), or set CHATBOX_STALE_PORT to a free port in both snippets.
+- **Evidence (after):** TEST (gate): the before-state was reproduced directly. With a board already holding 8790 - the port both runbooks used - the suite's own fixture started on 8790 exits **1** with `chatbox: listener failed: POSIXErrorCode(rawValue: 48): Address already in use`, while the suite's readiness probe to 8790 answers `ok chatbox up` from the *operator's* board; section 46 then proceeds believing its own server started, and its first check (`a stop exits cleanly`, expecting 0) reads the failed fixture's exit 1, with the WAL and restart checks reading the wrong board's files. The runbook now uses **8800** (the matrix starts at 8801) in `README.md`, wiki `Deployment.md` and wiki `Quick-Start.md`, names the whole range the suite binds (`8776`-`8799`, `9381`, `9395`-`9410`) and states the failure mode, so the next operator does not rediscover it. The documented invocation was then run verbatim from the repository root: **1085 passed / 0 failed, 0 `skip` lines**. `.gitignore` also gained `chatbox-mcp`, the second build output the corrected runbook builds.
+- **Commit:** `10c9fa2 (README.md, .gitignore); wiki f511561`
+- **Notes:** The finding (phase B) named 8791, the suite's staleness server; by the time it was fixed the audit's own section 46 had added a second collision at 8790, so the fix states the rule and the range rather than one port. Both collisions have the same shape and the same consequence, which is why the fix is on the page rather than on a single port.
 
 ### 0051
 
 - **Severity / category / module:** S2 / docs / repo
 - **Location:** `aisessionserver-wiki/Quick-Start.md:255`
 - **Title:** Documented local test command silently skips checks and cannot print the promised result
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** Quick-Start.md:249-259 and Deployment.md:89-95 run the suite with only CHATBOX_URL/CHATBOX_TOKEN and then show `864 passed, 0 failed` as the expected output. The suite skips whole blocks when CHATBOX_DB, CHATBOX_SERVER_LOG, CHATBOX_BIN or CHATBOX_MCP are unset (tests/protocol.sh:398, 498, 869, 1377, 1468, 1560 and the MCP block), printing `skip ...` without counting them; the summary (protocol.sh:4307) prints only passed/failed. README.md:273-279 sets all four and warns the checks are skipped without them.
 
 WHY IT MATTERS: The wiki's 'cheapest way to know a build is good' proves materially less than it claims, and its stated output is unattainable, so an operator gets false confidence immediately before a production restart.
 
 CONFIDENCE: high
 - **Fix:** Use README's invocation verbatim on both wiki pages (CHATBOX_DB, CHATBOX_SERVER_LOG, CHATBOX_BIN, CHATBOX_MCP, port 8790) and state the count that invocation actually produces.
+- **Evidence (after):** TEST: wiki `Quick-Start.md` and `Deployment.md` now carry the README's invocation verbatim - both documented build commands, the four variables (`CHATBOX_DB`, `CHATBOX_SERVER_LOG`, `CHATBOX_BIN`, `CHATBOX_MCP`) and port 8800 - and the output the page prints is the one that invocation really produces. Running it from the repository root: **1085 passed / 0 failed with 0 `skip` lines**. The old two-variable invocation leaves the database, server-log, binary and MCP blocks skipped; a skip is not counted in the summary and is not a pass, so the page's 'cheapest way to know a build is good' proved materially less than it claimed and its stated `864 passed` was unreachable at this revision. Both pages now say why the variables exist rather than leaving them as decoration.
+- **Commit:** `10c9fa2 (README.md); wiki f511561`
+- **Notes:** The wiki pages state the count as `1085 passed, 0 failed` with the note that it grows with the suite, so the number is attainable at this revision without pretending it is fixed for ever. The README already had the right invocation; the wiki pages were the drifted copies, which is why the fix is 'copy the README' rather than a third spelling.
 
 ### 0052
 
