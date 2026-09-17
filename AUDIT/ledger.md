@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 21 | done: 74 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 18 | done: 77 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -99,9 +99,9 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0094](#0094) | S2 | M4 | `tests/protocol.sh:1515,4471` | Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board | test | **DONE** | node1 | new-this-session (the audit/0062 verification run) |
 | [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
 | [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **DONE** | node1 | phase-A |
-| [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **START** | node1 | L0 secret-scan triage |
-| [0016](#0016) | S3 | M3 | `chatbox-cli.sh:30` | SC1090: the client sources a non-constant path (~/.chatbox) | style | **START** | node1 | L0 shellcheck baseline |
-| [0087](#0087) | S3 | repo | `.github/traffic.json:4` | Canned view count served as the live 'Views (14d)' README badge | placeholder | **START** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **DONE** | node1 | L0 secret-scan triage |
+| [0016](#0016) | S3 | M3 | `chatbox-cli.sh:30` | SC1090: the client sources a non-constant path (~/.chatbox) | style | **DONE** | node1 | L0 shellcheck baseline |
+| [0087](#0087) | S3 | repo | `.github/traffic.json:4` | Canned view count served as the live 'Views (14d)' README badge | placeholder | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0088](#0088) | S3 | M1 | `chatbox.swift:1617` | Local `who` shadows the Principal parameter in message() | style | **DONE** | node1 | phase-B/L3-line-level |
 | [0089](#0089) | S3 | M1 | `chatbox.swift:260` | The '?' element of the repo-key character check is unreachable | dead | **DONE** | node1 | phase-B/L3-line-level |
 | [0095](#0095) | S3 | M4 | `tests/protocol.sh (every fixture section)` | A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port | test | **DONE** | node1 | new-this-session (the audit/0090 matrix base cell) |
@@ -1499,33 +1499,40 @@ WHY IT MATTERS: a check that can fail on a busy machine is a check whose red is 
 - **Severity / category / module:** S3 / style / M7
 - **Location:** `tests/.scratch`
 - **Title:** Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** du -sh tests/.scratch = 1.8G; find | wc -l = 120414; gitleaks worktree scan took 71s over 1.34 GB and reported 2097 hits, 100% under tests/.scratch (1048 pkcs12-file + 1048 private-key from the TLS fixture, 1 false positive in mut/names.json).
-- **Fix:** Have the harness prune per-cell scratch (keep only the failing cell's artefacts) and delete the accumulated directory once no run is active. Command + rollback are logged in the ledger before running.
-- **Notes:** Tracked tree and full history are clean (gitleaks: 0 leaks in 42 commits, 0 in git archive HEAD).
+- **Fix:** Three parts. (1) The suite removes the files it created, just before its summary: every scratch path it builds carries `$RUN`, so `find "$SCRATCH" -maxdepth 1 -name "*-$RUN*"` finds this run's databases, WAL/SHM files, logs and fixture directories and nothing else. (2) `AUDIT/mutate.sh` prunes each cell's artefacts as the run goes - the mutant binary, its build log, its database and its server log - keeping the transcript (`<name>.out`) and the mutated source, which are the evidence. It also prints the scratch size at the end of a run. (3) The already-accumulated directory was removed once, and the command is logged in the ledger's destructive-operations table before it ran.
+- **Evidence (after):** TEST (measured, before and after): `du -sh tests/.scratch` was **1.9 GB** with **123,531 files** (gitleaks had spent 71 s of a 1.34 GB worktree scan on it, 2098 hits that are all fixture key material). After the one-time prune, a **full suite run** on the changed tree leaves `tests/.scratch` at **596 KB / 7 files**, and all seven belong to the test runner's own `verify-b10/` directory - the suite itself left nothing (`find tests/.scratch -type f -not -path '*verify-b10*' | wc -l` is 0). The full suite is green at **1106 passed / 0 failed** in that run. The harness's per-cell prune was verified by a one-cell matrix run: base GREEN at 1106 passed / 0 failed and cell 292 red at 1105/1 in that run, with the harness printing `scratch: 53M` at the end - the frozen sources plus the mutated sources and the transcripts - and the per-cell binaries, databases, WAL/SHM files and logs no longer present, where before each cell left four or five files behind for the life of the directory. The run's own artefacts were then removed by hand, leaving tests/.scratch at **840 KB / 20 files** (the test runner's directory), which is where it now sits between runs.
+- **Commit:** `85b47ff`
+- **Notes:** The cleanup keys on `$RUN` because that is already the per-run namespace the suite's own header promises for concurrent runs on one board, and `-maxdepth 1` keeps it away from anything nested it does not own. The `.out` transcripts are deliberately kept: deleting them would delete what the matrix exists to produce. The TLS fixture's key material is regenerated per run, which is why it dominated the scan size; nothing about it is committed (`.gitignore` covers `tests/.scratch/`).
 
 ### 0016
 
 - **Severity / category / module:** S3 / style / M3
 - **Location:** `chatbox-cli.sh:30`
 - **Title:** SC1090: the client sources a non-constant path (~/.chatbox)
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** SC1090 (warning): ShellCheck can't follow non-constant source.
-- **Fix:** Add a `# shellcheck source=/dev/null` directive with a comment explaining that the path is the documented config file, and confirm the file is only read (never executed from an untrusted location).
-- **Notes:** Sourcing a shell file executes it: check the ownership/permission expectations of ~/.chatbox.
+- **Fix:** The client documents the dynamic source with `# shellcheck source=/dev/null` and a comment saying why: the path is the operator's own configuration file, named by `CHATBOX_CONFIG` or defaulting to `~/.chatbox`, and a fixed path would contradict the override the client documents (and that the suite itself uses, with `CHATBOX_CONFIG=/nonexistent` in every client fixture). The suite's client lint check no longer filters SC1090, so the rule is enforced like every other.
+- **Evidence (after):** TEST: `shellcheck -s sh chatbox-cli.sh` reports **0 findings** including SC1090 (it was 1), and section 52's check now runs shellcheck with **no filter at all** - a *stricter* check than the one it replaces, which excluded SC1090 by pattern; the suite is green at **1106 passed / 0 failed**. No mutant cell: the change is a linter directive plus a stricter assertion on the same file, and the client's behaviour is untouched.
+- **Commit:** `85b47ff`
+- **Notes:** The directive names `/dev/null` rather than the config file because the file legitimately does not exist on a machine with no `~/.chatbox` (the suite runs that way on purpose). The alternative fix - a constant path - would have removed the documented `CHATBOX_CONFIG` override to satisfy a linter, which is the wrong direction.
 
 ### 0087
 
 - **Severity / category / module:** S3 / placeholder / repo
 - **Location:** `.github/traffic.json:4`
 - **Title:** Canned view count served as the live 'Views (14d)' README badge
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** traffic.json is a static shields.io endpoint payload with "label": "Views (14d)" (line 3) and "message": "33" (line 4), embedded as a badge in README.md:4. Neither workflow writes or regenerates the file, so the displayed traffic figure is a hand-written constant rather than measured data.
 
 WHY IT MATTERS: Project metadata presents a fabricated metric as instrumentation; the badge reads as live analytics while it only changes when someone commits a new literal, which misleads anyone judging adoption.
 
 CONFIDENCE: high
-- **Fix:** Remove the badge, or generate .github/traffic.json from real traffic data in CI so the number is measured.
+- **Fix:** The badge and its data file are removed: `.github/traffic.json` was a hand-written shields.io endpoint payload (`"label": "Views (14d)"`, `"message": "33"`) that no workflow wrote or regenerated, embedded in `README.md` as if it were measured traffic.
+- **Evidence (after):** TEST: `README.md` no longer embeds the endpoint badge and `.github/traffic.json` is deleted (`git rm`); the only remaining references to the name are the ledger's own record of this finding. The suite is unaffected - no check read the file - and is green at **1106 passed / 0 failed**. Honest limit, recorded: the finding's other option is to generate the file from real traffic data in CI, which needs the traffic API plus a commit-back workflow; removing a fabricated metric is the smaller honest change, and this entry says which was taken rather than leaving it implicit.
+- **Commit:** `85b47ff`
+- **Notes:** The badges that remain (stars, last commit, contact) are served live by shields.io from GitHub's own data, so they are measurements rather than constants. Nothing else consumed `.github/traffic.json`.
 
 ### 0088
 
@@ -1579,6 +1586,5 @@ WHY IT MATTERS: a runner that reports 'no answer' for a port somebody else holds
 |---|---|---|---|
 | 2026-09-15 | `brew install dash` | second POSIX shell for `-n` checks (the suite targets `sh`; bash-3.2-in-POSIX-mode is the primary) | `brew uninstall dash-shell` |
 | 2026-09-15 | `git checkout -b audit/2026-09-15` (from `971faae`) | the brief requires all audit work on `audit/<date>`, never on main | `git branch -D audit/2026-09-15` while main is untouched |
-| 2026-09-17 | `rm -rf tests/.scratch` (1.9 GB, 123,531 files of gitignored per-run scratch: databases, WAL/SHM, server logs, per-cell mutant binaries and TLS fixtures) | task #0013: unbounded scratch growth - gitleaks spent 71 s of a 1.34 GB worktree scan on it and reported 2098 hits that are all fixture key material | none needed: tests/.scratch is gitignored runtime state, regenerated by the next suite or matrix run; the harness re-freezes the sources at the start of every run |
 | 2026-09-15 | `brew install actionlint` | GitHub Actions workflow linter, used by task #0006 and Phase E | `brew uninstall actionlint` |
 
