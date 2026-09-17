@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 28 | done: 67 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 25 | done: 70 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -98,12 +98,12 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0093](#0093) | S2 | M8 | `(repository state)` | The audit branch was reconciled with nine commits that landed on main while it ran | deps | **DONE** | node1 | main moved during the audit |
 | [0094](#0094) | S2 | M4 | `tests/protocol.sh:1515,4471` | Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board | test | **DONE** | node1 | new-this-session (the audit/0062 verification run) |
 | [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
-| [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **START** | node1 | phase-A |
+| [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **DONE** | node1 | phase-A |
 | [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **START** | node1 | L0 secret-scan triage |
 | [0016](#0016) | S3 | M3 | `chatbox-cli.sh:30` | SC1090: the client sources a non-constant path (~/.chatbox) | style | **START** | node1 | L0 shellcheck baseline |
 | [0087](#0087) | S3 | repo | `.github/traffic.json:4` | Canned view count served as the live 'Views (14d)' README badge | placeholder | **START** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0088](#0088) | S3 | M1 | `chatbox.swift:1617` | Local `who` shadows the Principal parameter in message() | style | **START** | node1 | phase-B/L3-line-level |
-| [0089](#0089) | S3 | M1 | `chatbox.swift:260` | The '?' element of the repo-key character check is unreachable | dead | **START** | node1 | phase-B/L3-line-level |
+| [0088](#0088) | S3 | M1 | `chatbox.swift:1617` | Local `who` shadows the Principal parameter in message() | style | **DONE** | node1 | phase-B/L3-line-level |
+| [0089](#0089) | S3 | M1 | `chatbox.swift:260` | The '?' element of the repo-key character check is unreachable | dead | **DONE** | node1 | phase-B/L3-line-level |
 | [0095](#0095) | S3 | M4 | `tests/protocol.sh (every fixture section)` | A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port | test | **DONE** | node1 | new-this-session (the audit/0090 matrix base cell) |
 
 ## Task detail
@@ -1475,9 +1475,12 @@ WHY IT MATTERS: a check that can fail on a busy machine is a check whose red is 
 - **Severity / category / module:** S3 / docs / M6/M1
 - **Location:** `README.md:11, chatbox.swift:6`
 - **Title:** Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency)
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** chatbox.swift header: 'Swift 6.3.3, Foundation + Network + SQLite3 only'; README build line has no language mode or strictness flags.
 - **Fix:** Update the documented build to the flags that are actually required, in the same commit as the code that satisfies them (0001).
+- **Evidence (after):** TEST: the three places that stated the toolchain now state the enforced standard. `chatbox.swift`'s header says **Swift 6** and spells the typecheck command; `README.md`'s badge line no longer pins 6.3.3; and `AGENTS.md`'s identity paragraph no longer says the constraint is unenforced - it names the flags CI runs on both binaries. The enforcement itself is #0092's CI step (strict typecheck with the exit code as a gate), added by this audit; this task is the documentation catching up to it. A comment cannot be pinned behaviourally and the ledger says so: the verification is that the strict build is **0/0** for both files in the run that closed this batch, and that the suite is green at 1103 passed / 0 failed.
+- **Commit:** `eadca29`
+- **Notes:** Rejected: pinning a version number (e.g. 'Swift 6.4'). The old claim rotted because a *version* is not what is enforced - the workflow uses `runs-on: xcode-27` and pins nothing. The docs now name the **flags** (`-swift-version 6 -strict-concurrency=complete -warnings-as-errors`), which is the standard the audit actually applies; a future toolchain moves without making the documentation false.
 
 ### 0013
 
@@ -1517,26 +1520,32 @@ CONFIDENCE: high
 - **Severity / category / module:** S3 / style / M1
 - **Location:** `chatbox.swift:1617`
 - **Title:** Local `who` shadows the Principal parameter in message()
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** Line 1617 inside `func message(_ req: Request, _ who: Principal)` (1398): `let who = unseen.map { "\($0) (\(unseenReason($0)))" }.joined(separator: ", ")` rebinds the credential parameter to a String for the rest of the function body.
 
 WHY IT MATTERS: Behaviour is unchanged because the Principal is not read after this point, but the shadow makes it impossible to tell at a glance whether a later edit is using the credential or the warning text, and the compiler says nothing.
 
 CONFIDENCE: high
 - **Fix:** Rename the local to something like `unseenList` (or `unseenText`) so the Principal keeps its name through the whole handler.
+- **Evidence (after):** TEST: the local is renamed `unseenList`, so `who` keeps one meaning - the credential's `Principal` - through the whole of `message()`. The two reads of the shadowed value are the warning lines (`warning: \(unseenList)`, `warning: no sign of \(unseenList) inside the … window`); nothing else used it. Behaviour is unchanged by construction: the strict typecheck is **0/0** for the change, and the suite that exercises the send path (sections 7-13, including the unseen-recipient warnings this line builds) is green at 1103 passed / 0 failed in the run that closed this batch. Honest limit: a shadow that changes no behaviour cannot be pinned by a behavioural check and there is no cell for it; the verification is that the rename is total (`who` in that scope is only the parameter) and the build is clean.
+- **Commit:** `eadca29`
+- **Notes:** The name follows the neighbours it is built from (`unseen`, `unseenReason`). The finding's point was readability, not a defect: the compiler accepted it and the behaviour was correct, which is exactly why the change is small and unpinned.
 
 ### 0089
 
 - **Severity / category / module:** S3 / dead / M1
 - **Location:** `chatbox.swift:260`
 - **Title:** The '?' element of the repo-key character check is unreachable
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** Line 260 `for bad in ["*", "?", "[", "]", " ", "\t"] where s.contains(bad) { return nil }`, but line 238 already ran `if let q = s.firstIndex(of: "?") { s = String(s[..<q]) }`, so s can never contain '?' here. A key with a '?' is silently truncated to the text before it rather than refused, contradicting the error text at 1314/1447 ('do not contain * or ?'). chatbox-cli.sh:435 has the same dead check after its strip at 404, so client and server still agree.
 
 WHY IT MATTERS: The documented rule that a '?' is not a usable key character is not enforced; `github.com/acme/x?y` is accepted and stored as `github.com/acme/x`, which can route a message to a different repository than the sender typed.
 
 CONFIDENCE: high
 - **Fix:** Either drop '?' from the list (and let the strip stand, documenting the truncation) or check for the character before the strip so the documented refusal is real; keep the client and server rules identical either way.
+- **Evidence (after):** TEST: two new checks pin the behaviour the strip exists for - `POST /register` with `repo=https://github.com/acme/fixture?tab=readme` and with `repo=github.com/acme/fixture#readme` both answer `github.com/acme/fixture`, and the client's spelling loop gained `https://github.com/acme/fixture?tab=readme` as a fifth spelling of the same repo. The dead half is gone: `?` was removed from the character list in `canonicalRepoKey` **and** in the client's `canon_repo` (the strip two lines above each makes the check unreachable), and the server's refusal text no longer claims `?` is invalid - it names `*`, `[`, `]` and a space and says a `?` or `#` ends the key. Suite green at 1103 passed / 0 failed; shellcheck on the suite still 0; strict build 0/0.
+- **Commit:** `eadca29`
+- **Notes:** Rejected: refusing `?` before the strip, which would have made the old error text true. It changes shipped behaviour for a caller that pastes a URL with a query (today it resolves to the repo) late in a pre-production audit, and the client already strips, so the two sides would then disagree about the same input. The server code, the client code and the client's own comment already agreed with each other; only the server's message text was wrong, so the text was fixed rather than the behaviour.
 
 ### 0095
 
