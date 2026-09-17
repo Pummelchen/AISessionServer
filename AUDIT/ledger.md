@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 17 | done: 78 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 16 | done: 79 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -76,7 +76,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0068](#0068) | S2 | M1 | `chatbox.swift:2179` | Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop | bug | **START** | node1 | phase-B/L2-server-http |
 | [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **START** | node1 | phase-B/L7-ops |
 | [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **START** | node1 | phase-B/L2-server-core |
-| [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **START** | node1 | phase-B/L4-security |
+| [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0072](#0072) | S2 | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0073](#0073) | S2 | M1 | `chatbox.swift:449` | Store.exec ignores every SQLite error, and the db-open refusal drops the cause | incomplete | **DONE** | node1 | phase-B/L7-ops |
 | [0074](#0074) | S2 | M1 | `chatbox.swift:460` | Stored text is silently truncated at an embedded NUL byte | bug | **DONE** | node1 | phase-B/L2-server-core |
@@ -1158,13 +1158,16 @@ CONFIDENCE: medium
 - **Severity / category / module:** S2 / unsafe / M1
 - **Location:** `chatbox.swift:3093`
 - **Title:** --peer-token exists only on the command line, so the federation credential is visible in ps
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** `let peerToken = argValue("--peer-token", "")` (3093) is the only way to supply the peer credential; unlike the board token there is no --peer-token-file. README:238 documents `--peer <url> --peer-token <secret>`. There is a one-line/control-byte check (3101-3104) but nothing keeps the value out of the process table.
 
 WHY IT MATTERS: README:247 tells operators to 'Use the peer's bootstrap credential', so any local user who reads the process table obtains the peer's full operator credential, not merely the ability to relay one message. The server already treats an argv secret as a defect and provides --token-file for its own token, so the asymmetry is easy to overlook.
 
 CONFIDENCE: high
-- **Fix:** Add `--peer-token-file PATH` (read, trim, refuse unreadable/empty, refuse both flags together), prefer it in the README federation example, and warn on stderr when --peer-token is used, mirroring the --token/--token-file precedent.
+- **Fix:** `--peer-token-file PATH` is now the way the peer credential travels: read, trimmed, refused when unreadable or empty, refused together with `--peer-token`, and preferred in the README's federation example, the usage text and the source header. `--peer-token` still works and prints a one-line note saying what it costs (visible to every local user in `ps`), mirroring the `--token`/`--token-file` precedent. The federation fixture itself now passes the credential by file, so every existing forwarding/loop/participant check also exercises that path.
+- **Evidence (after):** TEST (gate): two boards started by hand, the forwarding one with `--peer http://127.0.0.1:9542 --peer-token-file <0600 file>`, and a message for a repo the peer owns answers **`forwarded_to: http://127.0.0.1:9542 (ok)`** - the bearer credential read from the file was accepted by the peer. Four `fed_refuse` checks (eight assertions) pin the refusals, each exit 2 with its phrase: `--peer-token-file=` (`names no file`), a missing file (`cannot read --peer-token-file`), an empty file (`is empty`), and both flags together (`not both`). Mutant `294-audit0071-notokenfile` (the file read, checked, and then ignored) is red at **1106 passed / 8 failed** - the eight federation forwarding checks - and the base cell of that run is GREEN at **1114 passed / 0 failed** (1106 + the eight new assertions) on a47fe0c (chatbox.swift sha256 74ec238b71caac82); relative cell GREEN, 0 false passes; strict build 0/0.
+- **Commit:** `a47fe0c`
+- **Notes:** The refusal messages stay in the peer-flag family (`exit 2`, `--peer-token-file` named), so a misconfiguration is refused where the operator can see it rather than surfacing later as a 401 from the peer. The file is read once at startup like `--token-file`, and an empty file is refused rather than read as 'no credential': a forward with no credential is refused by the peer anyway, and failing at startup names the actual problem.
 
 ### 0072
 
