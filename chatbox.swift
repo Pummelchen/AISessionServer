@@ -171,6 +171,45 @@ func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
 /// A file's permission bits as three octal digits ("600"), or "" when they cannot be read. `stat`
 /// rather than Foundation: this is a number the kernel already has, and a formatter for it would be
 /// one more thing that can differ between machines.
+/// What this binary is: the revision of the source it was built from, and the executable's own
+/// stamp. The deployment path is "rebuild it and pkill the old one", and a restart can leave the old
+/// binary serving (`pkill -f "AISessionServer/chatbox"` silently matches nothing, because the process
+/// shows as `./chatbox --port …`), so the first question after a rollback is "which build is this?" —
+/// and there was no way to ask it, from the banner, from `/health` or from the command line.
+let sourceRevision = "audit/2026-09-15"
+
+func buildIdentity() -> String {
+    var info = stat()
+    let exe = CommandLine.arguments.first ?? "chatbox"
+    let built: String
+    if stat(exe, &info) == 0 {
+        built = ISOStamp.style.format(Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)))
+    } else {
+        built = "unknown"
+    }
+    return "build: \(sourceRevision) — \(exe), stamped \(built)"
+}
+
+/// The command line, for `--help`. The long form of this text is the server's own usage answer
+/// (served as `GET /help` and `GET /ui`) and the README; this is the part an operator needs before
+/// starting anything - the flags, and where the full text lives.
+func usageSummary() -> String {
+    """
+    chatbox - harness-independent session chatbox (text only, no file access)
+
+    chatbox --port <n> --db <path> [--token SECRET | --token-file PATH | --token open]
+            [--stale-after SECONDS] [--max-body BYTES] [--max-rows N] [--idle-timeout SECONDS]
+            [--max-connections N] [--server-id NAME]
+            [--tls-identity P12 --tls-password-file PATH]
+            [--peer URL (--peer-token-file PATH | --peer-token SECRET) [--max-hops N]]
+    chatbox --db <path> --prune DAYS [--prune-dry-run]
+    chatbox --db <path> --backup <copy> | chatbox --verify-backup <copy> [--db <board>]
+    chatbox --version
+
+    GET /help and GET /ui serve the same text; the README and the wiki carry the full API.
+    """
+}
+
 func fileMode(_ path: String) -> String {
     var info = stat()
     guard stat(path, &info) == 0 else { return "" }
@@ -1618,7 +1657,7 @@ final class Chatbox: @unchecked Sendable {
         // The board's own name is reported whether or not it forwards: it is the name a peer shows
         // in `(via …)` on a forwarded message, and an operator comparing two boards needs it.
         let peer = peerURL.isEmpty ? "none" : peerURL
-        return Reply(200, "ok chatbox up\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nconnections: up to \(maxConnections), \(idle)\npeer: \(peer) (this board is \(serverID), accepts up to \(maxHops) hops)\nnow: \(nowISO())\n")
+        return Reply(200, "ok chatbox up\n\(buildIdentity())\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nconnections: up to \(maxConnections), \(idle)\npeer: \(peer) (this board is \(serverID), accepts up to \(maxHops) hops)\nnow: \(nowISO())\n")
     }
 
     func register(_ req: Request, _ who: Principal) -> (Int, String) {
@@ -3148,7 +3187,9 @@ let valueFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--s
                               "--max-hops"]
 /// Flags that are their own value. A boolean flag at the end of the line is complete, and one
 /// that is handed a value is a mistake worth naming.
-let boolFlags: Set<String> = ["--prune-dry-run"]
+/// `--help` and `--version` are their own value (none): they are answered before anything binds, and
+/// a value handed to either is a mistake worth naming like any other.
+let boolFlags: Set<String> = ["--prune-dry-run", "--help", "--version"]
 let knownFlags: Set<String> = valueFlags.union(boolFlags)
 
 func checkArguments(_ argv: [String]) {
@@ -3852,6 +3893,20 @@ if !tlsIdentityPath.isEmpty {
 // cannot leave a migrated database behind. It is created on the queue it will be used on, so its
 // `dispatchPrecondition` holds from the first statement of the schema migration to the last request
 // it serves.
+// `--help` and `--version` answer and exit **before the store is opened**. They used to be refused as
+// unknown flags ("unknown flag '--help' - refusing to start rather than ignore it", exit 2), which is
+// the one answer an operator asking "what is this binary" or "how do I run it" must not get - and
+// answering them after the store would open the configured database, tighten its mode and touch the
+// live board's file just to print a string.
+if argPresent("--version") {
+    print(buildIdentity())
+    exit(0)
+}
+if argPresent("--help") {
+    print(usageSummary())
+    exit(0)
+}
+
 let store = chatboxQueue.sync { Store(path: dbPath, queue: chatboxQueue) }
 
 // The public URL is part of the configuration the board is built from, not a global it writes back
@@ -3892,6 +3947,7 @@ listener.stateUpdateHandler = { state in
         let addrs = Host.current().addresses.filter { $0.contains(".") }
         print("chatbox listening on port \(port)")
         print("db: \(dbPath)")
+        print(buildIdentity())
         // Before anything reads a key: a board that has been running has keys written under the old
 // rules, and they have to mean the same thing as the new ones or mail goes missing.
         let migratedKeys = store.migrateRepoKeys()

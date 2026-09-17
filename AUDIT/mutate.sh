@@ -1345,6 +1345,20 @@ m('292-audit0073-silentexec',
 # another verified as current. This is the pre-fix comparison - the count part of each fingerprint.
 # AUDIT #0054: the client's repo-key rule is the server's rule. This is the pre-fix client: `*`,
 # `[`, `]` and a space are refused, and the C1 block and the Unicode format controls are not.
+# AUDIT #0069: `--help` and `--version` answer before anything is opened. This is the pre-fix state:
+# both are unknown flags, refused with exit 2.
+m('297-audit0069-noquestionflags',
+  r'''if argPresent("--version") {
+    print(buildIdentity())
+    exit(0)
+}
+if argPresent("--help") {
+    print(usageSummary())
+    exit(0)
+}
+''',
+  r'''''')
+
 m('296-audit0054-nocontrolcheck',
   r'''  _c1=128
   while [ "$_c1" -le 159 ]; do

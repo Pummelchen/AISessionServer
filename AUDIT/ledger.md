@@ -1596,6 +1596,7 @@ WHY IT MATTERS: a runner that reports 'no answer' for a port somebody else holds
 
 | Date | Command | Why | Rollback |
 |---|---|---|---|
+| 2026-09-17 | Accidentally, by running `--version` on the new binary while the flag was still handled *after* the store was opened: the live `~/chatbox.sqlite` (the production board on node1:8787) was opened read-write and its mode tightened 644 -> 600 by task #0072's `Store.init` | task #0069's first cut answered `--help`/`--version` after the store existed, so the process opened the configured database just to print a string. The flag handling was moved *before* `Store(...)` in the same commit, so no flag can touch a database again - section 56 asserts a `--db` path is neither opened nor created | `chmod 644 ~/chatbox.sqlite` restores the old mode; **not run**, because 600 is the mode #0072 makes every board use and the running board holds its own descriptor either way |
 | 2026-09-15 | `brew install dash` | second POSIX shell for `-n` checks (the suite targets `sh`; bash-3.2-in-POSIX-mode is the primary) | `brew uninstall dash-shell` |
 | 2026-09-15 | `git checkout -b audit/2026-09-15` (from `971faae`) | the brief requires all audit work on `audit/<date>`, never on main | `git branch -D audit/2026-09-15` while main is untouched |
 | 2026-09-15 | `brew install actionlint` | GitHub Actions workflow linter, used by task #0006 and Phase E | `brew uninstall actionlint` |

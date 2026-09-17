@@ -6309,6 +6309,60 @@ if [ -n "${SCRATCH:-}" ] && [ "$SCRATCH" != "." ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 56. The flags that answer questions answer them
+# `--help` and `--version` were refused as unknown flags (`unknown flag '--help' - refusing to start
+# rather than ignore it`, exit 2), and the deployment path is rebuild-and-pkill, which can leave the
+# old binary serving - so the two ways to ask "what is this, and how do I run it" were both closed.
+# They answer now, before anything listens *and before the store is opened*: answering them after the
+# store would open the configured database (and, on a board that needed it, tighten the live file's
+# mode) just to print a string.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
+  # Bounded on purpose: a regression that ignores the flag does not refuse, it *starts a board* on
+  # the default port and runs for ever - which is how the first cut of this check hung the suite and
+  # left a mutant listening on 8787. Two seconds is generous for a process that only prints a string,
+  # and a process still alive at the end of it is a failure with its own code (99).
+  q56() { # the question flag -> stdout, with the exit status in $?; 99 means "it did not answer"
+    _qout="$SCRATCH/question-${RUN}.out"
+    "$CHATBOX_BIN" --db "$SCRATCH/version-${RUN}.sqlite" "$1" > "$_qout" 2>&1 &
+    _qp=$!
+    _qw=0
+    while [ "$_qw" -lt 20 ] && kill -0 "$_qp" 2>/dev/null; do
+      sleep 0.1
+      _qw=$((_qw + 1))
+    done
+    if kill -0 "$_qp" 2>/dev/null; then
+      kill "$_qp" 2>/dev/null
+      wait "$_qp" 2>/dev/null
+      _qrc=99
+    else
+      wait "$_qp" 2>/dev/null; _qrc=$?
+    fi
+    cat "$_qout"
+    return "$_qrc"
+  }
+  # Neither may touch a database: `--db` on the command line is otherwise opened (and created) by the
+  # store, which is a side effect an operator asking for a version string must not get.
+  rm -f "$SCRATCH/version-${RUN}.sqlite" "$SCRATCH/version-${RUN}.sqlite-wal" "$SCRATCH/version-${RUN}.sqlite-shm"
+  ver56="$(q56 --version)"; vrc56=$?
+  equals "--version answers with exit 0" "$vrc56" "0"
+  contains "and names the build it is" "$ver56" "build:"
+  help56="$(q56 --help)"; hrc56=$?
+  equals "--help answers with exit 0" "$hrc56" "0"
+  contains "and prints the flags" "$help56" "--prune"
+  if [ -e "$SCRATCH/version-${RUN}.sqlite" ]; then
+    no "and neither opens (or creates) the database they were pointed at" "the file is there"
+  else
+    ok "and neither opens (or creates) the database they were pointed at"
+  fi
+  # The running board names the build too, in its banner and in /health: that is where an operator
+  # looks after a rollback.
+  contains "the board reports its build in /health" "$(get /health)" "build:"
+else
+  printf '  skip  the question flags (needs CHATBOX_BIN)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
