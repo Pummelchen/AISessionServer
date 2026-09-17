@@ -38,6 +38,11 @@ _chatbox_env_token="${CHATBOX_TOKEN-}"
 _chatbox_token_set="${CHATBOX_TOKEN+yes}"
 _chatbox_env_cacert="${CHATBOX_CACERT-}"
 _chatbox_cacert_set="${CHATBOX_CACERT+yes}"
+# Shellcheck cannot follow a path held in a variable, which is what this is: the operator's own
+# configuration file, named by CHATBOX_CONFIG or defaulting to ~/.chatbox. A fixed path would
+# contradict the override the client documents, and the file is the caller's own - it is *meant* to
+# be read (variable assignments, per the header above), from the caller's home directory.
+# shellcheck source=/dev/null
 if [ -f "${CHATBOX_CONFIG:-$HOME/.chatbox}" ]; then
   . "${CHATBOX_CONFIG:-$HOME/.chatbox}"
 fi

@@ -1643,6 +1643,15 @@ wanted() {
   return 1
 }
 
+# Task #0013: per-cell scratch is pruned as the run goes. The transcript (`<name>.out`) is the
+# evidence and stays, as does the mutated source (small, and what a reviewer reads); the mutant
+# binary, its build log, its database and its server log are all regenerable, and across a few days
+# of runs they accumulated to 1.9 GB / 123,531 files - which a secret scan then had to walk.
+prune_cell() { # the cell's name
+  rm -f "$SC/mut/$1" "$SC/mut/$1.sqlite" "$SC/mut/$1.sqlite-wal" "$SC/mut/$1.sqlite-shm" \
+        "$SC/mut/$1.log" "$SC/mut/$1.build.log" "$SC/mut/mcp-$1" 2>/dev/null
+}
+
 report() { # name, rc, summary
   if [ "$2" -eq 0 ]; then
     printf '%-20s %-8s %s   <-- FALSE PASS\n' "$1" "GREEN" "$3"
@@ -1684,6 +1693,7 @@ for f in "$SC"/mut/*.swift; do
   SRC_FOR_RUN="$f"
   last=$(run_one "$name" "$bin" "$port"); rc=$?
   report "$name" "$rc" "$last"
+  prune_cell "$name"
   port=$((port + 1))
 done
 
@@ -1699,6 +1709,7 @@ for f in "$SC"/mut/*.sh; do
   SRC_FOR_RUN="$f"
   last=$(run_one "$name" "$base_bin" "$port"); rc=$?
   report "$name" "$rc" "$last"
+  prune_cell "$name"
   port=$((port + 1))
 done
 
@@ -1720,6 +1731,7 @@ for f in "$SC"/mut-mcp/*.swift; do
   SRC_FOR_RUN="$f"
   last=$(run_one "$name" "$base_bin" "$port"); rc=$?
   report "$name" "$rc" "$last"
+  prune_cell "$name"
   port=$((port + 1))
 done
 
@@ -1754,5 +1766,6 @@ printf '%-20s %-8s %s\n' "relative paths" "$([ $rc -eq 0 ] && echo GREEN || echo
 [ $rc -eq 0 ] || falses=$((falses + 1))
 port=$((port + 1))
 
+printf '\nscratch: %s in %s (task #0013)\n' "$(du -sh "$SC" 2>/dev/null | cut -f1)" "$SC"
 printf '\nfalse passes: %d\n' "$falses"
 [ "$falses" -eq 0 ] || exit 1

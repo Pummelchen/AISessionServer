@@ -6117,11 +6117,14 @@ if [ -f "$CLI" ]; then
   lacks "no printf takes its format from a variable" "$(cat "$CLI")" "printf \"\$_fc_seq\"" 
   lacks "and nothing writes a temporary file it then reads through" "$(cat "$CLI")" "chatbox-canon."
   if command -v shellcheck >/dev/null 2>&1; then
-    cl52_sc="$(shellcheck -s sh -f gcc "$CLI" 2>&1 | grep -v 'SC1090' | grep -v '^$')"
+    # No filter: the client's one remaining finding was the dynamic `source` of the operator's own
+    # config file, and task #0016 documents that with a `# shellcheck source=` directive rather than
+    # excluding the rule here. A new finding of any rule fails this check.
+    cl52_sc="$(shellcheck -s sh -f gcc "$CLI" 2>&1 | grep -v '^$')"
     if [ -z "$cl52_sc" ]; then
-      ok "shellcheck has nothing to say but the documented dynamic source"
+      ok "shellcheck has nothing to say about the client"
     else
-      no "shellcheck has nothing to say but the documented dynamic source" \
+      no "shellcheck has nothing to say about the client" \
         "$(printf '%s' "$cl52_sc" | head -3 | tr '\n' '~')"
     fi
   else
@@ -6248,6 +6251,16 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
         "$SCRATCH/store-${RUN}.first.log"
 else
   printf '  skip  the un-preparable store (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# This run's scratch is disposable and is removed here.
+# Every path above is named with $RUN, so the files this run created can be found by that name.
+# tests/.scratch grew without bound before this - 1.9 GB and 123,531 files after a few days of runs,
+# of which gitleaks spent 71 s scanning 1.34 GB of TLS fixture key material (task #0013).
+# ---------------------------------------------------------------------------
+if [ -n "${SCRATCH:-}" ] && [ "$SCRATCH" != "." ]; then
+  find "$SCRATCH" -maxdepth 1 -name "*-${RUN}*" -exec rm -rf {} + 2>/dev/null
 fi
 
 # ---------------------------------------------------------------------------

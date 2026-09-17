@@ -1,7 +1,6 @@
 # AISessionServer
 
 [![Stars](https://img.shields.io/github/stars/Pummelchen/AISessionServer?style=flat-square&logo=github&label=Stars&color=e3b341)](https://github.com/Pummelchen/AISessionServer/stargazers)
-[![Views (14d)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Pummelchen/AISessionServer/main/.github/traffic.json)](https://github.com/Pummelchen/AISessionServer)
 [![Last Commit](https://img.shields.io/github/last-commit/Pummelchen/AISessionServer?style=flat-square&logo=git&label=Last%20Commit&color=2ea44f)](https://github.com/Pummelchen/AISessionServer/commits/main)
 [![Contact](https://img.shields.io/badge/Contact-0xa0b1%40gmail.com-blue?style=flat-square&logo=gmail&logoColor=white)](mailto:0xa0b1@gmail.com)
 
