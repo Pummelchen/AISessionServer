@@ -423,6 +423,11 @@ fi
 contains "the listing shows the machine it belongs to" "$listing" "node-cred2"
 lacks "the listing never repeats a secret" "$listing" "$TOK2"
 lacks "the json listing never repeats a secret" "$(get /token "json=1")" "$TOK3"
+# ... and it is JSON: the format branch on the one route that exposes credentials had no check at
+# all, so a body that was neither the json object nor the text listing passed the `lacks` above.
+contains "the json credential listing is an object" "$(get /token "json=1")" '"tokens"'
+contains "with the count it is showing" "$(get /token "json=1")" '"shown"'
+contains "and the count it matched" "$(get /token "json=1")" '"matching"'
 
 # Stored hashed, not in the clear.
 if [ -n "${CHATBOX_DB:-}" ] && [ -f "$CHATBOX_DB" ]; then
@@ -1505,8 +1510,13 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
     --token-file "$stok" --stale-after 6 > "$SCRATCH/stale-${RUN}.log" 2>&1 &
   spid=$!
   sready=0
+  # Readiness is the board *this section started*: its pid is alive and its own log carries its own
+  # listening banner. An unrelated listener holding 8791 that happens to hold the shared token answers
+  # /health first, and the presence checks below would then be measuring it.
   for _ in $(seq 1 50); do
-    if curl -fsS "$sbase/health?token=$TOKEN" >/dev/null 2>&1; then sready=1; break; fi
+    if kill -0 "$spid" 2>/dev/null \
+       && grep -q "chatbox listening on port $sport" "$SCRATCH/stale-${RUN}.log" 2>/dev/null \
+       && curl -fsS "$sbase/health?token=$TOKEN" >/dev/null 2>&1; then sready=1; break; fi
     sleep 0.2
   done
   if [ "$sready" = 1 ]; then
@@ -2316,8 +2326,12 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
     --max-body 65536 > "$SCRATCH/mb-${RUN}.log" 2>&1 &
   mbpid=$!
   mbready=0
+  # As in 13b: the pid and the board's own banner are what make this the server this section started,
+  # so an unrelated listener on 8793 cannot answer the probe on its behalf.
   for _ in $(seq 1 50); do
-    if curl -fsS "http://127.0.0.1:$bigport/health?token=$TOKEN" >/dev/null 2>&1; then mbready=1; break; fi
+    if kill -0 "$mbpid" 2>/dev/null \
+       && grep -q "chatbox listening on port $bigport" "$SCRATCH/mb-${RUN}.log" 2>/dev/null \
+       && curl -fsS "http://127.0.0.1:$bigport/health?token=$TOKEN" >/dev/null 2>&1; then mbready=1; break; fi
     sleep 0.2
   done
   if [ "$mbready" = 1 ]; then
@@ -3536,13 +3550,17 @@ if [ -n "${CHATBOX_DB:-}" ] && [ -f "$CHATBOX_DB" ] && command -v sqlite3 >/dev/
 
   # A backlog larger than the cap, written straight to the store so the fixture is deterministic
   # and does not cost 205 round trips.
+  # The sender is tagged with the run: this board is the long-lived one the README points at, and a
+  # second run that reused the literal `bulk` would find the previous run's 205 messages and stamp a
+  # delivery for each of them.
+  bsender="bulk-$RUN"
   bthread="$(sqlite3 "$CHATBOX_DB" "INSERT INTO threads (repo,subject,created_at,created_by,last_at) VALUES ('example.test/$RUN/bulk','bulk $RUN','2020-01-01T00:00:00Z','bulk','2020-01-01T00:00:00Z'); SELECT last_insert_rowid();")"
   sqlite3 "$CHATBOX_DB" "
     INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,recipients)
     WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<205)
-    SELECT $bthread,'2020-01-01T00:00:00Z','bulk','example.test/$RUN/bulk','bulk','bulk-'||i,'$BULK' FROM c;
+    SELECT $bthread,'2020-01-01T00:00:00Z','$bsender','example.test/$RUN/bulk','bulk','bulk-'||i,'$BULK' FROM c;
     INSERT INTO deliveries (message_id,agent,created_at)
-    SELECT id,'$BULK','2020-01-01T00:00:00Z' FROM messages WHERE sender='bulk';" >/dev/null 2>&1
+    SELECT id,'$BULK','2020-01-01T00:00:00Z' FROM messages WHERE sender='$bsender';" >/dev/null 2>&1
   equals "the bulk fixture holds 205 deliveries" \
     "$(sqlite3 "$CHATBOX_DB" "select count(*) from deliveries where agent='$BULK';")" "205"
 
@@ -3596,15 +3614,19 @@ if command -v nc >/dev/null 2>&1 && [ -n "$cbport" ] && [ "$cbport" -eq "$cbport
   fi
 
   # Exactly the declared bytes are the body, and not one more: the surplus is neither body nor
-  # parameter. `from=exact&body=ok` is 18 bytes; the `&to=phantom` behind it belongs to nothing.
-  oversend="POST /message?token=$TOKEN HTTP/1.1\r\nHost: chatbox\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 18\r\n\r\nfrom=exact&body=ok&to=phantom"
+  # parameter. The declared length is computed from `from=exact-<run>&body=ok`, and the `&to=phantom`
+  # behind it belongs to nothing. The sender carries the run so a second run on the same board cannot
+  # match the previous one's row.
+  ex24_body="from=exact-$RUN&body=ok"
+  ex24_len="${#ex24_body}"
+  oversend="POST /message?token=$TOKEN HTTP/1.1\r\nHost: chatbox\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: $ex24_len\r\n\r\n$ex24_body&to=phantom"
   surplus24="$(printf '%b' "$oversend" | nc -w 5 127.0.0.1 "$cbport" 2>/dev/null)"
   contains "a request that sends more than it declared is answered" "$surplus24" "ok posted"
   contains "the declared bytes are the body it stored" "$surplus24" "delivered_to: (nobody)"
   lacks "and the surplus is not a parameter" "$surplus24" "phantom"
   if [ -n "${CHATBOX_DB:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
     equals "the stored row holds the declared body and nothing after it" \
-      "$(sqlite3 "$CHATBOX_DB" "select count(*) from messages where sender='exact' and body='ok' and recipients='';")" "1"
+      "$(sqlite3 "$CHATBOX_DB" "select count(*) from messages where sender='exact-$RUN' and body='ok' and recipients='';")" "1"
   fi
 else
   printf '  skip  raw Content-Length handling (needs nc and a URL with an explicit port)\n'
@@ -3930,7 +3952,18 @@ contains "and says it never expires" "$tok28" "expires: never (until revoked)"
 tok28b="$(post /token --data-urlencode "node=node-expiry-2" --data-urlencode "expires=30")"
 TOK28B="$(field "$tok28b" secret)"
 ID28B="$(field "$tok28b" id)"
-contains "a credential can be issued with an expiry" "$tok28b" "expires: 20"
+# The *date*, not a "20" prefix: any 20xx date satisfied the old needle, so a credential issued for
+# one day, or with a wrong offset, was reported as a 30-day one. `expires=30` above and this date are
+# the same fact, read back.
+exp30="$(date -u -v+30d +%Y-%m-%d 2>/dev/null || date -u -d '+30 days' +%Y-%m-%d 2>/dev/null)"
+contains "a credential issued for 30 days says the date 30 days out" "$tok28b" "expires: $exp30"
+# Both ends of the documented range: one day is accepted, and above the ceiling is refused by range.
+tok28c="$(post /token --data-urlencode "node=node-expiry-6" --data-urlencode "expires=1")"
+contains "an expiry of one day is accepted" "$tok28c" "expires:"
+post /token/revoke --data-urlencode "id=$(field "$tok28c" id)" >/dev/null
+contains "an expiry above the ceiling is refused naming the range" \
+  "$(post /token --data-urlencode "node=node-expiry-7" --data-urlencode "expires=36501")" \
+  "expires must be a number of days between 1 and 36500"
 contains "the refusal for a bad expiry names the flag" \
   "$(post /token --data-urlencode "node=node-expiry-3" --data-urlencode "expires=soon")" "expires must be a number of days"
 equals "an expiry of zero is refused rather than read as never" \
@@ -3947,7 +3980,7 @@ if [ -f "$CLI" ]; then
   # credential while the documentation promised a backstop).
   cli28="$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
     sh "$CLI" token --node node-expiry-client --expires 30 2>&1)"
-  contains "the client can set an expiry" "$cli28" "expires: 20"
+  contains "the client can set an expiry" "$cli28" "expires: $exp30"
   lacks "and does not leave it as never" "$cli28" "expires: never"
   equals "an unknown flag is refused rather than ignored" \
     "$(CHATBOX_CONFIG=/nonexistent CHATBOX_URL="$URL" CHATBOX_TOKEN="$TOKEN" \
@@ -4198,6 +4231,16 @@ if command -v curl >/dev/null 2>&1; then
 data: {\"reason\":\"deadline\"}"
   equals "and the blank line that dispatches it is on the wire" \
     "$(tail -c 2 "$ev_bye_file" | od -An -tx1 | tr -d ' \n')" "0a0a"
+  # The ceiling is the only bound on how long one client can hold a stream: `max=99999` must be
+  # capped at 3600, and the board says so in its log. Two seconds of a stream cannot show the
+  # deadline itself, so the log line is the observable - the same way the inbox wait cap is pinned.
+  if [ -n "${CHATBOX_SERVER_LOG:-}" ] && [ -f "${CHATBOX_SERVER_LOG:-}" ]; then
+    curl -sS -N --max-time 2 "$(url_for /events "max=99999")" > /dev/null 2>&1
+    contains "a stream asked for past the ceiling is capped at it" \
+      "$(tail -n 20 "$CHATBOX_SERVER_LOG")" "GET /events -> 200 (stream, up to 3600s)"
+  else
+    printf '  skip  the /events ceiling (set CHATBOX_SERVER_LOG)\n'
+  fi
   if [ "$((ev_t1 - ev_t0))" -ge 1 ] && [ "$((ev_t1 - ev_t0))" -le 6 ]; then
     ok "and it ends when it said it would"
   else
@@ -4534,10 +4577,17 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
     if kill -0 "$_rp" 2>/dev/null; then
       no "$_d" "it started anyway: $(head -1 "$SCRATCH/fed-refuse-${RUN}.log")"
       kill "$_rp" 2>/dev/null
+      wait "$_rp" 2>/dev/null
     else
-      ok "$_d"
+      wait "$_rp" 2>/dev/null; _rrc=$?
+      # The exit status is part of the answer: a process that printed the phrase and exited 1 (a
+      # crash, a different refusal path) is not this refusal, and the old check accepted it.
+      if [ "$_rrc" -eq 2 ]; then
+        ok "$_d"
+      else
+        no "$_d" "exit=$_rrc, not the refusal code 2: $(head -1 "$SCRATCH/fed-refuse-${RUN}.log")"
+      fi
     fi
-    wait "$_rp" 2>/dev/null
     contains "$_d — and the refusal names it" "$(cat "$SCRATCH/fed-refuse-${RUN}.log")" "$_phrase"
   }
 

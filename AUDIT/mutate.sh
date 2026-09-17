@@ -1315,6 +1315,18 @@ EOF
 # and this cell puts one site back in the source the harness names in CHATBOX_SRC.
 # AUDIT #0058: a well-formed root that is not an object is -32600, not -32700. This is the
 # pre-fix answer for every one of them (the code had a single "parse error" branch).
+# AUDIT #0084: the /events ceiling is a cap, not a suggestion. `waitSeconds` has its own
+# `min(raw, maxWaitSeconds)` two lines above, so this anchors on the function, not the expression.
+m('291-audit0084-nceiling',
+  r'''    func cappedSeconds(_ req: Request, default fallback: Int, ceiling: Int) -> Int {
+        guard let raw = Int(req.p("max")), raw > 0 else { return fallback }
+        return min(raw, ceiling)
+    }''',
+  r'''    func cappedSeconds(_ req: Request, default fallback: Int, ceiling: Int) -> Int {
+        guard let raw = Int(req.p("max")), raw > 0 else { return fallback }
+        return raw
+    }''')
+
 m('289-audit0058-parseerror',
   r'''            fail(id: nil, code: -32600, "Invalid Request: a JSON-RPC message is an object")''',
   r'''            fail(id: nil, code: -32700, "parse error")''', target='mcp')
