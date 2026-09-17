@@ -1184,14 +1184,14 @@
       "file_line": "chatbox.swift:2598",
       "title": "No --version, no --help and no build identifier: a rollback cannot be verified",
       "category": "incomplete",
-      "status": "START",
+      "status": "TEST",
       "host_used": "node1",
       "discovered_by": "phase-B/L7-ops",
       "evidence_before": "knownFlags (2590-2598) contains no --help/--version, so `./chatbox --help` prints `unknown flag '--help' \u2014 refusing to start rather than ignore it` and exits 2. A grep for a version or build string over chatbox.swift and chatbox-cli.sh finds none; the startup banner (3206-3221) and /health list configuration but no build identity. The wiki's build/restart path (Deployment.md:37-51) is rebuild + pkill, and its own troubleshooting table (544) warns a restart may leave the old binary serving.\n\nWHY IT MATTERS: During a rollback the operator cannot tell which binary is actually serving, so 'the restart worked' is unfalsifiable and the documented rebuild-and-kill procedure has no confirmation step.\n\nCONFIDENCE: high",
-      "fix_summary": "Add `--version` and print a build string (git describe or a compile-time constant) in the banner and /health; add `--help` that prints the usage text and exits 0.",
-      "evidence_after": "",
+      "fix_summary": "`--help` and `--version` answer with exit 0 **before the store is opened** (they used to be refused as unknown flags), `buildIdentity()` names the source revision and the executable's own stamp, and the board reports the build in its banner and in `/health`. Section 56 pins six checks, including that a `--db` path handed to either flag is neither opened nor created.",
+      "evidence_after": "TEST so far, and the one step outstanding is named: the **base cell is GREEN at 1127 passed / 0 failed** with section 56's six checks, measured before the check's invocation was bounded (the bound changes only how the check calls the binary, and a working binary behaves identically - verified by hand: the bounded helper gives `rc=0` and the build line for the fixed binary, `rc=99` for a stub that ignores its flags). The **mutant cell is not measured**: the first cut ran the binary unbounded, and mutant `297` ignores the flags and starts a board - it hung the suite and left a mutant process listening on 8787, killed by hand (its `--db` was the mutant's own scratch database; the production board's data was never opened by it, and the incident is recorded in the ledger's destructive-operations table). The check is now bounded at two seconds with `99` meaning 'it did not answer', so the cell can be measured with `ONLY=297-audit0069-noquestionflags sh AUDIT/mutate.sh` (~5 minutes); until that run exists this task is TEST, not DONE.",
       "commit": "",
-      "notes": "",
+      "notes": "The task is deliberately left at TEST rather than DONE because the brief's gate for DONE includes a cell that goes red, and this one has not been run yet. Nothing else is missing: the flag sets, the handler position (before `Store(...)`, which is what stops either flag touching a database), the identity in three surfaces and the six checks are all committed. The first cut's failure mode is worth keeping in the ledger: an unbounded readiness-style check turns a mutant into a *running board* rather than a red check, which is how it was found.",
       "blocked_reason": ""
     },
     {

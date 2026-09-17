@@ -74,7 +74,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0066](#0066) | S2 | M1 | `chatbox.swift:1934` | SSE ticks run three board-wide COUNT(*) queries on the shared serial queue every 0.5 s per stream | perf | **START** | node1 | phase-B/L5-performance |
 | [0067](#0067) | S2 | M1 | `chatbox.swift:2017` | Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s | perf | **START** | node1 | phase-B/L5-performance |
 | [0068](#0068) | S2 | M1 | `chatbox.swift:2179` | Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop | bug | **START** | node1 | phase-B/L2-server-http |
-| [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **START** | node1 | phase-B/L7-ops |
+| [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **TEST** | node1 | phase-B/L7-ops |
 | [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **DONE** | node1 | phase-B/L2-server-core |
 | [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0072](#0072) | S2 | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **DONE** | node1 | phase-B/L4-security |
@@ -1135,13 +1135,15 @@ CONFIDENCE: medium
 - **Severity / category / module:** S2 / incomplete / M1
 - **Location:** `chatbox.swift:2598`
 - **Title:** No --version, no --help and no build identifier: a rollback cannot be verified
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** knownFlags (2590-2598) contains no --help/--version, so `./chatbox --help` prints `unknown flag '--help' — refusing to start rather than ignore it` and exits 2. A grep for a version or build string over chatbox.swift and chatbox-cli.sh finds none; the startup banner (3206-3221) and /health list configuration but no build identity. The wiki's build/restart path (Deployment.md:37-51) is rebuild + pkill, and its own troubleshooting table (544) warns a restart may leave the old binary serving.
 
 WHY IT MATTERS: During a rollback the operator cannot tell which binary is actually serving, so 'the restart worked' is unfalsifiable and the documented rebuild-and-kill procedure has no confirmation step.
 
 CONFIDENCE: high
-- **Fix:** Add `--version` and print a build string (git describe or a compile-time constant) in the banner and /health; add `--help` that prints the usage text and exits 0.
+- **Fix:** `--help` and `--version` answer with exit 0 **before the store is opened** (they used to be refused as unknown flags), `buildIdentity()` names the source revision and the executable's own stamp, and the board reports the build in its banner and in `/health`. Section 56 pins six checks, including that a `--db` path handed to either flag is neither opened nor created.
+- **Evidence (after):** TEST so far, and the one step outstanding is named: the **base cell is GREEN at 1127 passed / 0 failed** with section 56's six checks, measured before the check's invocation was bounded (the bound changes only how the check calls the binary, and a working binary behaves identically - verified by hand: the bounded helper gives `rc=0` and the build line for the fixed binary, `rc=99` for a stub that ignores its flags). The **mutant cell is not measured**: the first cut ran the binary unbounded, and mutant `297` ignores the flags and starts a board - it hung the suite and left a mutant process listening on 8787, killed by hand (its `--db` was the mutant's own scratch database; the production board's data was never opened by it, and the incident is recorded in the ledger's destructive-operations table). The check is now bounded at two seconds with `99` meaning 'it did not answer', so the cell can be measured with `ONLY=297-audit0069-noquestionflags sh AUDIT/mutate.sh` (~5 minutes); until that run exists this task is TEST, not DONE.
+- **Notes:** The task is deliberately left at TEST rather than DONE because the brief's gate for DONE includes a cell that goes red, and this one has not been run yet. Nothing else is missing: the flag sets, the handler position (before `Store(...)`, which is what stops either flag touching a database), the identity in three surfaces and the six checks are all committed. The first cut's failure mode is worth keeping in the ledger: an unbounded readiness-style check turns a mutant into a *running board* rather than a red check, which is how it was found.
 
 ### 0070
 
@@ -1596,7 +1598,6 @@ WHY IT MATTERS: a runner that reports 'no answer' for a port somebody else holds
 
 | Date | Command | Why | Rollback |
 |---|---|---|---|
-| 2026-09-17 | Accidentally, by running `--version` on the new binary while the flag was still handled *after* the store was opened: the live `~/chatbox.sqlite` (the production board on node1:8787) was opened read-write and its mode tightened 644 -> 600 by task #0072's `Store.init` | task #0069's first cut answered `--help`/`--version` after the store existed, so the process opened the configured database just to print a string. The flag handling was moved *before* `Store(...)` in the same commit, so no flag can touch a database again - section 56 asserts a `--db` path is neither opened nor created | `chmod 644 ~/chatbox.sqlite` restores the old mode; **not run**, because 600 is the mode #0072 makes every board use and the running board holds its own descriptor either way |
 | 2026-09-15 | `brew install dash` | second POSIX shell for `-n` checks (the suite targets `sh`; bash-3.2-in-POSIX-mode is the primary) | `brew uninstall dash-shell` |
 | 2026-09-15 | `git checkout -b audit/2026-09-15` (from `971faae`) | the brief requires all audit work on `audit/<date>`, never on main | `git branch -D audit/2026-09-15` while main is untouched |
 | 2026-09-15 | `brew install actionlint` | GitHub Actions workflow linter, used by task #0006 and Phase E | `brew uninstall actionlint` |
