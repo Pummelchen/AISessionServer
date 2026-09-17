@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 18 | done: 77 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 17 | done: 78 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -81,7 +81,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0073](#0073) | S2 | M1 | `chatbox.swift:449` | Store.exec ignores every SQLite error, and the db-open refusal drops the cause | incomplete | **DONE** | node1 | phase-B/L7-ops |
 | [0074](#0074) | S2 | M1 | `chatbox.swift:460` | Stored text is silently truncated at an embedded NUL byte | bug | **DONE** | node1 | phase-B/L2-server-core |
 | [0075](#0075) | S2 | M1 | `chatbox.swift:499` | Store.scalar returns an arbitrary column via Dictionary.values.first | logic | **DONE** | node1 | phase-B/L3-line-level |
-| [0076](#0076) | S2 | M1 | `chatbox.swift:50` | nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient | perf | **START** | node1 | phase-B/L5-performance |
+| [0076](#0076) | S2 | M1 | `chatbox.swift:50` | nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient | perf | **DONE** | node1 | phase-B/L5-performance |
 | [0077](#0077) | S2 | M1 | `chatbox.swift:610` | Repo-key migration ignores BEGIN/COMMIT failures | bug | **DONE** | node1 | phase-B/L2-server-core |
 | [0078](#0078) | S2 | M1 | `chatbox.swift:611` | Startup key migration re-reads all four tables and rewrites every non-canonical row on every start | perf | **START** | node1 | phase-B/L5-performance |
 | [0079](#0079) | S2 | M1 | `chatbox.swift:716` | prune() clears reply_to with one full-table-scan UPDATE per pruned message (O(messages x pruned)) | perf | **START** | node1 | phase-B/L5-performance |
@@ -1235,13 +1235,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / perf / M1
 - **Location:** `chatbox.swift:50`
 - **Title:** nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** nowISO() (50-54) does `let f = ISO8601DateFormatter()` on each call and has 22 call sites in chatbox.swift, one inside the per-recipient delivery loop at 1553 (its result is a bind value for each INSERT). The file already caches formatters for parsing (`static let iso` / `isoTiny`, 1062-1074) but nowISO does not use them.
 
 WHY IT MATTERS: ISO8601DateFormatter construction is heavy (calendar/locale/ICU setup) and is paid on every authenticated request (authorize at 1137/1142) and once per recipient on a send, adding avoidable CPU to the hot path and the single serial queue.
 
 CONFIDENCE: high
 - **Fix:** Cache one formatter in a private global or a Chatbox static, mirroring Self.iso, and call it; keep fresh formatters only in the one-off isoDaysAgo/isoDaysAhead helpers.
+- **Evidence (after):** CLOSED AS ALREADY FIXED, with the check re-run against the current tree. `nowISO()` no longer builds a formatter per call: it is `ISOStamp.now()`, and `ISOStamp.style` is a `static let Date.ISO8601FormatStyle(timeZone: TimeZone(secondsFromGMT: 0)!)` - a `Sendable` value type built once - with `daysAgo`/`daysAhead` sharing it. `grep -c ISO8601DateFormatter chatbox.swift` is **1**, and that one occurrence is the comment explaining why the class was replaced (mutable state, so Swift 6 refuses it as a shared `static`, and a fresh instance per call was the alternative). The per-call construction this finding names was removed by the strict-concurrency work it belongs to: #0002 (shared formatter state), #0004 (main-actor-isolated top-level `let`s) and #0015 (`@unchecked Sendable`), whose evidence is already the 0/0 strict build. Nothing in the current source allocates a date formatter per call, so there is nothing left to fix and no cell to write - a mutant that restored the allocation would change no observable behaviour (the finding's own point is cost, not output), and the ledger records that rather than implying a test exists.
+- **Commit:** `closed-by 0002/0004/0015, recorded here`
+- **Notes:** Kept as a distinct entry rather than deleted: the finding was real when filed and the reason it is closed (a later task in the same audit removed the code) is what a reader needs. Same treatment as #0030/#0038, which were closed as duplicates of #0020/#0022 for the same reason.
 
 ### 0077
 

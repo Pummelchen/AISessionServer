@@ -1303,14 +1303,14 @@
       "file_line": "chatbox.swift:50",
       "title": "nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient",
       "category": "perf",
-      "status": "START",
+      "status": "DONE",
       "host_used": "node1",
       "discovered_by": "phase-B/L5-performance",
       "evidence_before": "nowISO() (50-54) does `let f = ISO8601DateFormatter()` on each call and has 22 call sites in chatbox.swift, one inside the per-recipient delivery loop at 1553 (its result is a bind value for each INSERT). The file already caches formatters for parsing (`static let iso` / `isoTiny`, 1062-1074) but nowISO does not use them.\n\nWHY IT MATTERS: ISO8601DateFormatter construction is heavy (calendar/locale/ICU setup) and is paid on every authenticated request (authorize at 1137/1142) and once per recipient on a send, adding avoidable CPU to the hot path and the single serial queue.\n\nCONFIDENCE: high",
       "fix_summary": "Cache one formatter in a private global or a Chatbox static, mirroring Self.iso, and call it; keep fresh formatters only in the one-off isoDaysAgo/isoDaysAhead helpers.",
-      "evidence_after": "",
-      "commit": "",
-      "notes": "",
+      "evidence_after": "CLOSED AS ALREADY FIXED, with the check re-run against the current tree. `nowISO()` no longer builds a formatter per call: it is `ISOStamp.now()`, and `ISOStamp.style` is a `static let Date.ISO8601FormatStyle(timeZone: TimeZone(secondsFromGMT: 0)!)` - a `Sendable` value type built once - with `daysAgo`/`daysAhead` sharing it. `grep -c ISO8601DateFormatter chatbox.swift` is **1**, and that one occurrence is the comment explaining why the class was replaced (mutable state, so Swift 6 refuses it as a shared `static`, and a fresh instance per call was the alternative). The per-call construction this finding names was removed by the strict-concurrency work it belongs to: #0002 (shared formatter state), #0004 (main-actor-isolated top-level `let`s) and #0015 (`@unchecked Sendable`), whose evidence is already the 0/0 strict build. Nothing in the current source allocates a date formatter per call, so there is nothing left to fix and no cell to write - a mutant that restored the allocation would change no observable behaviour (the finding's own point is cost, not output), and the ledger records that rather than implying a test exists.",
+      "commit": "closed-by 0002/0004/0015, recorded here",
+      "notes": "Kept as a distinct entry rather than deleted: the finding was real when filed and the reason it is closed (a later task in the same audit removed the code) is what a reader needs. Same treatment as #0030/#0038, which were closed as duplicates of #0020/#0022 for the same reason.",
       "blocked_reason": ""
     },
     {
