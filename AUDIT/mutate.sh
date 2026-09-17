@@ -185,7 +185,7 @@ m('35-scopedadmin', '''        guard who.isBootstrap else {
 # H1: a namespace pattern matching itself, so a scoped credential could claim the
 # literal `acme/*` key and intercept another owner's mail.
 m('36-wildcardclaim', '''            guard let key = canonicalRepoKey(repo) else {
-                return (400, "error: '\\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\\n")
+                return (400, "error: '\\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*', '[' or ']' or a space (a '?' or '#' ends the key)\\n")
             }
             if !canonical.contains(key) { canonical.append(key) }''',
   '''            let key = repo
@@ -1317,6 +1317,41 @@ EOF
 # pre-fix answer for every one of them (the code had a single "parse error" branch).
 # AUDIT #0084: the /events ceiling is a cap, not a suggestion. `waitSeconds` has its own
 # `min(raw, maxWaitSeconds)` two lines above, so this anchors on the function, not the expression.
+# AUDIT #0073: `exec` reported nothing, so a schema statement, a PRAGMA or the deliveries backfill
+# could fail while the board started anyway - and the one log line that named the failing statement
+# was never written. This is the pre-fix body.
+m('292-audit0073-silentexec',
+  r'''    @discardableResult
+    func exec(_ sql: String) -> Int32 {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let rc = sqlite3_exec(db, sql, nil, nil, nil)
+        if rc != SQLITE_OK {
+            FileHandle.standardError.write(Data("chatbox: sql error: \(String(cString: sqlite3_errmsg(db))) — in \(oneLine(sql))\n".utf8))
+        }
+        return rc
+    }''',
+  r'''    @discardableResult
+    func exec(_ sql: String) -> Int32 {
+        dispatchPrecondition(condition: .onQueue(queue))
+        sqlite3_exec(db, sql, nil, nil, nil)
+        return SQLITE_OK
+    }''')
+
+# AUDIT #0077: the key migration is one transaction or it is not a migration. Without this check a
+# held write lock let the UPDATEs auto-commit one at a time and the board still start.
+m('293-audit0077-nobegin',
+  r'''        let began = runReporting("BEGIN IMMEDIATE", [])
+        if began.rc != SQLITE_DONE {
+            // Without the transaction the UPDATEs below would auto-commit one at a time, so a lock
+            // held past the busy timeout would leave the board half-migrated - two spellings of one
+            // key, the silent mail-split this function exists to prevent - and the banner would still
+            // claim the keys were normalised.
+            FileHandle.standardError.write(Data("chatbox: cannot start the key migration transaction (\(String(cString: sqlite3_errmsg(db)))) — refusing to migrate without one\n".utf8))
+            exit(1)
+        }''',
+  r'''        let began = runReporting("BEGIN IMMEDIATE", [])
+        _ = began.rc''')
+
 m('291-audit0084-nceiling',
   r'''    func cappedSeconds(_ req: Request, default fallback: Int, ceiling: Int) -> Int {
         guard let raw = Int(req.p("max")), raw > 0 else { return fallback }

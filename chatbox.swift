@@ -479,7 +479,10 @@ final class Store: @unchecked Sendable {
         // "nothing was removed" must not be handed a connection that can write at all.
         let flags = readOnly ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
         if sqlite3_open_v2(path, &db, flags, nil) != SQLITE_OK {
-            FileHandle.standardError.write(Data("chatbox: cannot open db at \(path)\n".utf8))
+            // The *cause* is what the operator needs: "no such directory" and "permission denied"
+            // read identically without it, and the refusal is the only place it can be said.
+            let why = String(cString: sqlite3_errmsg(db))
+            FileHandle.standardError.write(Data("chatbox: cannot open db at \(path): \(why)\n".utf8))
             exit(1)
         }
         // `journal_mode=WAL` writes to the database header and is refused on a read-only connection;
@@ -554,11 +557,43 @@ final class Store: @unchecked Sendable {
         exec("CREATE INDEX IF NOT EXISTS idx_msg_sender ON messages(sender);")
         exec("CREATE INDEX IF NOT EXISTS idx_del_node ON deliveries(node, message_id);")
         exec("CREATE INDEX IF NOT EXISTS idx_agents_node ON agents(node);")
+
+        // The statements above are not allowed to fail quietly. A name that is not there at all means
+        // every route touching it fails, and a board that could not turn WAL on is one whose
+        // `--backup` story is a lie, so both are checked here - once, before the listener exists -
+        // and the process refuses rather than serving a store it could not prepare. The check is
+        // existence, not `type='table'`: a *view* standing in for a table is a shape the read path
+        // already handles (it answers 500 through `readFailed`, which is what the suite's read-failure
+        // fixture is built on), and refusing there would take that behaviour with it. The failed
+        // CREATE that put the view there is logged by `exec` above.
+        let wanted = ["agents", "threads", "messages", "deliveries", "tokens"]
+        let have = Set(rows("SELECT name FROM sqlite_master WHERE name IN ('agents','threads','messages','deliveries','tokens')").compactMap { $0["name"] })
+        let missing = wanted.filter { !have.contains($0) }
+        if !missing.isEmpty {
+            FileHandle.standardError.write(Data("chatbox: \(path) has no \(missing.joined(separator: ", ")) — refusing to start on a store it could not prepare\n".utf8))
+            exit(1)
+        }
+        if !readOnly {
+            let journal = scalar("PRAGMA journal_mode;")
+            if journal != "wal" {
+                FileHandle.standardError.write(Data("chatbox: \(path) is in journal mode '\(journal)', not WAL — refusing to start (a board without WAL cannot be backed up as documented)\n".utf8))
+                exit(1)
+            }
+        }
     }
 
-    func exec(_ sql: String) {
+    /// Run a statement with no rows to return: a PRAGMA or a schema change. The result code and
+    /// SQLite's own message are *not* discarded - a board whose schema or `journal_mode` did not take
+    /// effect answers 500 to every route, or quietly loses the WAL the backup story rests on - and
+    /// `init` verifies the outcome below. Returns the code so a caller can refuse.
+    @discardableResult
+    func exec(_ sql: String) -> Int32 {
         dispatchPrecondition(condition: .onQueue(queue))
-        sqlite3_exec(db, sql, nil, nil, nil)
+        let rc = sqlite3_exec(db, sql, nil, nil, nil)
+        if rc != SQLITE_OK {
+            FileHandle.standardError.write(Data("chatbox: sql error: \(String(cString: sqlite3_errmsg(db))) — in \(oneLine(sql))\n".utf8))
+        }
+        return rc
     }
 
     private func prepare(_ sql: String, _ binds: [String?]) -> OpaquePointer? {
@@ -569,7 +604,9 @@ final class Store: @unchecked Sendable {
             return nil
         }
         for (i, v) in binds.enumerated() {
-            if let v = v { sqlite3_bind_text(st, Int32(i + 1), v, -1, transientDestructor()) }
+            // The byte count, not -1: a negative length means "up to the first NUL", so a value with
+            // an embedded NUL (`%00` decodes to one) was silently truncated on the way in.
+            if let v = v { sqlite3_bind_text(st, Int32(i + 1), v, Int32(v.utf8.count), transientDestructor()) }
             else { sqlite3_bind_null(st, Int32(i + 1)) }
         }
         return st
@@ -620,8 +657,12 @@ final class Store: @unchecked Sendable {
                 let n = sqlite3_column_count(st)
                 for i in 0..<n {
                     let name = String(cString: sqlite3_column_name(st, i))
-                    if let c = sqlite3_column_text(st, i) { row[name] = String(cString: c) }
-                    else { row[name] = "" }
+                    if let c = sqlite3_column_text(st, i) {
+                        // The column's own byte count, for the same reason as the bind: `String(cString:)`
+                        // stops at the first NUL and would hand back a truncated value.
+                        let bytes = Int(sqlite3_column_bytes(st, i))
+                        row[name] = String(decoding: UnsafeBufferPointer(start: c, count: bytes), as: UTF8.self)
+                    } else { row[name] = "" }
                 }
                 out.append(row)
                 continue
@@ -637,9 +678,16 @@ final class Store: @unchecked Sendable {
         return out
     }
 
-    /// One scalar as String.
+    /// One scalar as String: a one-column query. The row shape is a dictionary, so a query with two
+    /// columns has no defined "first", and this used to return whichever column the hash order gave.
+    /// A multi-column call is now refused (and logged) instead of answering with an arbitrary field.
     func scalar(_ sql: String, _ binds: [String?] = []) -> String {
-        rows(sql, binds).first?.values.first ?? ""
+        guard let row = rows(sql, binds).first else { return "" }
+        guard row.count == 1, let only = row.values.first else {
+            FileHandle.standardError.write(Data("chatbox: scalar() needs a one-column query — got \(row.count) columns from \(oneLine(sql))\n".utf8))
+            return ""
+        }
+        return only
     }
 
     /// A count, or nil when the store could not answer. `scalar` returns "" both for a statement that
@@ -789,7 +837,15 @@ final class Store: @unchecked Sendable {
         // One transaction, and a timeout: the migration is the one thing that runs before the
         // listener starts, so a second server holding the write lock must make it wait rather
         // than half-apply and report success it did not have.
-        run("BEGIN IMMEDIATE", [])
+        let began = runReporting("BEGIN IMMEDIATE", [])
+        if began.rc != SQLITE_DONE {
+            // Without the transaction the UPDATEs below would auto-commit one at a time, so a lock
+            // held past the busy timeout would leave the board half-migrated - two spellings of one
+            // key, the silent mail-split this function exists to prevent - and the banner would still
+            // claim the keys were normalised.
+            FileHandle.standardError.write(Data("chatbox: cannot start the key migration transaction (\(String(cString: sqlite3_errmsg(db)))) — refusing to migrate without one\n".utf8))
+            exit(1)
+        }
         for row in rows("SELECT id, repos FROM agents") {
             let raw = row["repos"] ?? ""
             if raw.isEmpty { continue }
@@ -828,7 +884,13 @@ final class Store: @unchecked Sendable {
                 if run("UPDATE messages SET repo=? WHERE id=?", [canon, row["id"] ?? ""]) >= 0 { changed += 1 } else { left += 1 }
             }
         }
-        run("COMMIT", [])
+        let committed = runReporting("COMMIT", [])
+        if committed.rc != SQLITE_DONE {
+            // Nothing was committed: report it as nothing migrated rather than as work done, so the
+            // banner cannot claim keys were normalised by a transaction that never landed.
+            FileHandle.standardError.write(Data("chatbox: the key migration could not be committed (\(String(cString: sqlite3_errmsg(db)))) — nothing was migrated; the next start will try again\n".utf8))
+            return (0, changed + left)
+        }
         return (changed, left)
     }
 

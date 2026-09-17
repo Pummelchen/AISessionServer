@@ -6199,6 +6199,58 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 55. A store that cannot be prepared is not served
+# `exec` discarded SQLite's result code and message, so a schema statement, a PRAGMA or the
+# deliveries backfill could fail while the board still started - answering 500 to every route, or
+# running without the WAL the backup story rests on - and the open refusal printed neither the cause
+# nor the failing statement. A held write lock is the reproducible case: the backfill and then the
+# key migration cannot take it, and the board has to refuse rather than come up half-migrated.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
+  st55port="${CHATBOX_STORE_PORT:-8775}"
+  st55db="$SCRATCH/store-${RUN}.sqlite"
+  st55tok="$SCRATCH/store-${RUN}.token"
+  rm -f "$st55db" "$st55db-wal" "$st55db-shm"
+  printf '%s\n' "$TOKEN" > "$st55tok"
+  chmod 600 "$st55tok" 2>/dev/null
+  # A real board first, so the file has the tables the migration reads.
+  "$CHATBOX_BIN" --port "$st55port" --db "$st55db" --token-file "$st55tok" \
+    > "$SCRATCH/store-${RUN}.first.log" 2>&1 &
+  st55pid=$!
+  for _ in $(seq 1 50); do
+    if kill -0 "$st55pid" 2>/dev/null \
+       && curl -fsS "http://127.0.0.1:$st55port/health?token=$TOKEN" >/dev/null 2>&1; then break; fi
+    sleep 0.2
+  done
+  kill "$st55pid" 2>/dev/null; wait "$st55pid" 2>/dev/null
+  # Hold the write lock for longer than the board's 5 s busy timeout, then start it.
+  ( printf 'BEGIN IMMEDIATE;\nUPDATE agents SET node = node;\n'; sleep 14 ) | sqlite3 "$st55db" >/dev/null 2>&1 &
+  st55lock=$!
+  sleep 0.5
+  "$CHATBOX_BIN" --port "$st55port" --db "$st55db" --token-file "$st55tok" \
+    > "$SCRATCH/store-${RUN}.log" 2>&1 &
+  st55srv=$!
+  for _ in $(seq 1 250); do
+    kill -0 "$st55srv" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$st55srv" 2>/dev/null; then
+    no "a board that cannot take the write lock does not start" "it was still running after 25s"
+    kill "$st55srv" 2>/dev/null
+  else
+    wait "$st55srv" 2>/dev/null; st55rc=$?
+    equals "a board that cannot take the write lock does not start" "$st55rc" "1"
+  fi
+  kill "$st55lock" 2>/dev/null; wait "$st55lock" 2>/dev/null
+  contains "and the log says the store was locked" "$(cat "$SCRATCH/store-${RUN}.log")" "database is locked"
+  contains "and names the statement that could not run" "$(cat "$SCRATCH/store-${RUN}.log")" "in UPDATE deliveries"
+  rm -f "$st55db" "$st55db-wal" "$st55db-shm" "$st55tok" "$SCRATCH/store-${RUN}.log" \
+        "$SCRATCH/store-${RUN}.first.log"
+else
+  printf '  skip  the un-preparable store (needs CHATBOX_BIN and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n%s: %d passed, %d failed\n' "${0##*/}" "$pass" "$fail"
