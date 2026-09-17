@@ -526,6 +526,28 @@ canon_repo() {
   case "$_r" in
     *'*'*|*'['*|*']'*|*' '*|*'	'*) return 1 ;;
   esac
+  # ... and the rest of the server's `hasControlByte`: the C1 block (U+0080-U+009F, two bytes each
+  # in UTF-8) and the Unicode format controls. A key this accepts and the server refuses fails on
+  # the far side, in a message about a value the caller cannot see in their terminal - which is the
+  # whole point of refusing it here.
+  _c1=128
+  while [ "$_c1" -le 159 ]; do
+    # Each C1 character is two bytes in UTF-8: 0xC2 then 0x80+n. `printf` builds them from the octal
+    # form, so the loop needs no table of 32 literals.
+    _c1seq="$(printf '%b' "\\302\\$(printf '%03o' "$_c1")")"
+    case "$_r" in
+      *"$_c1seq"*) return 1 ;;
+    esac
+    _c1=$((_c1 + 1))
+  done
+  for _fc in \
+    '\342\200\213' '\342\200\214' '\342\200\215' '\342\200\216' '\342\200\217' \
+    '\342\200\252' '\342\200\253' '\342\200\254' '\342\200\255' '\342\200\256' \
+    '\342\201\246' '\342\201\247' '\342\201\250' '\342\201\251' '\357\273\277' ; do
+    case "$_r" in
+      *"$(printf '%b' "$_fc")"*) return 1 ;;
+    esac
+  done
   # Folded at the top, so by here there is nothing left to fold. The whole key is folded
   # rather than the host alone, exactly as the server folds it: folding only the host would
   # make the client refuse a claim the server would have accepted, and one repository would

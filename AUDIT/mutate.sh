@@ -1343,6 +1343,30 @@ m('292-audit0073-silentexec',
 # read and checked, and then ignored, which is what a board that never had the flag would do.
 # AUDIT #0070: `--verify-backup` compared row counts, so a copy that lost one row and gained
 # another verified as current. This is the pre-fix comparison - the count part of each fingerprint.
+# AUDIT #0054: the client's repo-key rule is the server's rule. This is the pre-fix client: `*`,
+# `[`, `]` and a space are refused, and the C1 block and the Unicode format controls are not.
+m('296-audit0054-nocontrolcheck',
+  r'''  _c1=128
+  while [ "$_c1" -le 159 ]; do
+    # Each C1 character is two bytes in UTF-8: 0xC2 then 0x80+n. `printf` builds them from the octal
+    # form, so the loop needs no table of 32 literals.
+    _c1seq="$(printf '%b' "\\302\\$(printf '%03o' "$_c1")")"
+    case "$_r" in
+      *"$_c1seq"*) return 1 ;;
+    esac
+    _c1=$((_c1 + 1))
+  done
+  for _fc in \
+    '\342\200\213' '\342\200\214' '\342\200\215' '\342\200\216' '\342\200\217' \
+    '\342\200\252' '\342\200\253' '\342\200\254' '\342\200\255' '\342\200\256' \
+    '\342\201\246' '\342\201\247' '\342\201\250' '\342\201\251' '\357\273\277' ; do
+    case "$_r" in
+      *"$(printf '%b' "$_fc")"*) return 1 ;;
+    esac
+  done
+''',
+  r'''''', target='cli')
+
 m('295-audit0070-countsonly',
   r'''    let differing = boardTables.filter { prints[$0] != sourcePrints[$0] }''',
   r'''    let differing = boardTables.filter { (prints[$0]?.split(separator: ":").first ?? "") != (sourcePrints[$0]?.split(separator: ":").first ?? "") }''')

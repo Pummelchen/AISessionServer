@@ -2058,6 +2058,16 @@ if [ -f "$CLI" ] && command -v git >/dev/null 2>&1; then
       "$(cli_run register --id "$SB4" --node node-fixture --repo "$junk" --repo-dir "$fixture" 2>&1)" \
       "is not a usable repo key"
   done
+  # The invisible ones: the client refused `*`, `[`, `]` and a space but accepted the C1 block and
+  # the Unicode format controls, which the server's `hasControlByte` refuses - so a key with a bidi
+  # override in it travelled to the far side and came back as a refusal about a value the caller
+  # could not see. Refused locally now, in the same words as the other unusable keys.
+  for invisible in "$(printf 'github.com/acme/a\302\205b')" "$(printf 'github.com/acme/a\302\237b')" \
+                   "$(printf 'github.com/acme/a\342\200\256b')" "$(printf 'github.com/acme/a\357\273\277b')"; do
+    contains "an invisible control in a key is refused as unusable (bytes $(printf '%s' "$invisible" | od -An -tx1 | tr -d ' \n'))" \
+      "$(cli_run register --id "$SB4" --node node-fixture --repo "$invisible" --force 2>&1)" \
+      "is not a usable repo key"
+  done
   # A query string and a fragment are URL syntax rather than part of a key, so
   # they are dropped instead of making the key unusable.
   contains "a query string is not part of the key" \
