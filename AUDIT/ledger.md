@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 16 | done: 79 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 15 | done: 80 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -75,7 +75,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0067](#0067) | S2 | M1 | `chatbox.swift:2017` | Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s | perf | **START** | node1 | phase-B/L5-performance |
 | [0068](#0068) | S2 | M1 | `chatbox.swift:2179` | Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop | bug | **START** | node1 | phase-B/L2-server-http |
 | [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **START** | node1 | phase-B/L7-ops |
-| [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **START** | node1 | phase-B/L2-server-core |
+| [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **DONE** | node1 | phase-B/L2-server-core |
 | [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0072](#0072) | S2 | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0073](#0073) | S2 | M1 | `chatbox.swift:449` | Store.exec ignores every SQLite error, and the db-open refusal drops the cause | incomplete | **DONE** | node1 | phase-B/L7-ops |
@@ -1145,13 +1145,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / logic / M1
 - **Location:** `chatbox.swift:2776`
 - **Title:** --verify-backup compares only row counts, so a stale copy can verify as current
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** verifyBoard() (2763-2784) reads both boards via readBoard and fails only when boardTables.filter { counts[$0] != sourceCounts[$0] } is non-empty (2776). The comment at 2761-2762 claims "any row the board has that the copy does not makes it out of date", but equal counts also hold for a copy that is missing rows and has different ones (a pruned message replaced by a newer one, or a different board with the same totals). --verify-backup then prints "backup ok" (2871).
 
 WHY IT MATTERS: The single command meant to prove a backup is current can certify a copy that is not, and the operator restores a board they believe is up to date.
 
 CONFIDENCE: medium
-- **Fix:** Compare content, not only counts: compare MAX(id) and the id set (or a checksum) for messages/threads/deliveries and the token id set, not just COUNT(*).
+- **Fix:** `--verify-backup --db <board>` compares a per-table fingerprint instead of a row count: rows, the highest rowid and the sum of the rowids, read through the same read-only opener the counts use (so the immutable-snapshot and integrity rules cannot drift between the two), and the refusal prints both fingerprints so an operator can see how the copy differs.
+- **Evidence (after):** TEST (gate, before and after on one tampered copy): a fresh copy of the board is edited so it holds the **same number of messages** but not the same ones (the newest is deleted and a replacement inserted). The pre-fix binary verifies it - `compared with: <board>`, exit **0** - while the fixed one answers `messages: 3:4:7.0 in the copy, 3:3:6.0 in <board>` and exits **1**. The suite's section 25 now takes that fresh backup, performs the swap, proves the fixture is meaningful (both sides' `COUNT(*)` are equal), and requires the refusal and the fingerprint in it - three new assertions. Mutant `295-audit0070-countsonly` (the comparison reduced to the count part of each fingerprint, i.e. the pre-fix behaviour) is red at **1115 passed / 2 failed**; the base cell of that run is GREEN at **1117 passed / 0 failed** on 14efd06 (chatbox.swift sha256 34733be520386334); relative cell GREEN, 0 false passes; strict build 0/0. The existing refusal-text check was updated to the new fingerprint format, and the base cell caught the first fixture, which reused a backup taken before the section's later messages and so no longer had a matching count.
+- **Commit:** `14efd06`
+- **Notes:** The fingerprint is content-sensitive for *sets of rows* (ids and their arithmetic) but not for an edited value inside a row - `--verify-backup` is the 'is this copy current?' question, and a copy whose rows are the same ids is current for its purpose. A full byte comparison is not available here: the point of comparing against the live board is that the board keeps writing, so the two files are never byte-identical by design. `--backup`'s own check (`verifyCopy`) is unchanged: it asks the different question 'did the copy lose anything committed before it started?' and must not require equality with a board that has moved on.
 
 ### 0071
 
