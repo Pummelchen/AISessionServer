@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 15 | done: 80 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 14 | done: 81 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -59,7 +59,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0051](#0051) | S2 | repo | `aisessionserver-wiki/Quick-Start.md:255` | Documented local test command silently skips checks and cannot print the promised result | docs | **DONE** | node1 | phase-B/L7-ops |
 | [0052](#0052) | S2 | M3 | `chatbox-cli.sh:150` | Client puts the credential in curl argv, exposing it to every local user via ps | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0053](#0053) | S2 | M3 | `chatbox-cli.sh:29` | ~/.chatbox overrides the environment instead of defaulting to it | logic | **DONE** | node1 | phase-B/M3-client |
-| [0054](#0054) | S2 | M3 | `chatbox-cli.sh:355` | canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls] | logic | **START** | node1 | phase-B/L1-architecture,M3-client |
+| [0054](#0054) | S2 | M3 | `chatbox-cli.sh:355` | canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls] | logic | **DONE** | node1 | phase-B/L1-architecture,M3-client |
 | [0055](#0055) | S2 | M3 | `chatbox-cli.sh:686` | GET query strings are concatenated unencoded, so ids with a space or & break the request | bug | **DONE** | node1 | phase-B/M3-client |
 | [0056](#0056) | S2 | M3 | `chatbox-cli.sh:703` | ack silently drops --all, then the server error names the flag the caller passed | logic | **DONE** | node1 | phase-B/M3-client |
 | [0057](#0057) | S2 | M3 | `chatbox-cli.sh:775` | watch delivers the 1200-character inbox preview and then acks it | incomplete | **START** | node1 | phase-B/M3-client |
@@ -922,13 +922,16 @@ CONFIDENCE: medium
 - **Severity / category / module:** S2 / logic / M3
 - **Location:** `chatbox-cli.sh:355`
 - **Title:** canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls]
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** chatbox-cli.sh:355 deletes only the bytes \001-\037 and \177, and 433-436 tests only *,?, [, ], space and tab. Running the shipped function under LC_ALL=C: canon_repo of `github.com/acme/li<U+200B>bfoo`, `.../<U+FEFF>bfoo` and `.../<U+0085>bfoo` all return rc=0. chatbox.swift:153-164 hasControlByte rejects CharacterSet.controlCharacters - the C1 and Cf (zero-width, BOM, bidi) blocks - so the server answers 400. | 355 deletes only bytes 1-31 and 127, but the server's hasControlByte (chatbox.swift:153-164) also rejects Unicode format controls (Cf). Ran both rules over a 29-key corpus: 28 agreed; `host/a<U+200B>b` and `host/a<U+FEFF>b` returned rc=0 with a canonical key from canon_repo while POST /register refused them as 'not a valid repo key'. The comment at 433 claims the server's characters 'are refused here too'.
 
 WHY IT MATTERS: The client and server are documented to apply one identical rule (chatbox.swift:190-202, README:143-146). Here the client certifies a key the server then refuses, so `register --repo`/`say --repo` fail with the server's 400 even though the local remote check passed, and the invisible character is exactly the kind that splits two spellings of one repo. | The client can vouch for and send a key the server rejects, so a claim fails at the last step instead of locally; worse, the two copies of the rule the code calls canonical will drift as either side changes.
 
 CONFIDENCE: high
-- **Fix:** Extend the control-byte test to the C1 range and the Cf sequences: reuse the list FORMAT_CONTROLS_SED already builds for display, plus the U+0080-U+009F block, so accept/reject matches the server's CharacterSet.controlCharacters. | Mirror the server's Cf rejection (the sed format-control list at chatbox-cli.sh:197-209 can be reused), or expose one canonicalisation implementation that the client calls.
+- **Fix:** The client's `canon_repo` refuses the same characters the server's `hasControlByte` does: the Unicode format controls (reusing the byte sequences the display sanitizer already lists) and the C1 block U+0080-U+009F, built from its UTF-8 shape (0xC2 then 0x80+n) so no 32-entry table is needed. The two rules now agree, so a key one accepts is a key the other accepts.
+- **Evidence (after):** TEST (gate): four checks in the fixture section feed `canon_repo` a key carrying an invisible control - U+0085 and U+009F (C1) and U+202E and U+FEFF (format controls) - and require `is not a usable repo key`, with the offending bytes printed in the check's own name so a failure is readable. Probed by hand before the checks were written: the bidi key was refused by the old client while the C1 key was **accepted** and travelled to the ownership check (the pre-fix divergence), and after the fix all four are refused while `github.com/acme/ok` still proceeds to the network. Mutant `296-audit0054-nocontrolcheck` (the pre-fix client) is red at **1116 passed / 4 failed** - exactly those four checks; the base cell of that run is GREEN at **1121 passed / 0 failed** (1117 + 4) on 58f3e73 (chatbox.swift sha256 34733be520386334); relative cell GREEN, 0 false passes; `shellcheck -s sh chatbox-cli.sh` is 0 findings.
+- **Commit:** `58f3e73`
+- **Notes:** Where the shared rule lives is still duplicated - the client has to canonicalise locally to refuse before the request - but the *content* of the rule is now identical, and the check that they agree is behavioural: the same four keys that the server refuses are refused here. The alternative (letting the server do all the refusing) would send a key with an invisible control over the network and answer with a message about a value the caller cannot see, which is what the finding is about.
 
 ### 0055
 
