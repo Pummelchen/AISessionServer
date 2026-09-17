@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 25 | done: 70 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 21 | done: 74 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -78,11 +78,11 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **START** | node1 | phase-B/L2-server-core |
 | [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **START** | node1 | phase-B/L4-security |
 | [0072](#0072) | S2 | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **DONE** | node1 | phase-B/L4-security |
-| [0073](#0073) | S2 | M1 | `chatbox.swift:449` | Store.exec ignores every SQLite error, and the db-open refusal drops the cause | incomplete | **START** | node1 | phase-B/L7-ops |
-| [0074](#0074) | S2 | M1 | `chatbox.swift:460` | Stored text is silently truncated at an embedded NUL byte | bug | **START** | node1 | phase-B/L2-server-core |
-| [0075](#0075) | S2 | M1 | `chatbox.swift:499` | Store.scalar returns an arbitrary column via Dictionary.values.first | logic | **START** | node1 | phase-B/L3-line-level |
+| [0073](#0073) | S2 | M1 | `chatbox.swift:449` | Store.exec ignores every SQLite error, and the db-open refusal drops the cause | incomplete | **DONE** | node1 | phase-B/L7-ops |
+| [0074](#0074) | S2 | M1 | `chatbox.swift:460` | Stored text is silently truncated at an embedded NUL byte | bug | **DONE** | node1 | phase-B/L2-server-core |
+| [0075](#0075) | S2 | M1 | `chatbox.swift:499` | Store.scalar returns an arbitrary column via Dictionary.values.first | logic | **DONE** | node1 | phase-B/L3-line-level |
 | [0076](#0076) | S2 | M1 | `chatbox.swift:50` | nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient | perf | **START** | node1 | phase-B/L5-performance |
-| [0077](#0077) | S2 | M1 | `chatbox.swift:610` | Repo-key migration ignores BEGIN/COMMIT failures | bug | **START** | node1 | phase-B/L2-server-core |
+| [0077](#0077) | S2 | M1 | `chatbox.swift:610` | Repo-key migration ignores BEGIN/COMMIT failures | bug | **DONE** | node1 | phase-B/L2-server-core |
 | [0078](#0078) | S2 | M1 | `chatbox.swift:611` | Startup key migration re-reads all four tables and rewrites every non-canonical row on every start | perf | **START** | node1 | phase-B/L5-performance |
 | [0079](#0079) | S2 | M1 | `chatbox.swift:716` | prune() clears reply_to with one full-table-scan UPDATE per pruned message (O(messages x pruned)) | perf | **START** | node1 | phase-B/L5-performance |
 | [0080](#0080) | S2 | M1 | `chatbox.swift:799` | Inbox listing sorts the whole matching backlog in a temp b-tree to return 200 rows | perf | **START** | node1 | phase-B/L5-performance |
@@ -1187,39 +1187,48 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / incomplete / M1
 - **Location:** `chatbox.swift:449`
 - **Title:** Store.exec ignores every SQLite error, and the db-open refusal drops the cause
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** `func exec(_ sql: String) { sqlite3_exec(db, sql, nil, nil, nil) }` (449-451) discards both the return code and the message, yet it runs PRAGMA journal_mode=WAL (393), every CREATE TABLE/INDEX (399-446) and the deliveries.node backfill (438). If any of those fails — --db is not a SQLite file, disk full, a filesystem where WAL is unsupported — the server still starts and serves. The open failure at 388 prints `cannot open db at \(path)` with no sqlite3_errmsg, so 'no such directory' and 'permission denied' read identically; boardCounts (2708) does report the reason.
 
 WHY IT MATTERS: A startup mistake becomes a running board that 500s every route (or silently runs without WAL and invalidates the backup story), and the one refusal the operator does see names neither cause nor fix.
 
 CONFIDENCE: high
-- **Fix:** Return the sqlite3_exec error and refuse to start when a schema or PRAGMA statement fails; include sqlite3_errmsg(db) (and the offending statement) in the message at 388.
+- **Fix:** `exec` returns SQLite's result code and logs `sql error: <message> — in <statement>` when it is not OK (it used to discard both); the open refusal names the cause (`cannot open db at <path>: <sqlite3_errmsg>`); and after the schema statements `init` verifies that the five tables exist and that `journal_mode` is `wal`, refusing to start (exit 1) rather than serving a store it could not prepare. The deliveries backfill is one of the statements that now announces its failure, and the key-migration BEGIN check (#0077) refuses on the same lock, so the board does not come up half-migrated either way.
+- **Evidence (after):** TEST (gate): a board started against a database whose write lock is held by another process (`BEGIN IMMEDIATE` + a 14 s hold, past the 5 s busy timeout) exits **1**, and its log carries both `chatbox: sql error: database is locked — in UPDATE deliveries SET node = COALESCE(...)` - the backfill, which failed silently before - and `chatbox: cannot start the key migration transaction (database is locked) — refusing to migrate without one`. The fix was also probed by hand: `--db` on a non-database file exits 1, and an unopenable path now reports `cannot open db at /nonexistent-dir/x.sqlite: unable to open database file` where it used to print only the path. Section 55 pins the held-lock case with three checks; mutant `292-audit0073-silentexec` (the pre-fix body, which returns SQLITE_OK and logs nothing) is red at 1105 passed / 1 failed, because the log line naming the failing statement disappears. Base cell GREEN at 1106 passed / 0 failed on 1434f4c (chatbox.swift sha256 fd04fb02ad71192d); relative cell GREEN, 0 false passes; strict build 0/0. The fixture interaction was found by the base cell, not by reasoning: the first cut of the schema check required `type='table'`, and section 47's read-failure fixture puts a *view* named `messages` in place of the table, so the base cell went red with the board refusing to start. The check is existence-based instead, and the same fixture was then re-run by hand: `--prune 0` on that board reaches the prune and answers `the prune failed and was rolled back — nothing was changed`, with `views may not be indexed` logged from the failed CREATE INDEX.
+- **Commit:** `1434f4c`
+- **Notes:** The schema verification is a positive check (five tables present, `journal_mode` = wal) rather than an `exit` after each of the ~18 statements: the statements are `IF NOT EXISTS` creations whose effect is exactly what is verified, and `addColumn` already verifies its own column and refuses, which is the shape this follows. Refusing on a non-WAL journal mode is the behaviour change the finding asks for - a filesystem that cannot do WAL is a deployment that cannot use the documented backup story, and the refusal says so rather than serving quietly.
 
 ### 0074
 
 - **Severity / category / module:** S2 / bug / M1
 - **Location:** `chatbox.swift:460`
 - **Title:** Stored text is silently truncated at an embedded NUL byte
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** prepare() binds every non-nil value with sqlite3_bind_text(st, i+1, v, -1, TRANSIENT) (459-461); sqlite3.h:5005-5007 documents that a negative fourth argument means the length is "the number of bytes up to the first zero terminator". percentDecode (909-910) turns %00 into U+0000 and neither body nor subject is screened (hasControlByte/validId guard only ids and repo keys), so POST /message?body=a%00b stores "a" while the declared Content-Length and the "ok posted" answer describe the whole message.
 
 WHY IT MATTERS: Stored content differs silently from the bytes the request declared, which is data corruption on the write path the board presents as exact.
 
 CONFIDENCE: medium
-- **Fix:** Reject control bytes in body/subject, or pass the UTF-8 byte count to sqlite3_bind_text (Int32(v.utf8.count)) so an embedded NUL is preserved as data.
+- **Fix:** `prepare` binds with the value's UTF-8 **byte count** instead of -1 (SQLite documents a negative fourth argument as 'the number of bytes up to the first zero terminator'), and the row reader builds each column from `sqlite3_column_bytes` rather than `String(cString:)`, which stops at the first NUL for the same reason. An embedded NUL is now stored and read back as data.
+- **Evidence (after):** TEST (gate, before and after with the two binaries): `POST /message?…&body=one%00two` on the pre-fix build stores `select hex(body)` = **6F6E65** ('one' - the `\0two` silently gone) while the answer still says `ok posted`; on the fixed build the stored value is **6F6E650074776F** ('one\0two', all seven bytes). SQLite's own `length()` reports 3 for that value, which is its documented 'characters before the first NUL', so the hex is the check that matters. The suite's message round-trips (sections 7-13, `&json=1`, the thread view) are green at 1106 passed / 0 failed.
+- **Commit:** `1434f4c`
+- **Notes:** Preserving the byte rather than refusing it: the alternative fix (reject control bytes in body/subject) would have been a new refusal on the write path late in a pre-production audit, and the board's contract is that a message is bytes of text it stores exactly - `percentDecode` already turns `%00` into a NUL deliberately. The read side had to change with the write side, or the value would be stored whole and handed back truncated.
 
 ### 0075
 
 - **Severity / category / module:** S2 / logic / M1
 - **Location:** `chatbox.swift:499`
 - **Title:** Store.scalar returns an arbitrary column via Dictionary.values.first
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** Lines 498-500: `func scalar(_ sql: String, _ binds: [String?] = []) -> String { rows(sql, binds).first?.values.first ?? "" }`. Dictionary iteration order is unspecified, so for a row with more than one column the returned element is arbitrary. All current call sites (572, 576, 697, 704, 777-778, 807, 878-879, 883, 1280-1282, 1303, 1356, 1494, 2296) happen to select exactly one column.
 
 WHY IT MATTERS: No wrong result today, but the helper accepts any SELECT and silently picks a column without naming it; the first two-column query added later (for example `SELECT COUNT(*), MAX(id)`) returns whichever the hash order gives, with no compile-time or runtime signal. The rest of the store names its columns through the [String: String] row shape.
 
 CONFIDENCE: high
-- **Fix:** Read the named column instead of the first value (or assert column_count == 1, or add a `scalar(_:column:)`), so a multi-column query fails loudly rather than returning an arbitrary field.
+- **Fix:** `scalar` requires a one-column row: a query returning more than one column is refused and logged (`scalar() needs a one-column query — got N columns from <sql>`) instead of returning whichever column the dictionary iteration happened to produce first.
+- **Evidence (after):** TEST: the fix is structural - every one of the ~18 call sites selects exactly one column, and the helper now checks `row.count == 1` before reading it, so a two-column query fails loudly (a log line) rather than answering with an arbitrary field. The suite that exercises those call sites (health, counts, lookups, the scoped listings) is green at 1106 passed / 0 failed and the strict build is 0/0. Honest limit, recorded: **no behavioural check can distinguish the two versions today**, because with one column the old `values.first` and the new guard return the same value and no cell can turn them apart; the pin is the guard itself plus the log, not a test.
+- **Commit:** `1434f4c`
+- **Notes:** Read by name rather than by position was the other option, but `rows` returns `[String: String]` and the call sites do not name a column, so the smallest honest change is to require the shape they all have. The diagnostic is on stderr like the store's other failures, so a future two-column call is visible in the board's log rather than silent.
 
 ### 0076
 
@@ -1239,13 +1248,16 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / bug / M1
 - **Location:** `chatbox.swift:610`
 - **Title:** Repo-key migration ignores BEGIN/COMMIT failures
-- **Status:** START
+- **Status:** DONE
 - **Evidence (before):** migrateRepoKeys() calls run("BEGIN IMMEDIATE", []) at 610 and run("COMMIT", []) at 649 without checking either (Store.run returns -1 on failure). If BEGIN fails because another process holds the write lock past busy_timeout=5000, the UPDATEs at 616/627/635/646 execute outside a transaction and auto-commit one at a time, and the final COMMIT fails with "no transaction is active". The changed/left counts returned at 650 feed the banner at 3219-3220.
 
 WHY IT MATTERS: The documented invariant is one atomic, idempotent migration; a partial migration plus a banner claiming keys were normalised leaves two spellings of one repo key, which is the silent mail-split the function exists to prevent.
 
 CONFIDENCE: high
-- **Fix:** Check both results with runReporting; on a failed BEGIN report and exit(1) rather than migrating untransacted, and only report changed/left after a COMMIT that succeeded.
+- **Fix:** `migrateRepoKeys` checks both ends of its transaction: a failed `BEGIN IMMEDIATE` logs `cannot start the key migration transaction (<sqlite3_errmsg>) — refusing to migrate without one` and exits **1** instead of running the UPDATEs untransacted, and a failed `COMMIT` reports `(0, changed + left)` - nothing migrated, everything still to do - rather than a count of work that was rolled back.
+- **Evidence (after):** TEST (gate): the same held-write-lock fixture as #0073 asserts the board does not start (exit 1) and the log names the lock; mutant `293-audit0077-nobegin` (the BEGIN result ignored) is red at 1105 passed / 1 failed, because the UPDATEs then auto-commit one at a time, the COMMIT fails, the migration reports nothing done, and the board **starts and serves** - which is exactly the half-migrated state the function exists to prevent. Base cell GREEN at 1106 passed / 0 failed on 1434f4c (chatbox.swift sha256 fd04fb02ad71192d); relative cell GREEN, 0 false passes.
+- **Commit:** `1434f4c`
+- **Notes:** The failed-COMMIT branch returns `changed = 0` deliberately: the transaction did not land, so a banner claiming N keys were normalised would be a report of work that was rolled back. The next start retries, and the migration is idempotent by construction (that is what the fixed-point comment in `canonicalRepoKey` is about).
 
 ### 0078
 
