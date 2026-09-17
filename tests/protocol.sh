@@ -1959,6 +1959,15 @@ if [ -f "$CLI" ] && command -v git >/dev/null 2>&1; then
     no "a key the checkout has is accepted" "it was refused"
   fi
   contains "the canonical key is what the server records" "$(get /peers)" "github.com/acme/fixture"
+  # A `?query` or `#fragment` is URL syntax, not part of the key: both sides drop it, which is why
+  # '?' is not in the character check either (the two rules have to agree). Pinned on the server as
+  # well, because the client strips the suffix before the server ever sees it.
+  contains "a key with a query suffix resolves to the repo on the server too" \
+    "$(post /register --data-urlencode "id=it-$RUN-qs" --data-urlencode "node=node-fixture" \
+        --data-urlencode "repo=https://github.com/acme/fixture?tab=readme")" "github.com/acme/fixture"
+  contains "and a fragment suffix is dropped the same way" \
+    "$(post /register --data-urlencode "id=it-$RUN-frag" --data-urlencode "node=node-fixture" \
+        --data-urlencode "repo=github.com/acme/fixture#readme")" "github.com/acme/fixture"
   for pair in "github.com/acme/second:a second URL on the same remote" \
               "lab.example/acme/third:a remote whose host carries a port" \
               "host.example/@scope/proj:an @ inside the path is not userinfo"; do
@@ -2033,7 +2042,7 @@ if [ -f "$CLI" ] && command -v git >/dev/null 2>&1; then
 
   # Every spelling that names the same repo lands on the one key.
   for spelling in 'https://github.com/acme/fixture.git' 'github.com/acme/fixture' \
-                  'https://GitHub.com/acme/fixture/'; do
+                  'https://GitHub.com/acme/fixture/' 'https://github.com/acme/fixture?tab=readme'; do
     spelled="$(cli_run register --id "$SB5" --node node-fixture --repo "$spelling" --repo-dir "$fixture")"
     case "$spelled" in
       *"ok registered"*) ok "the spelling '$spelling' is accepted as the same repo" ;;

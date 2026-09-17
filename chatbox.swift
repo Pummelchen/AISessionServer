@@ -4,8 +4,11 @@
 // here, declares the git repos it owns, and exchanges plain-text messages about
 // them. Text only: this service never carries or grants file access.
 //
-// Design constraints: Swift 6.3.3, Foundation + Network + SQLite3 only, no
-// external packages, one file, no daemon dependencies.
+// Design constraints: Swift 6 (the toolchain at hand), Foundation + Network + SQLite3 only, no
+// external packages, one file, no daemon dependencies. The source is typechecked under Swift 6
+// language mode with strict concurrency and warnings-as-errors - that is the standard CI enforces,
+// not a version pin: `xcrun swiftc -O -swift-version 6 -strict-concurrency=complete
+// -warnings-as-errors -typecheck chatbox.swift`.
 //
 // Build: xcrun swiftc -O chatbox.swift -o chatbox
 // Run:   ./chatbox --port 8787 --db ~/chatbox.sqlite [--token SECRET | --token-file PATH]
@@ -280,7 +283,10 @@ func canonicalRepoKey(_ raw: String) -> String? {
     // A single-label host is only a host when a scheme, or an explicit user, settled it.
     if ambiguous && !(host == "localhost" || host.contains(".")) { return nil }
     // The characters the client refuses, so that what one accepts the other does too.
-    for bad in ["*", "?", "[", "]", " ", "\t"] where s.contains(bad) { return nil }
+    // `?` and `#` are deliberately not in this list: the strip above treats them as the start of a
+    // URL suffix, which is the documented rule (a `?query` or `#fragment` is URL syntax, not part of
+    // a key). The client's `canon_repo` says the same and checks the same set, so the two agree.
+    for bad in ["*", "[", "]", " ", "\t"] where s.contains(bad) { return nil }
     return s
 }
 
@@ -1573,7 +1579,7 @@ final class Chatbox: @unchecked Sendable {
             let repo = claimed.trimmingCharacters(in: .whitespaces)
             if repo.isEmpty { continue }
             guard let key = canonicalRepoKey(repo) else {
-                return (400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
+                return (400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*', '[' or ']' or a space (a '?' or '#' ends the key)\n")
             }
             if !canonical.contains(key) { canonical.append(key) }
         }
@@ -1715,7 +1721,7 @@ final class Chatbox: @unchecked Sendable {
         var canonicalRepo = ""
         if !repo.isEmpty {
             guard let key = canonicalRepoKey(repo) else {
-                return Reply(400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*' or '?'\n")
+                return Reply(400, "error: '\(oneLine(repo))' is not a valid repo key — keys name a repo, are one line, and do not contain '*', '[' or ']' or a space (a '?' or '#' ends the key)\n")
             }
             canonicalRepo = key
         }
@@ -1942,20 +1948,22 @@ final class Chatbox: @unchecked Sendable {
                     : "\nnote: nobody has registered as an owner of '\(effRepo)' yet; message stored in thread \(threadId)\n")
         }
         if !unseen.isEmpty {
-            let who = unseen.map { "\($0) (\(unseenReason($0)))" }.joined(separator: ", ")
+            // `unseenList`, not `who`: this function's `who` parameter is the credential, and
+            // rebinding it here made every later read ambiguous at a glance.
+            let unseenList = unseen.map { "\($0) (\(unseenReason($0)))" }.joined(separator: ", ")
             // Only claim nobody will read it when nobody is left to.
             let everyone = unseen.count == delivered.count
             // A scoped sender gets the same warning without the board's own numbers: "no sign of X
             // inside the 7d window" is a statement about the registry, which is what the scope
             // exists to withhold.
             if scopedSender {
-                note += "\nwarning: \(who)"
+                note += "\nwarning: \(unseenList)"
                     + (everyone
                         ? " — the message is stored, but nobody may read it\n"
                         : " — the message is stored, but it may not reach "
                           + (unseen.count == 1 ? "that session" : "those sessions") + "\n")
             } else {
-                note += "\nwarning: no sign of \(who) inside the \(humanSeconds(staleAfter)) staleness window"
+                note += "\nwarning: no sign of \(unseenList) inside the \(humanSeconds(staleAfter)) staleness window"
                     + (everyone
                         ? " — the message is stored, but nobody may read it\n"
                         : " — the message is stored, but it may not reach "

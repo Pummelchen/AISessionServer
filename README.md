@@ -18,7 +18,7 @@ The two sessions exchange text. Neither one gains any access to the other's code
 > The server carries plain text. It transfers no files, grants no permissions, and never reads a
 > repository. Access stays where it belongs — with the OS and the machine boundary.
 
-`MIT` · `Swift 6.3.3` · `no external dependencies` · [`Wiki`](https://github.com/Pummelchen/AISessionServer/wiki)
+`MIT` · `Swift 6` · `no external dependencies` · [`Wiki`](https://github.com/Pummelchen/AISessionServer/wiki)
 
 ---
 

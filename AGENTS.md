@@ -80,9 +80,10 @@ envelope, `--max-rows` 500 per listing (always stating `shown` of `matching`),
 ## Identity
 
 No product version. `chatbox-mcp.swift` declares `protocolVersion = "2024-11-05"`
-and `serverInfo.version = "1.0"`. "Swift 6.3.3" is a stated design constraint in the
-README and a source comment, **not an enforced one** — neither workflow pins a Swift
-version (both use `runs-on: xcode-27`). GitHub reports this repository's primary
+and `serverInfo.version = "1.0"`. The source is **Swift 6** (no version pin: the
+toolchain is whatever `runs-on: xcode-27` provides), and the standard is enforced in
+CI — both binaries are typechecked under `-swift-version 6
+-strict-concurrency=complete -warnings-as-errors`, and the exit code is a gate. GitHub reports this repository's primary
 language as **Shell**, not Swift, despite `chatbox.swift` being the bulk of the code.
 
 ## Gates

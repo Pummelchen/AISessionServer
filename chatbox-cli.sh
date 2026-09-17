@@ -519,7 +519,7 @@ canon_repo() {
   fi
   # characters the server refuses, and any control byte, are refused here too
   case "$_r" in
-    *'*'*|*'?'*|*'['*|*']'*|*' '*|*'	'*) return 1 ;;
+    *'*'*|*'['*|*']'*|*' '*|*'	'*) return 1 ;;
   esac
   # Folded at the top, so by here there is nothing left to fold. The whole key is folded
   # rather than the host alone, exactly as the server folds it: folding only the host would
