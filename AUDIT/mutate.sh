@@ -1339,6 +1339,12 @@ m('292-audit0073-silentexec',
 
 # AUDIT #0077: the key migration is one transaction or it is not a migration. Without this check a
 # held write lock let the UPDATEs auto-commit one at a time and the board still start.
+# AUDIT #0071: the peer credential can come from a file. This is the pre-fix wiring - the file is
+# read and checked, and then ignored, which is what a board that never had the flag would do.
+m('294-audit0071-notokenfile',
+  r'''let peerToken = peerTokenFromFile.isEmpty ? peerTokenArg : peerTokenFromFile''',
+  r'''let peerToken = peerTokenArg''')
+
 m('293-audit0077-nobegin',
   r'''        let began = runReporting("BEGIN IMMEDIATE", [])
         if began.rc != SQLITE_DONE {

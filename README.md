@@ -252,8 +252,10 @@ delivered a complete request in time; and `--max-hops` (default 4) bounds the `h
 forward may carry. `GET /health` reports all of them. A held long poll is not
 affected: the deadline is cancelled once a request has arrived.
 
-**Two boards can be federated, one hop.** Start a board with `--peer <url>` and `--peer-token
-<secret>` (plus `--server-id <name>` for the name the peer shows as `(via …)`) and a message for a
+**Two boards can be federated, one hop.** Start a board with `--peer <url>` and a peer credential:
+`--peer-token-file <path>` is the preferred form (a credential on the command line is visible to every
+local user in `ps`), or `--peer-token <secret>` with that cost. Add `--server-id <name>` for the name
+the peer shows as `(via …)`, and a message for a
 repo **no session here claims** is forwarded there — stored locally first, so a peer that is down
 costs nothing but a line in the answer (`forwarded_to: … (ok)`, or `forward failed: …` with the
 peer's own words). Nothing is forwarded for a repo this board owns, for an explicit `to=`, or for a

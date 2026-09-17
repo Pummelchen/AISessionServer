@@ -4522,6 +4522,12 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
   ftok="$SCRATCH/fed-${RUN}.token"
   printf '%s\n' "$TOKEN" > "$ftok"
   chmod 600 "$ftok" 2>/dev/null
+  # The peer credential is the peer's bootstrap credential, and a bootstrap credential in `ps` is the
+  # other board's full operator key: the fixture passes it in a file (`--peer-token-file`), which is
+  # what the README recommends, so every forwarding check below also pins that path.
+  fpeertok="$SCRATCH/fed-peer-token-${RUN}"
+  printf '%s\n' "$TOKEN" > "$fpeertok"
+  chmod 600 "$fpeertok" 2>/dev/null
 
   fed_start() { # name, port, extra args...
     _n="$1"; _p="$2"; shift 2
@@ -4600,8 +4606,10 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
     contains "$_d — and the refusal names it" "$(cat "$SCRATCH/fed-refuse-${RUN}.log")" "$_phrase"
   }
 
+  : > "$SCRATCH/fed-empty-${RUN}"
+  chmod 600 "$SCRATCH/fed-empty-${RUN}" 2>/dev/null
   fedpids=""
-  fed_start fed "$fbport" --peer "http://127.0.0.1:$pbport" --peer-token "$TOKEN" --max-hops 4
+  fed_start fed "$fbport" --peer "http://127.0.0.1:$pbport" --peer-token-file "$fpeertok" --max-hops 4
   fed_start peer "$pbport" --server-id fed-peer
   fed_start down "$xbport" --peer "http://127.0.0.1:$deadport" --peer-token "$TOKEN"
 
@@ -4916,6 +4924,13 @@ two"
     # the board it is configuring is this board, and a forward to it could only be a duplicate.
     fed_refuse "--peer naming this board is refused" "names this board" \
       --peer "http://127.0.0.1:$rport" --peer-token x
+    fed_refuse "--peer-token-file with no path is refused" "names no file" --peer-token-file=
+    fed_refuse "--peer-token-file on a missing file is refused" "cannot read --peer-token-file" \
+      --peer "http://127.0.0.1:1" --peer-token-file "$SCRATCH/fed-no-such-${RUN}"
+    fed_refuse "--peer-token-file on an empty file is refused" "is empty" \
+      --peer "http://127.0.0.1:1" --peer-token-file "$SCRATCH/fed-empty-${RUN}"
+    fed_refuse "and giving both a peer token and a peer token file is refused" "not both" \
+      --peer "http://127.0.0.1:1" --peer-token x --peer-token-file "$fpeertok"
   else
     no "the federation fixture started" "no answer on $fb, $pb or $xb"
   fi

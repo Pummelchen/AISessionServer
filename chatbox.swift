@@ -15,7 +15,8 @@
 //        [--stale-after SECONDS]   (default 604800 = 7 days; 0 disables)
 //        With no token at all the board is OPEN to anyone who can reach the port.
 //
-// Federation, one hop, optional: --peer URL --peer-token SECRET [--server-id NAME] [--max-hops N]
+// Federation, one hop, optional: --peer URL (--peer-token-file PATH | --peer-token SECRET)
+//                                 [--server-id NAME] [--max-hops N]
 // forwards a message for a repo no session here claims to the peer board.
 //
 // Operator modes, which run and exit rather than listen:
@@ -1584,7 +1585,8 @@ final class Chatbox: @unchecked Sendable {
         and may only claim repos inside its namespaces. It can still send to any
         repo, which is the point: "whoever owns <repo>, I have a bug to discuss".
 
-        Federation — one hop, when started with --peer <url> [--peer-token <secret>]:
+        Federation — one hop, when started with --peer <url> and a peer credential
+        (--peer-token-file PATH is preferred; --peer-token <secret> is visible in `ps`):
           A message for a repo nobody on this board claims is forwarded to the peer, which
           stores it under a thread of its own; the response says forwarded_to: or why not.
           A forwarded request carries &hop=<board[,board...]>, and a board never forwards a
@@ -3142,7 +3144,7 @@ final class Chatbox: @unchecked Sendable {
 let valueFlags: Set<String> = ["--port", "--db", "--token", "--token-file", "--stale-after",
                               "--max-body", "--tls-identity", "--tls-password-file", "--prune",
                               "--backup", "--verify-backup", "--idle-timeout", "--max-connections",
-                              "--max-rows", "--server-id", "--peer", "--peer-token",
+                              "--max-rows", "--server-id", "--peer", "--peer-token", "--peer-token-file",
                               "--max-hops"]
 /// Flags that are their own value. A boolean flag at the end of the line is complete, and one
 /// that is handed a value is a mistake worth naming.
@@ -3706,7 +3708,36 @@ if argPresent("--peer") && peerURL.isEmpty {
     FileHandle.standardError.write(Data("chatbox: --peer needs a board URL — refusing to start with a peer that names nothing\n".utf8))
     exit(2)
 }
-let peerToken = argValue("--peer-token", "")
+// The peer credential is the peer's *bootstrap* credential (README), so a copy in `ps` is a copy of
+// the other board's full operator key. `--peer-token-file` is the way in that keeps it off the
+// command line, mirroring `--token-file`; `--peer-token` still works and says what it costs.
+let peerTokenArg = argValue("--peer-token", "")
+let peerTokenFile = argValue("--peer-token-file", "")
+if argPresent("--peer-token-file") && peerTokenFile.isEmpty {
+    FileHandle.standardError.write(Data("chatbox: --peer-token-file was given but names no file\n".utf8))
+    exit(2)
+}
+let peerTokenFromFile: String = {
+    guard !peerTokenFile.isEmpty else { return "" }
+    let p = NSString(string: peerTokenFile).expandingTildeInPath
+    guard let s = try? String(contentsOfFile: p, encoding: .utf8) else {
+        FileHandle.standardError.write(Data("chatbox: cannot read --peer-token-file \(p)\n".utf8))
+        exit(2)
+    }
+    return s.trimmingCharacters(in: .whitespacesAndNewlines)
+}()
+if !peerTokenFile.isEmpty && peerTokenFromFile.isEmpty {
+    FileHandle.standardError.write(Data("chatbox: --peer-token-file \(peerTokenFile) is empty — refusing to forward unauthenticated\n".utf8))
+    exit(2)
+}
+if !peerTokenArg.isEmpty && !peerTokenFromFile.isEmpty {
+    FileHandle.standardError.write(Data("chatbox: give --peer-token or --peer-token-file, not both\n".utf8))
+    exit(2)
+}
+if !peerTokenArg.isEmpty && peerTokenFromFile.isEmpty {
+    FileHandle.standardError.write(Data("chatbox: note: --peer-token on the command line is visible to every local user in `ps`; --peer-token-file keeps it out\n".utf8))
+}
+let peerToken = peerTokenFromFile.isEmpty ? peerTokenArg : peerTokenFromFile
 if peerURL.isEmpty && !peerToken.isEmpty {
     FileHandle.standardError.write(Data("chatbox: --peer-token means nothing without --peer\n".utf8))
     exit(2)
