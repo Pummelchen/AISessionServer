@@ -3479,9 +3479,29 @@ if [ -n "${CHATBOX_BIN:-}" ] && command -v sqlite3 >/dev/null 2>&1; then
       "$("$CHATBOX_BIN" --verify-backup "$bdir/stale.sqlite" 2>&1)" "backup ok"
     bstale="$("$CHATBOX_BIN" --db "$bdb" --verify-backup "$bdir/stale.sqlite" 2>&1)"; bstalertc=$?
     equals "but is refused when compared with the board it names" "$bstalertc" "1"
-    contains "and the refusal names the table and both counts" "$bstale" \
-      "messages: 0 in the copy,"
+    contains "and the refusal names the table and both fingerprints" "$bstale" \
+      "messages: 0:0:0.0 in the copy,"
     contains "naming the board it compared with" "$bstale" "in $bdb"
+
+    # A copy of the same *size* that is a different board: one message dropped and another added
+    # leaves every count equal, which is all `--verify-backup` compared before this - it answered
+    # "compared with: …" and exit 0 for a copy that was not current. The fingerprint (rows, highest
+    # rowid, sum of rowids) is what tells them apart.
+    # A *fresh* backup, because `good.sqlite` was taken before the section added its later messages:
+    # the point of this fixture is a copy whose counts match the board *now*, which is the state in
+    # which the old count-only comparison said "compared with" and exit 0.
+    rm -f "$bdir/swapbase.sqlite" "$bdir/swapped.sqlite"
+    "$CHATBOX_BIN" --db "$bdb" --backup "$bdir/swapbase.sqlite" >/dev/null 2>&1
+    cp "$bdir/swapbase.sqlite" "$bdir/swapped.sqlite"
+    sqlite3 "$bdir/swapped.sqlite" "DELETE FROM messages WHERE id=(SELECT MAX(id) FROM messages);
+      INSERT INTO messages (thread_id,created_at,sender,repo,subject,body,reply_to,recipients,origin)
+      VALUES (1,'2020-01-01T00:00:00Z','z','-','s','replacement',0,'x','');" >/dev/null 2>&1
+    bswapa="$(sqlite3 "$bdir/swapped.sqlite" "select count(*) from messages;")"
+    bswapb="$(sqlite3 "$bdb" "select count(*) from messages;")"
+    equals "the tampered fixture has the same message count as the board" "$bswapa" "$bswapb"
+    bswap="$("$CHATBOX_BIN" --db "$bdb" --verify-backup "$bdir/swapped.sqlite" 2>&1)"; bswaprc=$?
+    equals "a copy with the same counts but different rows is refused" "$bswaprc" "1"
+    contains "and the refusal shows the fingerprint that differs" "$bswap" "messages: "
 
     # Empty and short copies, which is what the incident left behind.
     : > "$bdir/zero.sqlite"

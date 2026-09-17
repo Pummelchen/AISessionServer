@@ -1341,6 +1341,12 @@ m('292-audit0073-silentexec',
 # held write lock let the UPDATEs auto-commit one at a time and the board still start.
 # AUDIT #0071: the peer credential can come from a file. This is the pre-fix wiring - the file is
 # read and checked, and then ignored, which is what a board that never had the flag would do.
+# AUDIT #0070: `--verify-backup` compared row counts, so a copy that lost one row and gained
+# another verified as current. This is the pre-fix comparison - the count part of each fingerprint.
+m('295-audit0070-countsonly',
+  r'''    let differing = boardTables.filter { prints[$0] != sourcePrints[$0] }''',
+  r'''    let differing = boardTables.filter { (prints[$0]?.split(separator: ":").first ?? "") != (sourcePrints[$0]?.split(separator: ":").first ?? "") }''')
+
 m('294-audit0071-notokenfile',
   r'''let peerToken = peerTokenFromFile.isEmpty ? peerTokenArg : peerTokenFromFile''',
   r'''let peerToken = peerTokenArg''')

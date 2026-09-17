@@ -3253,24 +3253,36 @@ enum BoardRead {
     case problem(String)
 }
 
-func boardCounts(_ path: String) -> BoardRead {
-    var db: OpaquePointer?
+/// Open a board file read-only and prove it *is* a board: the same open both readers below use, so
+/// the immutable-snapshot rule and the integrity rule cannot drift apart. Returns the reason it is
+/// not a board, or nil with `db` set for the caller to close - and it closes the handle itself on
+/// every failure, so a caller never touches a half-open one.
+func openBoard(_ path: String, _ db: inout OpaquePointer?) -> String? {
     let pending = hasPendingWAL(path)
     let target = pending ? path : "file:\(uriPath(path))?immutable=1"
     let flags = pending ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READONLY | SQLITE_OPEN_URI)
     guard sqlite3_open_v2(target, &db, flags, nil) == SQLITE_OK else {
         let why = String(cString: sqlite3_errmsg(db))
         sqlite3_close(db)
-        return .problem("cannot be opened (\(why))")
+        return "cannot be opened (\(why))"
     }
-    defer { sqlite3_close(db) }
     // Integrity first: a half-copied file can open and still be unreadable.
     guard let integrity = sqliteText(db, "PRAGMA integrity_check") else {
-        return .problem("cannot be read (\(String(cString: sqlite3_errmsg(db))))")
+        let why = "cannot be read (\(String(cString: sqlite3_errmsg(db))))"
+        sqlite3_close(db)
+        return why
     }
     guard integrity == "ok" else {
-        return .problem("fails its integrity check (\(integrity))")
+        sqlite3_close(db)
+        return "fails its integrity check (\(integrity))"
     }
+    return nil
+}
+
+func boardCounts(_ path: String) -> BoardRead {
+    var db: OpaquePointer?
+    if let why = openBoard(path, &db) { return .problem(why) }
+    defer { sqlite3_close(db) }
     var out: [String: Int] = [:]
     for table in boardTables {
         guard let n = sqliteText(db, "SELECT COUNT(*) FROM \(table)") else {
@@ -3279,6 +3291,26 @@ func boardCounts(_ path: String) -> BoardRead {
         out[table] = Int(n)
     }
     return .counts(out)
+}
+
+/// The same read as `boardCounts`, but per table it returns *rows, the highest rowid and the sum of
+/// the rowids*. `COUNT(*)` alone lets a copy that lost a row and gained another verify as current -
+/// a pruned message replaced by a newer one has the same total - which is the one thing
+/// `--verify-backup` exists to catch. The reason a file is not a board is carried out in the same
+/// sentence-producing shape as `boardCounts`, so the caller can print it unchanged.
+func boardFingerprints(_ path: String) -> (prints: [String: String]?, why: String?) {
+    var db: OpaquePointer?
+    if let why = openBoard(path, &db) { return (nil, why) }
+    defer { sqlite3_close(db) }
+    var out: [String: String] = [:]
+    for table in boardTables {
+        let sql = "SELECT COUNT(*) || ':' || IFNULL(MAX(rowid), 0) || ':' || IFNULL(TOTAL(rowid), 0) FROM \(table)"
+        guard let v = sqliteText(db, sql) else {
+            return (nil, "has no usable `\(table)` table (\(String(cString: sqlite3_errmsg(db))))")
+        }
+        out[table] = v
+    }
+    return (out, nil)
 }
 
 /// The `agents=3 threads=5 …` line, shared by both modes so the two outputs cannot drift.
@@ -3317,20 +3349,18 @@ func readBoard(_ path: String) -> BoardRead {
 func verifyBoard(_ path: String, against sourcePath: String) -> String? {
     let shown = NSString(string: path).expandingTildeInPath
     let source = NSString(string: sourcePath).expandingTildeInPath
-    let counts: [String: Int]
-    switch readBoard(shown) {
-    case .counts(let c): counts = c
-    case .problem(let why): return why
-    }
-    let sourceCounts: [String: Int]
-    switch readBoard(source) {
-    case .counts(let c): sourceCounts = c
-    case .problem(let why): return "\(why), so there is nothing to compare \(shown) with"
-    }
-    let differing = boardTables.filter { counts[$0] != sourceCounts[$0] }
+    let read = boardFingerprints(shown)
+    if let why = read.why { return why }
+    let prints = read.prints ?? [:]
+    let sourceRead = boardFingerprints(source)
+    if let why = sourceRead.why { return "\(why), so there is nothing to compare \(shown) with" }
+    let sourcePrints = sourceRead.prints ?? [:]
+    let differing = boardTables.filter { prints[$0] != sourcePrints[$0] }
     if !differing.isEmpty {
+        // Rows:max(rowid):sum(rowid) per table, so an operator can see *how* the copy differs and not
+        // only that it does.
         let detail = differing.map {
-            "\($0): \(counts[$0] ?? 0) in the copy, \(sourceCounts[$0] ?? 0) in \(source)"
+            "\($0): \(prints[$0] ?? "?") in the copy, \(sourcePrints[$0] ?? "?") in \(source)"
         }
         return "\(shown) is out of date — " + detail.joined(separator: "; ")
     }
