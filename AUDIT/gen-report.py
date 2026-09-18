@@ -56,6 +56,24 @@ def main() -> None:
             )
         lines.append("")
 
+    pe = audit.get("phase_e")
+    if pe:
+        lines += [
+            "## Phase E — independent verification",
+            "",
+            f"- Host: {pe['host']}; revision `{pe['revision']}`; {pe['clone']}",
+            f"- Build: {pe['build']}",
+            f"- Strict typecheck: {pe['strict_typecheck']}",
+            f"- Gates: {pe['gates']}",
+            f"- Scanners: {pe['scanners']}",
+            f"- Suite: {pe['suite']}",
+            f"- Coverage: {pe['coverage']}",
+            f"- Placeholders: {pe['placeholders']}",
+            f"- Ledger open: {pe['ledger_open']}",
+            f"- **Result: {pe['result']}**",
+            "",
+        ]
+
     lines += [
         "## Evidence",
         "",

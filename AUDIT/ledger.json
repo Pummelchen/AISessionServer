@@ -5,7 +5,7 @@
     "standard": {
       "swift": "6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors",
       "sh": "POSIX sh, sh -n + dash -n + shellcheck",
-      "python": "n/a - no Python in the repository",
+      "python": "Python 3.14 — Ruff format + lint (ruff.toml: B, E722, S101, PT) on the two committed AUDIT/*.py helpers",
       "dotnet": "n/a",
       "c": "n/a"
     },
@@ -38,7 +38,21 @@
         "why": "GitHub Actions workflow linter, used by task #0006 and Phase E",
         "rollback": "`brew uninstall actionlint`"
       }
-    ]
+    ],
+    "phase_e": {
+      "host": "node2 (Mac mini M2, 8 GB, macOS 27.0, Swift 6.4, Xcode 27)",
+      "revision": "d47eda1",
+      "clone": "fresh `git clone --branch audit/2026-09-15` from origin",
+      "build": "xcrun swiftc -O: 0 diagnostics for both binaries; `lipo -archs` = arm64",
+      "strict_typecheck": "0 errors / 0 warnings for both binaries",
+      "gates": "swift-format lint --strict 0; swiftlint lint --strict 0; sh -n + dash -n + shellcheck 0 on all three scripts; ruff check + format --check 0",
+      "scanners": "gitleaks full history no leaks; semgrep p/swift 0; CodeQL green in CI; one accepted alert waived in AUDIT/waivers.md W-01",
+      "suite": "tests/protocol.sh 1163 passed / 0 failed",
+      "coverage": "llvm-cov over the suite: 84.89% regions, 92.30% lines, 72.15% functions",
+      "placeholders": "0 production placeholders (the 5 marker matches are mktemp XXXXXX templates)",
+      "ledger_open": 0,
+      "result": "PASSED end to end in one clean run"
+    }
   },
   "tasks": [
     {
