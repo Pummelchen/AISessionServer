@@ -261,8 +261,11 @@ publish() {
         *) die "the published notes do not quote the digest $_want_sha" ;;
     esac
     note "published and verified: v$_v, sha256 $_want_sha"
-    gh release view "v$_v" --repo "$REPO_SLUG" --json tagName,isLatest,assets \
-        --jq '"release: \(.tagName) latest=\(.isLatest) assets=\(.assets | length)"'
+    # `gh release view` has no isLatest field; ask the API for the latest release instead, and compare.
+    _latest="$(gh api "repos/$REPO_SLUG/releases/latest" --jq .tag_name)"
+    [ "$_latest" = "v$_v" ] || die "the latest release is $_latest, not v$_v"
+    gh release view "v$_v" --repo "$REPO_SLUG" --json tagName,isDraft,isPrerelease,assets \
+        --jq '"release: \(.tagName) draft=\(.isDraft) prerelease=\(.isPrerelease) assets=\(.assets | length)"'
 }
 
 case "${1:---dry-run}" in
