@@ -4939,16 +4939,19 @@ two"
     # ---- forwards run concurrently, so one slow peer does not serialise the rest ----
     # The queue used to be serial: the Nth forward waited behind N-1 peer timeouts while its sender's
     # connection stayed open. A concurrent HTTPServer (nc -k handles one connection at a time and
-    # cannot show this) answers each POST with the chatbox success line after a short pause and
-    # records the peak number of requests in flight at once.
+    # cannot show this) holds each POST until three are in flight, records the peak, and only then
+    # answers. It writes a ready file once bound, so a loaded runner cannot start the board before
+    # the peer is listening - the first cut slept 0.7s and on CI the forwards reached nothing.
     if command -v python3 >/dev/null 2>&1; then
       concport="${CHATBOX_FED_CONC_PORT:-9415}"
       concbase="http://127.0.0.1:$((concport + 1))"
       concpeak="$SCRATCH/fed-conc-${RUN}.txt"
-      rm -f "$concpeak"
-      python3 - "$concport" "$concpeak" <<'PY' &
+      concready="$concpeak.ready"
+      conclog="$SCRATCH/fed-conc-peer-${RUN}.log"
+      rm -f "$concpeak" "$concready"
+      python3 - "$concport" "$concpeak" "$concready" >"$conclog" 2>&1 <<'PY' &
 import http.server, socketserver, sys, threading, time
-port, out = int(sys.argv[1]), sys.argv[2]
+port, out, ready = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 cond = threading.Condition()
 live = 0
 peak = 0
@@ -4962,23 +4965,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if live > peak:
                 peak = live
             cond.notify_all()
-            # Hold every request until three are in flight, or 8s have passed. A concurrent board
+            # Hold every request until three are in flight, or 5s have passed. A concurrent board
             # reaches three at once; a serial one never does, and the peak it leaves behind is 1.
             # This waits on the condition rather than sampling a sleep window, so it cannot race
-            # with a loaded runner: the peer decides when to answer, not the suite's clock.
-            deadline = time.monotonic() + 8
+            # with a loaded runner. 5s stays well inside the board's 10s forward timeout.
+            deadline = time.monotonic() + 5
             while live < 3 and time.monotonic() < deadline:
                 cond.wait(timeout=deadline - time.monotonic())
-        body = b'ok posted\nmessage: 1\n'
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/plain; charset=utf-8')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-        with cond:
+            # The verdict is written before the response: if the board already gave up, the write
+            # below raises and the check must still see what the peer observed.
             live -= 1
             with open(out, 'w') as fh:
                 fh.write(str(peak))
+        body = b'ok posted\nmessage: 1\n'
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
 
     def log_message(self, *args):
         pass
@@ -4986,34 +4993,46 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
-Server(('127.0.0.1', port), Handler).serve_forever()
+server = Server(('127.0.0.1', port), Handler)
+with open(ready, 'w') as fh:
+    fh.write('1')
+server.serve_forever()
 PY
       concpid=$!
-      sleep 0.7
-      fed_start conc "$((concport + 1))" --peer "http://127.0.0.1:$concport" --peer-token "$TOKEN"
-      if fed_wait "$concbase" "$((concport + 1))" conc; then
-        for _i in 1 2 3; do
-          ( fed_post "$concbase" /message "$TOKEN" --data-urlencode "from=$FX" \
-              --data-urlencode "repo=$FED_REPO" --data-urlencode "body=conc$_i-$fedmark" \
-              >/dev/null 2>&1 ) &
-        done
-        # Wait for the peer's report rather than sleeping a fixed window: the peer holds each request
-        # until three are in flight or its own 8s deadline passes, so the file appearing *is* the
-        # verdict, and it appears even on a serial board (with peak 1).
-        _concwaited=0
-        while [ ! -s "$concpeak" ] && [ "$_concwaited" -lt 40 ]; do
-          sleep 0.5
-          _concwaited=$((_concwaited + 1))
-        done
-        _concvalue="$(cat "$concpeak" 2>/dev/null)"
-        if [ -n "$_concvalue" ] && [ "$_concvalue" -ge 2 ] 2>/dev/null; then
-          ok "forwards to one peer are not serialised (peak $_concvalue in flight)"
-        else
-          no "forwards to one peer are not serialised" \
-            "the peer saw peak '${_concvalue:-nothing}' in flight"
-        fi
+      _concwaited=0
+      while [ ! -s "$concready" ] && [ "$_concwaited" -lt 60 ]; do
+        sleep 0.25
+        _concwaited=$((_concwaited + 1))
+      done
+      if [ ! -s "$concready" ]; then
+        no "the concurrent-peer fixture started" \
+          "the python peer never bound $concport: $(tail -1 "$conclog" 2>/dev/null)"
       else
-        no "the concurrent-peer fixture started" "no answer on $concbase"
+        fed_start conc "$((concport + 1))" --peer "http://127.0.0.1:$concport" --peer-token "$TOKEN"
+        if fed_wait "$concbase" "$((concport + 1))" conc; then
+          for _i in 1 2 3; do
+            ( fed_post "$concbase" /message "$TOKEN" --data-urlencode "from=$FX" \
+                --data-urlencode "repo=$FED_REPO" --data-urlencode "body=conc$_i-$fedmark" \
+                >/dev/null 2>&1 ) &
+          done
+          # Wait for the peer's report rather than sleeping a fixed window: the peer holds each
+          # request until three are in flight or its own 5s deadline passes, so the file appearing
+          # *is* the verdict, and it appears even on a serial board (with peak 1).
+          _concwaited=0
+          while [ ! -s "$concpeak" ] && [ "$_concwaited" -lt 60 ]; do
+            sleep 0.5
+            _concwaited=$((_concwaited + 1))
+          done
+          _concvalue="$(cat "$concpeak" 2>/dev/null)"
+          if [ -n "$_concvalue" ] && [ "$_concvalue" -ge 2 ] 2>/dev/null; then
+            ok "forwards to one peer are not serialised (peak $_concvalue in flight)"
+          else
+            no "forwards to one peer are not serialised" \
+              "the peer saw peak '${_concvalue:-nothing}' in flight; peer log: $(tail -1 "$conclog" 2>/dev/null)"
+          fi
+        else
+          no "the concurrent-peer fixture started" "no answer on $concbase"
+        fi
       fi
       kill "$concpid" 2>/dev/null
       wait "$concpid" 2>/dev/null
