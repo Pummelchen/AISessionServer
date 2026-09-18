@@ -175,6 +175,13 @@ func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
 /// `CHATBOX_REVISION`, for example `CHATBOX_REVISION="$(git rev-parse --short HEAD)"`.
 let sourceRevision = ProcessInfo.processInfo.environment["CHATBOX_REVISION"] ?? "source"
 
+/// The product version, mirrored from the repository's `VERSION` file. That file is the single
+/// source of truth (§1.3 of RELEASE.md); this constant is a mirror, and both `release.sh --check`
+/// and CI refuse when the two disagree, so a release cannot be built from a bump that was half
+/// applied. The MCP adapter's `serverInfo.version` is the second mirror, and its `protocolVersion`
+/// is a separate axis (a protocol draft) that is deliberately not dragged along.
+let productVersion = "1.0.0"
+
 func buildIdentity() -> String {
     var info = stat()
     let exe = CommandLine.arguments.first ?? "chatbox"
@@ -184,7 +191,7 @@ func buildIdentity() -> String {
     } else {
         built = "unknown"
     }
-    return "build: \(sourceRevision) — \(exe), stamped \(built)"
+    return "build: \(productVersion) (\(sourceRevision)) — \(exe), stamped \(built)"
 }
 
 /// The command line, for `--help`. The long form of this text is the server's own usage answer

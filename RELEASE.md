@@ -184,23 +184,42 @@ Leave previous releases' notes and performance tables alone.
 
 # Part 2 — This repository
 
-## AISessionServer — Shell, no release yet
+## AISessionServer — Shell, semantic version
 
-- **Identity** semantic version, not yet established. There is no `VERSION` file and
-  no tag, so §1.3 applies in full the moment the first release is cut; the MCP
-  adapter's `protocolVersion`/`serverInfo.version` are a protocol draft, a separate
-  axis (§1.3), and are not the product version.
+- **Identity is established and enforced.** `VERSION` at the repository root is the
+  single source of truth. It is mirrored by `productVersion` in
+  `src/chatbox/Support.swift` and by `serverInfo.version` in
+  `src/chatbox-mcp/chatbox-mcp.swift`; `./release.sh --check` refuses when a mirror
+  disagrees, and CI runs it, so a bump that is half applied fails the build rather
+  than shipping. `./release.sh --sync` writes the mirrors from `VERSION` (one edit
+  plus one command). The version is observable from the artifact alone: `chatbox
+  --version` and `/health` print `build: <version> (<revision>) — <exe>, stamped
+  <time>`, and the MCP handshake reports it as `serverInfo.version`. The adapter's
+  `protocolVersion` (`2024-11-05`) is a protocol draft, a separate axis (§1.3), and
+  is deliberately not dragged along.
+- **The release driver is `./release.sh`.** It is dry-run by default; `--publish` is
+  the explicit flag §1.2.6 requires. It enforces the preconditions (§1.4: arm64
+  host, clean tree, on `main`, no competing build, disk, `gh` auth), runs the §1.5
+  gates (committed lint configs, the full suite, a clean scratch build whose log is
+  scanned for warnings, `lipo -archs` = `arm64`), packages
+  `AISessionServer-<version>-macos-arm64.tar.gz` (the two binaries, the client,
+  `LICENSE`, `README-binaries.txt`), writes the `.sha256`, substitutes the checksum
+  block in `docs/release-notes-v<version>.md`, tags `v<version>` and publishes with
+  `gh release create … --latest`, then downloads the archive back and verifies it
+  hashes to the local digest (§1.9).
 - **The lint and standard gates are committed, not improvised.** `.swift-format` and
   `.swiftlint.yml` are in the tree, and `ci.yml` runs each as a gate:
   `xcrun swift-format lint --strict`, `swiftlint lint --strict`, and the strict
   concurrency typecheck (`-swift-version 6 -strict-concurrency=complete
   -warnings-as-errors`). A release runs the same commands locally before the clean
   build (§1.5). The repository carries no Python, so there is no Python gate.
+- **The minimum OS is macOS 15** (the server uses Swift's `Mutex`, available from
+  macOS 15). The archive's `README-binaries.txt` states the floor, that the build is
+  arm64-only, and that it is not signed or notarized, with the quarantine command.
 - **Two Swift binaries are compiled, but neither is committed.** `xcrun swiftc -O
   src/chatbox/*.swift -o chatbox`, and `xcrun swiftc -O src/chatbox-mcp/*.swift -o
-  chatbox-mcp`; both outputs are gitignored. A release would therefore carry either the built binaries (native
-  `arm64` only, per §1.2.1–§1.2.4) or a tagged source archive with a documented entry
-  point. There is no release script.
+  chatbox-mcp`; both outputs are gitignored, and the release carries the built
+  binaries (native `arm64` only, per §1.2.1–§1.2.4).
 - **The client is one file on purpose.** `chatbox-cli.sh` is installed by copying it
   to `~/.local/bin/chatbox` on each machine; it is not split into sourced libraries,
   because that would turn installation into a build step. Any reorganisation must keep

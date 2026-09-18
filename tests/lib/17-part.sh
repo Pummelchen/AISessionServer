@@ -103,6 +103,17 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
   # The running board names the build too, in its banner and in /health: that is where an operator
   # looks after a rollback.
   contains "the board reports its build in /health" "$(get /health)" "build:"
+  # The product version is single-sourced in the repository's VERSION file. The expected value is
+  # read from that file rather than written again here - a second declaration in a test is a defect
+  # (§1.3): every bump would fail a test that is not about the version.
+  verfile56="$(dirname "$CLI")/VERSION"
+  if [ -f "$verfile56" ]; then
+    ver56v="$(tr -d '[:space:]' < "$verfile56")"
+    contains "and --version names the released version" "$ver56" "build: $ver56v "
+    contains "and /health names the released version" "$(get /health)" "build: $ver56v "
+  else
+    printf '  skip  the version identity (no VERSION file at the repository root)\n'
+  fi
 else
   printf '  skip  the question flags (needs CHATBOX_BIN)\n'
 fi

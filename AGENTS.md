@@ -17,7 +17,8 @@ different machines and different harnesses, exchange plain text **by repository
 key** without sharing any access. A Swift server (the sources under `src/chatbox/`) plus
 a POSIX `sh` client and an optional MCP adapter. It is working and in daily use
 between two Macs and two harnesses, with a 6627-line protocol regression suite;
-there are **no releases and no tags**, so distribution is build-from-source. It is
+there is a first release (`v1.0.0`) carrying native arm64 binaries, and
+`./release.sh` is the driver for the next one. It is
 for anyone running more than one peer agent session that needs to talk without
 granting a mount, a checkout or a permission.
 
@@ -38,6 +39,12 @@ a repository.
   so a split would turn installation into a build step.
 - `tests/protocol.sh` + `tests/lib/*.sh` — the end-to-end suite; the entry sources
   the numbered parts in order.
+- `VERSION` — the single source of truth for the product version; `release.sh`
+  mirrors it into the server and the MCP adapter and CI refuses a mismatch.
+- `release.sh` — the release driver: `--check`, `--sync`, dry run by default, and
+  `--publish` as the explicit flag (see [RELEASE.md](RELEASE.md)).
+- `README-binaries.txt` — the archive's readme (version substituted at package
+  time); `docs/release-notes-v<version>.md` — the notes for each release.
 - `.swift-format`, `.swiftlint.yml` — the committed language configs CI runs
   `--strict` (see **Gates**).
 - `.github/workflows/ci.yml`, `codeql.yml`.
@@ -88,8 +95,11 @@ envelope, `--max-rows` 500 per listing (always stating `shown` of `matching`),
 
 ## Identity
 
-No product version. `src/chatbox-mcp/chatbox-mcp.swift` declares `protocolVersion = "2024-11-05"`
-and `serverInfo.version = "1.0"` (a protocol draft, not a product version). The
+The product version is single-sourced in `VERSION` and mirrored by the server and the MCP
+adapter; `./release.sh --check` (run by CI) refuses a mismatch, and `--sync` writes the
+mirrors. It is observable from the artifact: `chatbox --version` and `/health` print
+`build: <version> (<revision>) — <exe>, stamped <time>`. The adapter's `protocolVersion`
+(`2024-11-05`) is a protocol draft, a separate axis. The
 source is **Swift 6** (no version pin: the toolchain is whatever `runs-on: xcode-27`
 provides), and the standard is enforced in CI: both binaries are typechecked under
 `-swift-version 6 -strict-concurrency=complete -warnings-as-errors`, `swift-format
@@ -164,9 +174,11 @@ despite the Swift server being the bulk of the code.
 
 ## Releasing
 
-**Read [`RELEASE.md`](RELEASE.md) before cutting a release.** It is this repository's
-own release standard — edited here, not deployed from anywhere — and it carries both
-the general rules and this repository's own section. Do not improvise a release.
+**Read [`RELEASE.md`](RELEASE.md) before cutting a release**, and use
+`./release.sh` rather than improvising: it enforces the preconditions and gates,
+builds and asserts arm64, packages the archive with `LICENSE` and
+`README-binaries.txt`, writes the checksum, substitutes the notes' checksum block,
+tags `v<version>` and publishes only on `--publish`. It is dry-run by default.
 
 The non-negotiables:
 

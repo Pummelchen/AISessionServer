@@ -241,6 +241,12 @@ if [ -x "$mcp_bin" ]; then
   mcp_init="$(mcp_say '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}')"
   contains "the adapter answers initialize" "$mcp_init" '"protocolVersion":"2024-11-05"' 
   contains "and names itself" "$mcp_init" '"name":"chatbox"'
+  # The product version, read from the repository's VERSION file (§1.3): the adapter's
+  # serverInfo.version is a mirror of it, while protocolVersion above is a separate axis.
+  mcp_verfile="$(dirname "$CLI")/VERSION"
+  if [ -f "$mcp_verfile" ]; then
+    contains "and reports the released version" "$mcp_init" "\"version\":\"$(tr -d '[:space:]' < "$mcp_verfile")\""
+  fi
   mcp_list="$(mcp_say '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
   for mcp_tool in register say inbox thread ack peers; do
     contains "the adapter exposes $mcp_tool" "$mcp_list" "\"name\":\"$mcp_tool\""

@@ -55,6 +55,11 @@ jobs:
           xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck src/chatbox/*.swift
           xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck src/chatbox-mcp/*.swift
 
+      # §1.3 of RELEASE.md: the version is single-sourced in VERSION and mirrored in the server and
+      # the MCP adapter. A bump that is half applied fails here, not at release time.
+      - name: Version identity
+        run: ./release.sh --check
+
       # The committed formatter and linter configs, run with --strict so a style regression fails
       # the build instead of becoming a review comment. swift-format ships with the toolchain;
       # SwiftLint is installed only if the runner image does not already carry it.
