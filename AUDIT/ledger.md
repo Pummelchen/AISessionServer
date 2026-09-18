@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 14 | done: 81 | blocked: 0 | total: 95** (S0 7, S1 31, S2 49, S3 8)
+**Open: 13 | done: 83 | blocked: 0 | total: 96** (S0 7, S1 31, S2 50, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -74,7 +74,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0066](#0066) | S2 | M1 | `chatbox.swift:1934` | SSE ticks run three board-wide COUNT(*) queries on the shared serial queue every 0.5 s per stream | perf | **START** | node1 | phase-B/L5-performance |
 | [0067](#0067) | S2 | M1 | `chatbox.swift:2017` | Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s | perf | **START** | node1 | phase-B/L5-performance |
 | [0068](#0068) | S2 | M1 | `chatbox.swift:2179` | Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop | bug | **START** | node1 | phase-B/L2-server-http |
-| [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **TEST** | node1 | phase-B/L7-ops |
+| [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **DONE** | node1 | phase-B/L7-ops |
 | [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **DONE** | node1 | phase-B/L2-server-core |
 | [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **DONE** | node1 | phase-B/L4-security |
 | [0072](#0072) | S2 | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **DONE** | node1 | phase-B/L4-security |
@@ -97,6 +97,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0092](#0092) | S2 | M5 | `.github/workflows/ci.yml:45` | CI builds with -O only, so the audit build standard is not enforced and can regress silently | test | **DONE** | node1 | audit/0001 closure |
 | [0093](#0093) | S2 | M8 | `(repository state)` | The audit branch was reconciled with nine commits that landed on main while it ran | deps | **DONE** | node1 | main moved during the audit |
 | [0094](#0094) | S2 | M4 | `tests/protocol.sh:1515,4471` | Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board | test | **DONE** | node1 | new-this-session (the audit/0062 verification run) |
+| [0096](#0096) | S2 | M7 | `AUDIT/mutate.sh:1714 ; tests/protocol.sh:271` | The mutation matrix could only run cells serially and probed the suite's literal fixture ports, so a full sweep could not fit one slot and a per-cell port override was invisible to the preflight | test | **DONE** | node1 | audit/0069 verification run |
 | [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
 | [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **DONE** | node1 | phase-A |
 | [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **DONE** | node1 | L0 secret-scan triage |
@@ -1135,7 +1136,7 @@ CONFIDENCE: medium
 - **Severity / category / module:** S2 / incomplete / M1
 - **Location:** `chatbox.swift:2598`
 - **Title:** No --version, no --help and no build identifier: a rollback cannot be verified
-- **Status:** TEST
+- **Status:** DONE
 - **Evidence (before):** knownFlags (2590-2598) contains no --help/--version, so `./chatbox --help` prints `unknown flag '--help' — refusing to start rather than ignore it` and exits 2. A grep for a version or build string over chatbox.swift and chatbox-cli.sh finds none; the startup banner (3206-3221) and /health list configuration but no build identity. The wiki's build/restart path (Deployment.md:37-51) is rebuild + pkill, and its own troubleshooting table (544) warns a restart may leave the old binary serving.
 
 WHY IT MATTERS: During a rollback the operator cannot tell which binary is actually serving, so 'the restart worked' is unfalsifiable and the documented rebuild-and-kill procedure has no confirmation step.
@@ -1143,7 +1144,10 @@ WHY IT MATTERS: During a rollback the operator cannot tell which binary is actua
 CONFIDENCE: high
 - **Fix:** `--help` and `--version` answer with exit 0 **before the store is opened** (they used to be refused as unknown flags), `buildIdentity()` names the source revision and the executable's own stamp, and the board reports the build in its banner and in `/health`. Section 56 pins six checks, including that a `--db` path handed to either flag is neither opened nor created.
 - **Evidence (after):** TEST so far, and the one step outstanding is named: the **base cell is GREEN at 1127 passed / 0 failed** with section 56's six checks, measured before the check's invocation was bounded (the bound changes only how the check calls the binary, and a working binary behaves identically - verified by hand: the bounded helper gives `rc=0` and the build line for the fixed binary, `rc=99` for a stub that ignores its flags). The **mutant cell is not measured**: the first cut ran the binary unbounded, and mutant `297` ignores the flags and starts a board - it hung the suite and left a mutant process listening on 8787, killed by hand (its `--db` was the mutant's own scratch database; the production board's data was never opened by it, and the incident is recorded in the ledger's destructive-operations table). The check is now bounded at two seconds with `99` meaning 'it did not answer', so the cell can be measured with `ONLY=297-audit0069-noquestionflags sh AUDIT/mutate.sh` (~5 minutes); until that run exists this task is TEST, not DONE.
-- **Notes:** The task is deliberately left at TEST rather than DONE because the brief's gate for DONE includes a cell that goes red, and this one has not been run yet. Nothing else is missing: the flag sets, the handler position (before `Store(...)`, which is what stops either flag touching a database), the identity in three surfaces and the six checks are all committed. The first cut's failure mode is worth keeping in the ledger: an unbounded readiness-style check turns a mutant into a *running board* rather than a red check, which is how it was found.
+
+CELL (gate, measured): `ONLY=297-audit0069-noquestionflags sh AUDIT/mutate.sh` on the frozen revision (task #0096's harness, which the run also validated): the base cell is GREEN at **1127 passed / 0 failed**, the mutant cell is **red at 1123 passed / 4 failed** with exactly the four flag checks failing (`--version answers with exit 0`, `--help answers with exit 0`, `and prints the flags`, `and neither opens (or creates) the database they were pointed at`), and the relative-path cell is GREEN. Transcript: `tests/.scratch/mut/297-audit0069-noquestionflags.out`. That is the cell the task was waiting on, so it is DONE rather than TEST.
+- **Commit:** `780e295`
+- **Notes:** The first cut's failure mode is worth keeping in the ledger: an unbounded readiness-style check turns a mutant into a *running board* rather than a red check - mutant 297 ignores the flags and starts a board, which hung the suite and left a mutant process listening on 8787, killed by hand (its `--db` was the mutant's own scratch database; the production board's data was never opened by it, and the incident is recorded in the ledger's destructive-operations table). The check is now bounded at two seconds with `99` meaning 'it did not answer', which is the version the red cell above was measured against.
 
 ### 0070
 
@@ -1485,6 +1489,24 @@ WHY IT MATTERS: a check that can fail on a busy machine is a check whose red is 
 - **Evidence (after):** TEST: the two refusals were reproduced 25 times in isolation and 30 times under six concurrent CPU burners - exit 2 every time, no `started anyway`. The full suite on the frozen revision 656f78e (chatbox.swift sha256 58439e0f7810dab9) is GREEN at 1063 passed / 0 failed (the base cell of the mutation run for the audit/0062 batch), and both hardened checks run in it. Not weakened: the liveness assertion, the log-phrase assertion and the pass/fail boundary are identical, only the wait for the process to leave is longer and adaptive.
 - **Commit:** `93518cb`
 - **Notes:** Why not a longer flat sleep: the property is that the process *ended*, and no sleep length is evidence of that - only waiting for the exit is. Why not `wait`: it blocks for ever when the refusal did not happen, which is exactly the case the check exists to catch. The two checks were the only flat-sleep refusals in the suite; the other `kill -0` uses are positive liveness probes whose fixture is proved again by the work that follows them.
+
+### 0096
+
+- **Severity / category / module:** S2 / test / M7
+- **Location:** `AUDIT/mutate.sh:1714 ; tests/protocol.sh:271`
+- **Title:** The mutation matrix could only run cells serially and probed the suite's literal fixture ports, so a full sweep could not fit one slot and a per-cell port override was invisible to the preflight
+- **Status:** DONE
+- **Evidence (before):** A full sweep is one whole suite run per cell (measured about 10 minutes on node1), so the 239-cell matrix is tens of hours and cannot be completed in a single slot: there was no way to run cells concurrently.
+
+WHY IT MATTERS: the matrix is the audit's evidence that the suite catches the bugs it claims to; a sweep that cannot finish is evidence that is never produced.
+
+The held-port preflight added for task #0095 read the literal `CHATBOX_*PORT:-N` defaults out of the suite file and probed those numbers, so a caller that overrode a fixture port via the environment (which a per-worker port band must do) would be probed on the wrong number: a held override port went unnoticed, and a free default was the only thing ever checked.
+
+CONFIDENCE: high (both halves are structural, not timing).
+- **Fix:** `AUDIT/mutate.sh` splits the wanted cells across `JOBS` workers; worker w runs main ports `8801+w*120+k` in its own `CHATBOX_SCRATCH`, and shifts every `CHATBOX_*PORT` default the frozen suite declares by `w*2000`. `JOBS` defaults to 1 - the audit brief allows at most one heavy job per 8 GB host, and each worker is a suite that starts several servers - so parallelism is opt-in on a host with headroom. `tests/protocol.sh` resolves the *effective* value of each fixture port (environment override else default) before probing it.
+- **Evidence (after):** TEST (gate, bounded probes, not a full sweep): with a Python `http.server` answering on 8777 - the default `CHATBOX_JSON_PORT` - `sh tests/protocol.sh` exits **2** naming `8777`; with `CHATBOX_JSON_PORT=9877` and the server on 9877 it exits **2** naming `9877`, so it is the override that is probed; with every fixture port free the same invocation proceeds past the preflight to section 1 (observed). The harness itself was exercised end to end by the #0069 run: base cell GREEN at 1127/0, one mutant cell red at 1123/4, relative-path cell GREEN, all through this code. `sh -n`, `dash -n` and `shellcheck -s sh` are clean on both files (mutate.sh 0, protocol.sh 0).
+- **Commit:** `29ce901`
+- **Notes:** This was inherited as an uncommitted working-tree change from the session that produced the #0069 cell; it is recorded and committed here rather than left unrecorded. Honest limit: the multi-worker path is not itself exercised by the default run (JOBS=1), and only one cell has been run through a worker; the port-band arithmetic was checked against every `CHATBOX_*PORT` default in the frozen suite (max fixture default 9410 + 3*2000 = 15410, main bands 8801-9280, no overlap) but a multi-worker full sweep would still be the first run to exercise four bands at once.
 
 ### 0011
 
