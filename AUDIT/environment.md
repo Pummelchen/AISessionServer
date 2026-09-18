@@ -27,8 +27,8 @@ programs:
 | Language | Present | Standard applied |
 |---|---|---|
 | Swift (6.4) | yes — `chatbox.swift`, `chatbox-mcp.swift` | strict concurrency, warnings-as-errors |
-| POSIX `sh` | yes — `chatbox-cli.sh`, `tests/protocol.sh` | `sh -n`, `shellcheck` |
-| Python 3.14 | **no** (only throwaway local helpers, never committed) | n/a |
+| POSIX `sh` | yes — `chatbox-cli.sh`, `tests/protocol.sh`, `AUDIT/mutate.sh` | `sh -n`, `dash -n`, `shellcheck` |
+| Python 3.14 | **audit tooling only** — `AUDIT/gen-ledger.py` (not product code) | Ruff format + lint, `python -m compileall`; no type checker or coverage (brief §1 de-scope for test/glue) |
 | C# / .NET | **no** | n/a |
 | C | **no** | n/a (no sanitizer/C-tooling tasks) |
 | Build system / package manager | **none by design** — `xcrun swiftc` invocations | n/a (no lockfiles) |
@@ -70,15 +70,32 @@ node1 (already installed before this audit, verified by `command -v`), except wh
 | actionlint | 1.7.12 | `brew install actionlint` (installed during the audit) | node1 | GitHub Actions workflow linter |
 | sqlite3 | macOS built-in | — | node1, node2 | schema/row inspection in the suite and audit |
 | curl, nc, openssl | macOS/Homebrew | — | node1, node2 | protocol tests, fixtures |
+| ruff | 0.16.7 | `brew install ruff` (pre-existing) | node1 | formatter + linter for the one audit Python helper |
 
 Re-install everything on a fresh Mac (documented in one line, per §1):
 
 ```sh
 xcode-select --install                                   # Swift 6.4 + SDK
-brew install swiftlint shellcheck gitleaks semgrep dash llvm actionlint
+brew install swiftlint shellcheck gitleaks semgrep dash llvm actionlint ruff
 ```
 
 `swift-format` needs no install: it ships with the 6.4 CommandLineTools (`xcrun swift-format`).
+
+## The ledger is generated, not hand-maintained
+
+`AUDIT/ledger.json` is the machine-readable source of truth (§8) and `AUDIT/ledger.md` is rendered
+from it by `AUDIT/gen-ledger.py`:
+
+```sh
+python3 AUDIT/gen-ledger.py      # rewrites AUDIT/ledger.md from AUDIT/ledger.json
+```
+
+The renderer was adopted after it reproduced the pre-existing `ledger.md` byte-for-byte
+(verified with `diff`), so it changes no recorded content while making the two files unable to
+drift. It is the only committed Python; Ruff (`ruff check AUDIT/gen-ledger.py`,
+`ruff format --check AUDIT/gen-ledger.py`) and `python3 -m compileall` are clean on it, which is
+the whole Python standard for a script that writes no production data and holds no credential.
+
 
 ## Version policy vs. the repository's documented constraint
 
