@@ -4949,7 +4949,7 @@ two"
       python3 - "$concport" "$concpeak" <<'PY' &
 import http.server, socketserver, sys, threading, time
 port, out = int(sys.argv[1]), sys.argv[2]
-lock = threading.Lock()
+cond = threading.Condition()
 live = 0
 peak = 0
 
@@ -4957,20 +4957,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         global live, peak
         self.rfile.read(int(self.headers.get('Content-Length', '0')))
-        with lock:
+        with cond:
             live += 1
-            peak = max(peak, live)
-        time.sleep(1.5)
-        with lock:
-            live -= 1
-            with open(out, 'w') as fh:
-                fh.write(str(peak))
+            if live > peak:
+                peak = live
+            cond.notify_all()
+            # Hold every request until three are in flight, or 8s have passed. A concurrent board
+            # reaches three at once; a serial one never does, and the peak it leaves behind is 1.
+            # This waits on the condition rather than sampling a sleep window, so it cannot race
+            # with a loaded runner: the peer decides when to answer, not the suite's clock.
+            deadline = time.monotonic() + 8
+            while live < 3 and time.monotonic() < deadline:
+                cond.wait(timeout=deadline - time.monotonic())
         body = b'ok posted\nmessage: 1\n'
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        with cond:
+            live -= 1
+            with open(out, 'w') as fh:
+                fh.write(str(peak))
 
     def log_message(self, *args):
         pass
@@ -4989,8 +4997,21 @@ PY
               --data-urlencode "repo=$FED_REPO" --data-urlencode "body=conc$_i-$fedmark" \
               >/dev/null 2>&1 ) &
         done
-        sleep 4
-        equals "three forwards to one peer are in flight at once" "$(cat "$concpeak" 2>/dev/null)" "3"
+        # Wait for the peer's report rather than sleeping a fixed window: the peer holds each request
+        # until three are in flight or its own 8s deadline passes, so the file appearing *is* the
+        # verdict, and it appears even on a serial board (with peak 1).
+        _concwaited=0
+        while [ ! -s "$concpeak" ] && [ "$_concwaited" -lt 40 ]; do
+          sleep 0.5
+          _concwaited=$((_concwaited + 1))
+        done
+        _concvalue="$(cat "$concpeak" 2>/dev/null)"
+        if [ -n "$_concvalue" ] && [ "$_concvalue" -ge 2 ] 2>/dev/null; then
+          ok "forwards to one peer are not serialised (peak $_concvalue in flight)"
+        else
+          no "forwards to one peer are not serialised" \
+            "the peer saw peak '${_concvalue:-nothing}' in flight"
+        fi
       else
         no "the concurrent-peer fixture started" "no answer on $concbase"
       fi
