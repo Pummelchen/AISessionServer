@@ -116,6 +116,27 @@ The same shellcheck (`-s sh`, 0 findings) is clean on `chatbox-cli.sh`, `tests/p
 | Swift SAST | CodeQL Swift (`build-mode: manual`, both binaries) + `semgrep --config p/swift` | — (scanners run in CI and locally; 1 accepted alert is waived in [`waivers.md`](waivers.md)) | semgrep: 0 findings; CodeQL: pinned in CI |
 | Mutation anchors | `AUDIT/mutate.sh` `frag_pattern` | a fragment whose *tokens* are gone aborts the run before any cell executes | the harness prints `ANCHOR PROBLEMS` and exits 1; verified against the formatted and the pre-format source (`prepared 305 mutations` both ways) |
 
+## Dead-symbol sweep (§6.2) — periphery is not runnable here, so say so
+
+`periphery` 3.8.0 is installed, but it cannot scan this repository's layout: it needs an Xcode
+project or a `Package.swift`, and the repository deliberately has neither. A temporary SPM wrapper
+was built to try (two executable targets, Swift 6 language mode, macOS 15) and it compiles both
+sources, but this SwiftPM produces no index store for periphery to read, so periphery exits 1 with
+`index store path does not exist`. Recorded as **not checked by periphery**, not as clean.
+
+The sweep was done instead by reference count: every `func` name declared in the two Swift files and
+the shell client, counted across its own file; a name that occurs only at its declaration is dead.
+
+| File | Declarations | Never referenced |
+|---|---|---|
+| `chatbox.swift` | 137 | 0 |
+| `chatbox-mcp.swift` | 18 | 0 |
+| `chatbox-cli.sh` | 25 | 0 |
+
+The three symbols an earlier pass removed (`HTTPOutcome`, `countOrNil`, `Store.lastSeen(of:)`) have
+0 textual occurrences, and a commented-out-code sweep of the production sources found only prose
+comments (`// for the secret`, `// while the lock is held`), no disabled code.
+
 ## Sanitizers
 
 * **C:** N/A — no C (see above).
