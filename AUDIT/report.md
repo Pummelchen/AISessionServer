@@ -27,6 +27,15 @@ Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-erro
 - Ledger open: 0
 - **Result: PASSED end to end in one clean run**
 
+## Decisions
+
+| id | question | decision |
+|---|---|---|
+| DEC-01 | Tracker of record: the wiki page as the source of truth, or GitHub Issues with the wiki as the dashboard? | GitHub Issues is the queue for work in flight; the wiki Tracker is the map (open work only, in tables); the in-repo AUDIT ledger is the record of evidence and history. |
+| DEC-02 | Repo key form: canonical host/owner/repo, or short aliases such as libfoo? | Canonical `host/owner/repo` only. No short aliases. |
+| DEC-03 | Message transport: keep bodies in the URL query string, or move to the POST body? | The POST body is the transport for message fields; the documented query-string form stays for GETs and for compatibility. |
+| DEC-05 | Retention default: never prune, or prune acknowledged mail after 90 days? | Never prune automatically. `--prune <days>` stays an explicit operator command with a dry run, and stale sessions are reported, never evicted. |
+
 ## Evidence
 
 See [`ledger.md`](ledger.md) for every task's before/after evidence and commit, [`baseline.md`](baseline.md) for the yardstick, [`tool-coverage.md`](tool-coverage.md) for the language-standard and tool-coverage proofs, and [`waivers.md`](waivers.md) for the one accepted scanner finding.

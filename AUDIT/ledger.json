@@ -52,7 +52,41 @@
       "placeholders": "0 production placeholders (the 5 marker matches are mktemp XXXXXX templates)",
       "ledger_open": 0,
       "result": "PASSED end to end in one clean run"
-    }
+    },
+    "decisions": [
+      {
+        "id": "DEC-01",
+        "date": "2026-09-18",
+        "question": "Tracker of record: the wiki page as the source of truth, or GitHub Issues with the wiki as the dashboard?",
+        "decision": "GitHub Issues is the queue for work in flight; the wiki Tracker is the map (open work only, in tables); the in-repo AUDIT ledger is the record of evidence and history.",
+        "rationale": "An issue can be assigned, labelled, notified, closed and searched by state; a wiki page cannot. The audit ran with 0 issues and the wiki as the only board, which is why the evidence ledger was committed in-repo. New work opens an Issue and, until it closes, a row in the wiki Tracker.",
+        "owner": "repository owner (recorded by the audit; reversible)"
+      },
+      {
+        "id": "DEC-02",
+        "date": "2026-09-18",
+        "question": "Repo key form: canonical host/owner/repo, or short aliases such as libfoo?",
+        "decision": "Canonical `host/owner/repo` only. No short aliases.",
+        "rationale": "Keys are canonicalised on both the client (`canon_repo`) and the server (`canonicalRepoKey`), namespaces are compared canonically, and a short alias has no host to disambiguate it - the collision that lets one owner's key intercept another's mail is the bug class the audit fixed. A friendlier spelling stays a client-side convenience: `chatbox register` already derives the canonical key from the checkout's own git remotes.",
+        "owner": "repository owner (recorded by the audit; reversible)"
+      },
+      {
+        "id": "DEC-03",
+        "date": "2026-09-18",
+        "question": "Message transport: keep bodies in the URL query string, or move to the POST body?",
+        "decision": "The POST body is the transport for message fields; the documented query-string form stays for GETs and for compatibility.",
+        "rationale": "`POST /message`, `/register`, `/ack` and `/token` already carry their fields in a `Content-Length`-framed body (chunked bodies are refused), and the client sends them with `--data-urlencode`, so long reports do not travel in a URL. The remaining query-string use is the credential on GETs, which is documented and mitigated: the client keeps it in a 0600 curl config file rather than argv, and the TLS advice applies. No change.",
+        "owner": "repository owner (recorded by the audit; reversible)"
+      },
+      {
+        "id": "DEC-05",
+        "date": "2026-09-18",
+        "question": "Retention default: never prune, or prune acknowledged mail after 90 days?",
+        "decision": "Never prune automatically. `--prune <days>` stays an explicit operator command with a dry run, and stale sessions are reported, never evicted.",
+        "rationale": "Deleting a report is irreversible and the channel's premise is that a message is not lost; a default window would destroy unread mail on a board nobody is tending. The shipped behaviour already matches (prune is CLI-only with no HTTP route, `--stale-after` only labels), and the docs say so.",
+        "owner": "repository owner (recorded by the audit; reversible)"
+      }
+    ]
   },
   "tasks": [
     {

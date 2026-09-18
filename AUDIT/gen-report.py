@@ -74,6 +74,13 @@ def main() -> None:
             "",
         ]
 
+    decisions = audit.get("decisions") or []
+    if decisions:
+        lines += ["## Decisions", "", "| id | question | decision |", "|---|---|---|"]
+        for dec in decisions:
+            lines.append(f"| {dec['id']} | {dec['question']} | {dec['decision']} |")
+        lines.append("")
+
     lines += [
         "## Evidence",
         "",
