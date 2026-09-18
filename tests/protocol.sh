@@ -329,6 +329,17 @@ contains "health via Authorization: Bearer" \
   "$(curl -sS --max-time 20 -H "Authorization: Bearer $TOKEN" "$URL/health")" "ok chatbox up"
 contains "health reports the agent count" "$(get /health)" "agents:"
 contains "health reports the message count" "$(get /health)" "messages:"
+# /health's counts come from the same cache the events feed uses, so a write must move them: a cache
+# keyed on the wrong thing would report a number that stopped changing.
+_hm_before="$(field "$(get /health)" messages)"
+post /message --data-urlencode "from=$A" --data-urlencode "repo=$REPO_APP" \
+  --data-urlencode "body=health-cache-$RUN" >/dev/null
+_hm_after="$(field "$(get /health)" messages)"
+if [ "${_hm_after:-0}" -gt "${_hm_before:-0}" ] 2>/dev/null; then
+  ok "and the count is not stale after a write"
+else
+  no "and the count is not stale after a write" "before=$_hm_before after=$_hm_after"
+fi
 
 if [ "$auth_open" = 0 ]; then
   equals "missing token is rejected" \
@@ -1099,6 +1110,18 @@ if [ -f "$CLI" ]; then
   exec_out="$(watch_run --exec cat)"
   contains "the wake loop can hand the frame to a command" "$exec_out" "execfail $RUN"
   contains "the command receives the same frame" "$exec_out" "UNTRUSTED PEER MESSAGE"
+
+  # --- a long report is delivered whole, not as the listing preview ----------
+  # The default listing draws a 1200-character preview with a truncation marker. `watch` delivers
+  # and then acknowledges in one step, so handing over the preview marked a long report read with its
+  # tail never shown; the loop asks for the full listing instead.
+  long_head="$(awk 'BEGIN { for (i = 0; i < 1400; i++) printf "A" }')"
+  long_tail="TAIL-$RUN"
+  watch_send "${long_head}${long_tail}"
+  contains "the plain inbox still shows only the preview" "$(get /inbox "id=$WV")" "[truncated]"
+  long_out="$(watch_run --exec cat)"
+  contains "the wake loop delivers a long report in full" "$long_out" "$long_tail"
+  lacks "and does not hand the consumer the truncated preview" "$long_out" "[truncated]"
 
   # --- --hook is what a harness Stop hook consumes --------------------------
   watch_send "hook body $RUN"
@@ -2600,7 +2623,11 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ] && command -v sqlite3 
     # The shape the old code would have stored — with a **capitalised** `.GIT`, which the rule
     # only strips after folding. A lowercase `.git` is a one-pass fixed point and would hide a
     # canonicaliser that is not idempotent.
-    sqlite3 "$migdb" "UPDATE agents SET repos='git@Example.Test:Acme/Thing.GIT' WHERE id='$migid';" >/dev/null 2>&1
+    #
+    # `user_version` is reset to 0 with them: the marker records that this database has been
+    # migrated, and this fixture is modelling a board whose rows predate the marker. The board that
+    # ran just above wrote the marker, so without this the (correct) skip would hide the migration.
+    sqlite3 "$migdb" "UPDATE agents SET repos='git@Example.Test:Acme/Thing.GIT' WHERE id='$migid'; PRAGMA user_version=0;" >/dev/null 2>&1
     # A thread and a credential, so all three tables are exercised, plus one value in each that
     # is not a key at all and must be left exactly as it is rather than blanked.
     sqlite3 "$migdb" "INSERT INTO threads (id,repo,subject,created_at,created_by,last_at) VALUES (9001,'HTTPS://Example.Test/Acme/Thing.GIT/','mig thread','2026-01-01T00:00:00Z','a','2026-01-01T00:00:00Z');
@@ -2619,6 +2646,8 @@ UPDATE tokens SET namespaces='GitHub.com/Acme/*' WHERE revoked_at IS NULL AND na
         "$(cat "$SCRATCH/mig2-${RUN}.log")" "normalised:"
       contains "what was left alone is reported too" \
         "$(cat "$SCRATCH/mig2-${RUN}.log")" "left alone"
+      equals "the migration records its completion in the database" \
+        "$(sqlite3 "$migdb" "PRAGMA user_version;")" "1"
       contains "a canonical message reaches the migrated session" \
         "$(curl -sS --max-time 10 -G -X POST --data-urlencode "token=$TOKEN" \
             "http://127.0.0.1:$migport/message" --data-urlencode "from=$A" \
@@ -2629,6 +2658,18 @@ UPDATE tokens SET namespaces='GitHub.com/Acme/*' WHERE revoked_at IS NULL AND na
       if mig_start "$SCRATCH/mig3-${RUN}.log"; then
         lacks "the migration rewrites nothing on a second start" \
           "$(cat "$SCRATCH/mig3-${RUN}.log")" "rewritten to the canonical form"
+      else
+        no "the migration fixture restarted" "no answer on $migport"
+      fi
+      mig_stop
+      # And it is not *run* again either: the completion recorded above means the restart does not
+      # re-read the four tables. A non-canonical key written after the migration therefore stays as
+      # it is — the writes this server accepts are canonical by construction, so the only way to
+      # observe the skip is a row written straight into the database.
+      sqlite3 "$migdb" "UPDATE agents SET repos='git@Example.Test:Acme/Thing.GIT' WHERE id='$migid';" >/dev/null 2>&1
+      if mig_start "$SCRATCH/mig4-${RUN}.log"; then
+        equals "a completed migration is not re-run on the next start" \
+          "$(sqlite3 "$migdb" "select repos from agents where id='$migid';")" "git@Example.Test:Acme/Thing.GIT"
       else
         no "the migration fixture restarted" "no answer on $migport"
       fi
@@ -4357,6 +4398,25 @@ if [ -x "$mcp_bin" ]; then
     '{"jsonrpc":"2.0","id":11,"method":"ping"}' | mcp_session | grep -c '"id":1[01]')"
   equals "two requests get two replies" "$mcp_pair" "2"
 
+  # A tool call does not block the read loop, so a cancellation is deliverable at all and a second
+  # request is answered while the first is still waiting. The old adapter held the single stdio loop
+  # in a semaphore for the whole request, so neither was possible.
+  mcp_slow_id="it-$RUN-mcp-slow"
+  mcp_cancel_id="it-$RUN-mcp-cancel"
+  mcp_order="$(printf '%s\n%s\n' \
+    "{\"jsonrpc\":\"2.0\",\"id\":40,\"method\":\"tools/call\",\"params\":{\"name\":\"inbox\",\"arguments\":{\"id\":\"$mcp_slow_id\",\"wait\":\"3\"}}}" \
+    '{"jsonrpc":"2.0","id":41,"method":"ping"}' | mcp_session)"
+  equals "a second request is answered while a slow call is in flight" \
+    "$(printf '%s\n' "$mcp_order" | sed -n '1p' | grep -c '"id":41')" "1"
+  contains "and the slow call still answers" "$mcp_order" '"id":40'
+  mcp_cancel="$(printf '%s\n%s\n' \
+    "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"inbox\",\"arguments\":{\"id\":\"$mcp_cancel_id\",\"wait\":\"5\"}}}" \
+    '{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}' | mcp_session)"
+  # Counting the id, not `lacks`: an empty answer is exactly the success case here, and `lacks`
+  # treats an empty response as a transport failure so it would report the right behaviour as wrong.
+  equals "a cancelled call gets no response" \
+    "$(printf '%s' "$mcp_cancel" | grep -c '"id":42')" "0"
+
   # A notification has no id and must get no reply: JSON-RPC 2.0 says the server MUST NOT reply to
   # one, and a response keyed to a null id is a protocol error to a strict host. Four notifications
   # and one request must produce exactly one line — the request's. The parse-error case is the one
@@ -4597,6 +4657,9 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
     [ -n "${slowpid:-}" ] && kill "$slowpid" 2>/dev/null
     [ -n "${ncpid:-}" ] && kill "$ncpid" 2>/dev/null
     [ -n "${redirpid:-}" ] && kill "$redirpid" 2>/dev/null
+    [ -n "${fakepid:-}" ] && kill "$fakepid" 2>/dev/null
+    [ -n "${bigpid:-}" ] && kill "$bigpid" 2>/dev/null
+    [ -n "${concpid:-}" ] && kill "$concpid" 2>/dev/null
     return 0
   }
   trap 'fed_cleanup' EXIT INT TERM
@@ -4873,6 +4936,70 @@ two"
       printf '  skip  a peer that accepts and says nothing (needs nc)\n'
     fi
 
+    # ---- forwards run concurrently, so one slow peer does not serialise the rest ----
+    # The queue used to be serial: the Nth forward waited behind N-1 peer timeouts while its sender's
+    # connection stayed open. A concurrent HTTPServer (nc -k handles one connection at a time and
+    # cannot show this) answers each POST with the chatbox success line after a short pause and
+    # records the peak number of requests in flight at once.
+    if command -v python3 >/dev/null 2>&1; then
+      concport="${CHATBOX_FED_CONC_PORT:-9415}"
+      concbase="http://127.0.0.1:$((concport + 1))"
+      concpeak="$SCRATCH/fed-conc-${RUN}.txt"
+      rm -f "$concpeak"
+      python3 - "$concport" "$concpeak" <<'PY' &
+import http.server, socketserver, sys, threading, time
+port, out = int(sys.argv[1]), sys.argv[2]
+lock = threading.Lock()
+live = 0
+peak = 0
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        global live, peak
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        time.sleep(1.5)
+        with lock:
+            live -= 1
+            with open(out, 'w') as fh:
+                fh.write(str(peak))
+        body = b'ok posted\nmessage: 1\n'
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+
+Server(('127.0.0.1', port), Handler).serve_forever()
+PY
+      concpid=$!
+      sleep 0.7
+      fed_start conc "$((concport + 1))" --peer "http://127.0.0.1:$concport" --peer-token "$TOKEN"
+      if fed_wait "$concbase" "$((concport + 1))" conc; then
+        for _i in 1 2 3; do
+          ( fed_post "$concbase" /message "$TOKEN" --data-urlencode "from=$FX" \
+              --data-urlencode "repo=$FED_REPO" --data-urlencode "body=conc$_i-$fedmark" \
+              >/dev/null 2>&1 ) &
+        done
+        sleep 4
+        equals "three forwards to one peer are in flight at once" "$(cat "$concpeak" 2>/dev/null)" "3"
+      else
+        no "the concurrent-peer fixture started" "no answer on $concbase"
+      fi
+      kill "$concpid" 2>/dev/null
+      wait "$concpid" 2>/dev/null
+    else
+      printf '  skip  concurrent forwards (needs python3)\n'
+    fi
+
     # ---- a peer that redirects must not be reported as a delivery ----
     # `URLSession` follows redirects by default, so an http→https peer would answer this board's
     # POST with a GET somewhere else; a final 2xx there is what this board would report as
@@ -4911,6 +5038,70 @@ two"
       wait "$redirpid" 2>/dev/null
     else
       printf '  skip  a redirecting peer (needs nc)\n'
+    fi
+
+    # ---- a 2xx from a host that is not a board must not be reported as a delivery ----
+    # The sender is told `forwarded_to … (ok)`, which only the board's own success line can mean. A
+    # fronting proxy, a captive portal or a mis-pointed --peer answers 2xx to anything, and the old
+    # code reported every 2xx as delivered without reading the answer.
+    if command -v nc >/dev/null 2>&1; then
+      fakeport="${CHATBOX_FED_FAKE_PORT:-9411}"
+      fakebase="http://127.0.0.1:$((fakeport + 2))"
+      { printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 19\r\nConnection: close\r\n\r\nhello from a proxy\n'; sleep 3; } \
+        | nc -k -l "$fakeport" >/dev/null 2>&1 &
+      fakepid=$!
+      sleep 0.5
+      if kill -0 "$fakepid" 2>/dev/null; then
+        ok "the non-board peer is listening"
+      else
+        no "the non-board peer is listening" "nc exited on port $fakeport"
+      fi
+      fed_start fake "$((fakeport + 2))" --peer "http://127.0.0.1:$fakeport" --peer-token "$TOKEN"
+      if fed_wait "$fakebase" "$((fakeport + 2))" fake; then
+        fake="$(fed_post "$fakebase" /message "$TOKEN" --data-urlencode "from=$FX" \
+          --data-urlencode "repo=$FED_REPO" --data-urlencode "body=fake-$fedmark")"
+        contains "a 2xx that is not a chatbox answer is a failure" "$fake" "not like a chatbox board"
+        contains "and it reports what the host actually said" "$fake" "hello from a proxy"
+        lacks "and never claims the message arrived" "$fake" "forwarded_to:"
+        contains "and the message stays on the board that accepted it" "$fake" "ok posted"
+      else
+        no "the non-board-peer fixture started" "no answer on $fakebase"
+      fi
+      kill "$fakepid" 2>/dev/null
+      wait "$fakepid" 2>/dev/null
+    else
+      printf '  skip  a non-board peer (needs nc)\n'
+    fi
+
+    # ---- a peer that streams more than a chatbox answer is cut off, not buffered whole ----
+    # Only the first line is ever read, but the old dataTask buffered the entire body first, and the
+    # peer chooses how large that is. The delegate cancels past the cap, so the sender is told the
+    # answer was too large rather than the board allocating whatever the peer sent.
+    if command -v nc >/dev/null 2>&1; then
+      bigport="${CHATBOX_FED_BIG_PORT:-9408}"
+      bigbase="http://127.0.0.1:$((bigport + 1))"
+      { printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10000000\r\nConnection: close\r\n\r\n'; head -c 200000 /dev/zero | tr '\0' 'A'; sleep 2; } \
+        | nc -k -l "$bigport" >/dev/null 2>&1 &
+      bigpid=$!
+      sleep 0.5
+      if kill -0 "$bigpid" 2>/dev/null; then
+        ok "the streaming peer is listening"
+      else
+        no "the streaming peer is listening" "nc exited on port $bigport"
+      fi
+      fed_start big "$((bigport + 1))" --peer "http://127.0.0.1:$bigport" --peer-token "$TOKEN"
+      if fed_wait "$bigbase" "$((bigport + 1))" big; then
+        big="$(fed_post "$bigbase" /message "$TOKEN" --data-urlencode "from=$FX" \
+          --data-urlencode "repo=$FED_REPO" --data-urlencode "body=huge-$fedmark")"
+        contains "an oversized peer answer is refused, not buffered" "$big" "longer than 65536 bytes"
+        lacks "and never claims the message arrived" "$big" "forwarded_to:"
+      else
+        no "the streaming-peer fixture started" "no answer on $bigbase"
+      fi
+      kill "$bigpid" 2>/dev/null
+      wait "$bigpid" 2>/dev/null
+    else
+      printf '  skip  a streaming peer (needs nc)\n'
     fi
 
     # ---- a board that predates the origin column gains it ----
@@ -6368,6 +6559,91 @@ if [ -n "${CHATBOX_BIN:-}" ] && [ -x "${CHATBOX_BIN:-}" ]; then
 else
   printf '  skip  the question flags (needs CHATBOX_BIN)\n'
 fi
+
+# ---------------------------------------------------------------------------
+# 57. A peer-chosen value cannot forge a line in a read answer
+# The identity fields a session registers (node, agent, harness, session, ip), a message's subject,
+# its sender, its recipients and its repo are all peer text, and every one is interpolated into
+# answers whose shape *is* lines. A value carrying a line break therefore paints lines of its own
+# into a listing an agent reads. `oneLine` is the server's treatment; these checks pin that it is
+# applied on every echo, and that it covers a Unicode line separator as well as CR/LF. Every marker
+# carries $RUN so a match cannot come from another run's or another section's text.
+# ---------------------------------------------------------------------------
+m57="z$RUN"
+eid57="it-$RUN-echo"
+# A U+2028 (LS) is a line separator but not a Cc/Cf control, so the id rule accepts it - the echo is
+# what has to neutralise it. It is built with the octal bytes because a literal would be invisible
+# and editor-dependent.
+rid57="it-$RUN-recip$(printf '\342\200\250')x"
+reg57="$(post /register --data-urlencode "id=$eid57" \
+  --data-urlencode "node=$(printf 'n%s\nX%s' "$m57" "$m57")" \
+  --data-urlencode "agent=$(printf 'a%s\nY%s' "$m57" "$m57")" \
+  --data-urlencode "harness=$(printf 'h%s\nZ%s' "$m57" "$m57")" \
+  --data-urlencode "session=$(printf 's%s\nW%s' "$m57" "$m57")" \
+  --data-urlencode "ip=$(printf '1.2.3.4\nV%s' "$m57")")"
+contains "register flattens a newline in the identity it echoes" "$reg57" \
+  "node: n$m57 X$m57  agent: a$m57 Y$m57  session: s$m57 W$m57"
+contains "and in the ip and harness lines" "$reg57" "ip: 1.2.3.4 V$m57  harness: h$m57 Z$m57"
+peers57="$(get /peers)"
+contains "peers flattens the registered agent and node" "$peers57" "(a$m57 Y$m57 on n$m57 X$m57)"
+contains "peers flattens the ip, session and harness" "$peers57" "ip: 1.2.3.4 V$m57  session: s$m57 W$m57  harness: h$m57 Z$m57"
+reg57b="$(post /register --data-urlencode "id=$rid57")"
+contains "register flattens a U+2028 in the id it echoes" "$reg57b" "id: it-$RUN-recip x"
+msg57="$(post /message --data-urlencode "from=$eid57" --data-urlencode "to=$rid57" --data-urlencode "body=hello")"
+contains "delivered_to flattens a U+2028 in a recipient id" "$msg57" "delivered_to: it-$RUN-recip x"
+# The subject travels into inbox, thread and threads. It is sent *to* the echoing session so the
+# inbox path is exercised too, and its marker is per-run.
+subj57="$(printf 's%s\nFORGED%s' "$m57" "$m57")"
+send57="$(post /message --data-urlencode "from=$rid57" --data-urlencode "to=$eid57" \
+  --data-urlencode "subject=$subj57" --data-urlencode "body=body")"
+tid57="$(field "$send57" thread)"
+contains "inbox flattens a newline in the subject" "$(get /inbox "id=$eid57")" "subject: s$m57 FORGED$m57"
+contains "thread flattens a newline in the subject" "$(get /thread "id=$tid57")" "subject: s$m57 FORGED$m57"
+contains "threads flattens a newline in the subject" "$(get /threads)" "s$m57 FORGED$m57"
+subj57b="$(printf 'u%s\342\200\250FORGED%s' "$m57" "$m57")"
+post /message --data-urlencode "from=$rid57" --data-urlencode "to=$eid57" \
+  --data-urlencode "subject=$subj57b" --data-urlencode "body=body" >/dev/null
+contains "inbox flattens a U+2028 in the subject" "$(get /inbox "id=$eid57")" "subject: u$m57 FORGED$m57"
+
+# ---------------------------------------------------------------------------
+# 58. The inbox listing and the prune reply-clear are answered by indexes
+# The long-poll path asks for `agent = ?` ordered by message id every 0.25 s, and `--prune` clears
+# `reply_to` once per candidate message. Without an index the first sorts the whole matching backlog
+# in a temp b-tree and the second is a full scan of `messages` per pruned row. The plans are read
+# from the board the suite has been writing to, so they are the plans a real, populated board gets.
+# ---------------------------------------------------------------------------
+if [ -n "${CHATBOX_DB:-}" ] && command -v sqlite3 >/dev/null 2>&1 && [ -f "$CHATBOX_DB" ]; then
+  inbox58="$(sqlite3 "$CHATBOX_DB" "EXPLAIN QUERY PLAN SELECT m.id AS id FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.agent = 'x' AND (d.acked_at IS NULL OR d.acked_at = '') ORDER BY d.message_id DESC LIMIT 200")"
+  equals "the inbox listing does not sort its backlog in a temp b-tree" \
+    "$(printf '%s\n' "$inbox58" | grep -c 'TEMP B-TREE')" "0"
+  contains "because the deliveries are ordered by an index" "$inbox58" "idx_del_inbox"
+  reply58="$(sqlite3 "$CHATBOX_DB" "EXPLAIN QUERY PLAN UPDATE messages SET reply_to=0 WHERE reply_to=5")"
+  equals "clearing a pruned message's replies does not scan the messages table" \
+    "$(printf '%s\n' "$reply58" | grep -c 'SCAN messages')" "0"
+  contains "because reply_to is indexed" "$reply58" "idx_msg_reply"
+else
+  printf '  skip  the inbox/prune index plans (needs CHATBOX_DB and sqlite3)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 59. One message cannot fan out past the stated recipient ceiling
+# The send path writes one delivery row per recipient, so the list a request may name needs a
+# ceiling of its own rather than one implied by the envelope size. The board states it in /health.
+# ---------------------------------------------------------------------------
+contains "the board reports its recipient ceiling" "$(get /health)" "recipients per message: 500"
+big59="$(seq 1 501 | paste -sd, -)"
+equals "a send past the recipient ceiling is refused" \
+  "$(status_post /message --data-urlencode "from=$A" --data-urlencode "to=$big59" \
+      --data-urlencode "body=x")" "400"
+contains "and the refusal names the ceiling" \
+  "$(post /message --data-urlencode "from=$A" --data-urlencode "to=$big59" \
+      --data-urlencode "body=x")" "too many recipients"
+# At the ceiling it still works, so the check above is a ceiling and not a blanket refusal. The
+# send is to the same session 500 times, deduplicated to one real recipient.
+ok59="$(seq 1 500 | paste -sd, -)"
+contains "a send exactly at the ceiling is accepted" \
+  "$(post /message --data-urlencode "from=$A" --data-urlencode "to=$ok59" \
+      --data-urlencode "body=ceiling-$RUN")" "ok posted"
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -26,16 +26,74 @@ func emit(_ object: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
           var text = String(data: data, encoding: .utf8) else { return }
     text += "\n"
-    FileHandle.standardOutput.write(Data(text.utf8))
+    // stdout is the protocol stream and tool answers now come from URLSession's queue, so two
+    // completions could interleave their bytes without one writer holding a lock.
+    outputLock.withLock { _ in FileHandle.standardOutput.write(Data(text.utf8)) }
 }
 
-/// What one HTTP call reported. See the note in `call`: a completion handler is `@Sendable`.
-final class HTTPOutcome: Sendable {
-    private let state = Mutex<(status: Int, body: String)>((0, ""))
+/// The one lock around the protocol stream. `emit` is the only writer.
+let outputLock = Mutex(0)
 
-    func store(status: Int, body: String) { state.withLock { $0 = (status, body) } }
+/// The tool calls still in flight, by JSON-RPC id. A `tools/call` is answered from a URLSession
+/// completion, so the read loop must not wait for it — which is what makes a `notifications/cancelled`
+/// on the same id deliverable at all. A cancelled call removes its entry, and its completion then
+/// finds no entry and stays silent: MCP says a cancelled request SHOULD get no response, not an
+/// error response.
+final class InFlightCalls: Sendable {
+    private let tasks = Mutex<[String: URLSessionTask]>([:])
+    /// Counts the calls that have not answered yet, so the process can finish them after stdin ends
+    /// instead of exiting with their replies unwritten. A one-shot host writes one line, closes
+    /// stdin and reads to EOF; without this the loop would exit before its single call answered.
+    private let group = DispatchGroup()
 
-    var value: (status: Int, body: String) { state.withLock { $0 } }
+    func add(_ key: String, _ task: URLSessionTask) {
+        tasks.withLock { $0[key] = task }
+        group.enter()
+    }
+
+    /// Remove the entry and return its task, without releasing the wait. The release happens in
+    /// `finished()`, *after* the answer has been written: releasing here would let `waitForAll`
+    /// return and the process exit between removing the entry and emitting the reply, which is how
+    /// the first cut of this answered every tool call with nothing at all.
+    func claim(_ key: String) -> URLSessionTask? {
+        tasks.withLock { $0.removeValue(forKey: key) }
+    }
+
+    /// One entered call is done: its answer has been written, or it was cancelled and will not
+    /// have one.
+    func finished() { group.leave() }
+
+    func cancel(_ key: String) {
+        if let task = claim(key) {
+            task.cancel()
+            finished()
+        }
+    }
+
+    /// Block until every started call has answered or been cancelled.
+    func waitForAll() { group.wait() }
+}
+
+/// The key a JSON-RPC id is filed under. An id may be a string or a number, and the request and the
+/// cancellation that names it must produce the same key.
+func callKey(_ id: Any?) -> String? {
+    if let s = id as? String { return "s:" + s }
+    if let n = id as? NSNumber { return "n:" + n.stringValue }
+    return nil
+}
+
+/// The JSON-RPC id, rebuilt from the `callKey` it was filed under, for a completion that may not
+/// capture the original `Any?`. An integral number comes back as an `Int`, anything else as a
+/// `Double`; that is the same JSON token the host sent for every id a JSON-RPC peer actually uses.
+func rpcID(fromKey key: String) -> Any? {
+    if key.hasPrefix("s:") { return String(key.dropFirst(2)) }
+    if key.hasPrefix("n:") {
+        let text = String(key.dropFirst(2))
+        if let i = Int(text) { return i }
+        if let d = Double(text) { return d }
+        return text
+    }
+    return nil
 }
 
 func reply(id: Any?, _ result: [String: Any]) {
@@ -69,13 +127,21 @@ func queryEncode(_ s: String) -> String {
     return out
 }
 
-func call(_ method: String, _ path: String, _ params: [String: String]) -> (status: Int, body: String) {
+/// Start one tool call; its answer is emitted from the completion, not returned here.
+///
+/// The old `call` blocked the single stdio loop on a semaphore for the whole request — up to 70 s for
+/// a `wait=300` inbox — so no further stdin line was read while it ran: a `notifications/cancelled`
+/// could not be observed, and every later tool call queued behind it. Launching the task and
+/// returning leaves the loop free to read the cancellation.
+func startCall(_ id: Any?, _ method: String, _ path: String, _ params: [String: String],
+               framed: Bool, calls: InFlightCalls) {
     var fields: [(String, String)] = []
     for (k, v) in params where !v.isEmpty { fields.append((k, v)) }
     if !configToken.isEmpty { fields.append(("token", configToken)) }
     let query = fields.map { "\(queryEncode($0.0))=\(queryEncode($0.1))" }.joined(separator: "&")
     guard let url = URL(string: query.isEmpty ? configURL + path : configURL + path + "?" + query) else {
-        return (0, "error: CHATBOX_URL is not a usable URL")
+        toolResult(id, status: 0, body: "error: CHATBOX_URL is not a usable URL", framed: framed)
+        return
     }
     // A long poll is meant to be held open: the server sends nothing at all until it has something
     // to report, so the client's own deadline has to outlast the wait it asked for. A flat 60s turned
@@ -86,25 +152,33 @@ func call(_ method: String, _ path: String, _ params: [String: String]) -> (stat
     var req = URLRequest(url: url)
     req.httpMethod = method
     req.timeoutInterval = deadline
-    let sem = DispatchSemaphore(value: 0)
-    // The completion is `@Sendable` and cannot write into captured `var`s; a `Mutex`-guarded box is
-    // `Sendable` because its contents are, so the two values cross without an unsafe annotation.
-    let outcome = HTTPOutcome()
+    guard let key = callKey(id) else {
+        // An unkeyable id cannot be matched by a cancellation. `tools/call` is a request in MCP, so
+        // the id-less form was already refused; anything else here is not a JSON-RPC id.
+        fail(id: id, code: -32600, "tools/call needs a string or numeric id")
+        return
+    }
     let task = URLSession.shared.dataTask(with: req) { data, response, error in
+        // A cancelled call has been removed; it gets no response at all, and the cancellation already
+        // released the wait.
+        guard calls.claim(key) != nil else { return }
         var status = 0
         var body = ""
         if let http = response as? HTTPURLResponse { status = http.statusCode }
         if let data = data, let text = String(data: data, encoding: .utf8) { body = text }
         if let error = error { body = "error: \(error.localizedDescription)" }
-        outcome.store(status: status, body: body)
-        sem.signal()
+        // `key`, not `id`: `Any?` is not `Sendable`, so the completion rebuilds the JSON-RPC id from
+        // the key it was filed under. The reply's id therefore has the same type and value the host
+        // sent (a string stays a string, an integer stays an integer).
+        toolResult(rpcID(fromKey: key), status: status, body: body, framed: framed)
+        // Released *after* the answer is on stdout, so `waitForAll` cannot let the process exit
+        // between the two.
+        calls.finished()
     }
+    // Registered before `resume`, so a completion that races the registration is not mistaken for a
+    // cancellation.
+    calls.add(key, task)
     task.resume()
-    if sem.wait(timeout: .now() + deadline + 10) == .timedOut {
-        task.cancel()
-        return (0, "error: the chatbox server did not answer within \(Int(deadline))s")
-    }
-    return outcome.value
 }
 
 // ---------------------------------------------------------------- untrusted framing
@@ -239,7 +313,7 @@ func toolResult(_ id: Any?, status: Int, body: String, framed: Bool = false) {
                    "isError": !ok])
 }
 
-func handleToolCall(_ id: Any?, _ params: [String: Any]) {
+func handleToolCall(_ id: Any?, _ params: [String: Any], _ calls: InFlightCalls) {
     guard let name = params["name"] as? String else {
         fail(id: id, code: -32602, "tools/call needs a name")
         return
@@ -269,8 +343,9 @@ func handleToolCall(_ id: Any?, _ params: [String: Any]) {
                    framed: framedTools.contains(name))
         return
     }
-    let (status, body) = call(tool.method, tool.path, args)
-    toolResult(id, status: status, body: body, framed: framedTools.contains(name))
+    // The answer is emitted from the completion; this returns as soon as the request is launched so
+    // the read loop can deliver a cancellation.
+    startCall(id, tool.method, tool.path, args, framed: framedTools.contains(name), calls: calls)
 }
 
 // ---------------------------------------------------------------- the protocol
@@ -280,6 +355,10 @@ func handleToolCall(_ id: Any?, _ params: [String: Any]) {
 
 // A note for whoever is watching the host's log: stderr, because stdout is the protocol stream.
 note("chatbox-mcp: forwarding to \(configURL)")
+
+// The tool calls in flight. The loop below never waits for one, so this is what a cancellation
+// reaches.
+let calls = InFlightCalls()
 
 while let line = readLine(strippingNewline: true) {
     let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -324,8 +403,13 @@ while let line = readLine(strippingNewline: true) {
                 "serverInfo": ["name": "chatbox", "version": "1.0"],
             ])
         }
-    case "notifications/initialized", "notifications/cancelled", "initialized":
+    case "notifications/initialized", "initialized":
         break
+    case "notifications/cancelled":
+        // A cancellation names the request it is about. The matching call is removed and its task
+        // cancelled; its completion then finds no entry and emits no response, which is what MCP
+        // asks of a cancelled request. A cancellation for an id that is not in flight is a no-op.
+        if let key = callKey(params["requestId"]) { calls.cancel(key) }
     case "ping":
         if !isNotification { reply(id: id, [:]) }
     case "tools/list":
@@ -338,9 +422,15 @@ while let line = readLine(strippingNewline: true) {
         // An id-less `tools/call` is a client bug — MCP defines it as a request — and it is neither
         // answered nor executed: the caller cannot be told the outcome, and a board change made
         // behind its back, with no reply to fail, is worse than a no-op.
-        if !isNotification { handleToolCall(id, params) }
+        if !isNotification { handleToolCall(id, params, calls) }
     default:
         if !isNotification { fail(id: id, code: -32601, "method not found: \(method)") }
     }
     fflush(stdout)
 }
+
+// stdin has ended: the host is closing the session. Finish the answers already in flight rather than
+// exiting with them unwritten — a one-shot host writes one line, closes stdin and reads to EOF, and
+// this is what keeps its single call from being lost to the new asynchrony. A call that was
+// cancelled has already drained this.
+calls.waitForAll()

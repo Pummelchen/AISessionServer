@@ -902,7 +902,9 @@ case "$cmd" in
     _dfails=0
     while :; do
       : > "$_hdr"
-      http_get_wait_hdr /inbox "id=$(urlenc "$ID")&wait=$_wait" "$_max" "$_hdr" > "$_tmp" 2>/dev/null &
+      # `full=1`: this loop delivers and then acknowledges in one step, so the 1200-character preview
+      # the default listing draws would hand the consumer a report cut in half and mark it read.
+      http_get_wait_hdr /inbox "id=$(urlenc "$ID")&wait=$_wait&full=1" "$_max" "$_hdr" > "$_tmp" 2>/dev/null &
       _child=$!
       wait "$_child"; _rc=$?
       _child=""

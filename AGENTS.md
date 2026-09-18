@@ -65,7 +65,8 @@ Operator modes run and exit rather than listen: `--prune <days> [--prune-dry-run
 
 **API:** `POST /register` (upsert, preserving every field not given), `POST /message`
 (by `repo` or explicit `to`), `GET /inbox` (unread by default; `&wait=` long-polls up
-to 300 s), `GET /thread`, `GET /threads`, `POST /ack`, `GET /peers`, `GET /health`;
+to 300 s; `&full=1` carries whole bodies instead of the 1200-character preview, as
+`chatbox watch` needs because it acknowledges what it delivers), `GET /thread`, `GET /threads`, `POST /ack`, `GET /peers`, `GET /health`;
 bootstrap-token-only are `GET /events` (SSE), `GET /ui`, `POST /token`, `GET /token`,
 `POST /token/revoke`. Auth is `?token=` or `Authorization: Bearer`; every response is
 plain text unless `&json=1`. **A client's exit status is part of its answer:** `0`
@@ -137,8 +138,10 @@ language as **Shell**, not Swift, despite `chatbox.swift` being the bulk of the 
 - `--max-body` bounds the whole request (request line, headers and body), not the
   message text. Bodies are read by `Content-Length`; **chunked bodies are refused**
   rather than guessed at.
-- Long polls re-check every 0.25 s rather than blocking, so a waiter never occupies
-  the server's serial queue. `--idle-timeout` does not cut a held long poll.
+- Long polls re-check on a schedule rather than blocking, so a waiter never occupies
+  the server's serial queue: the interval starts at 0.25 s and backs off to 1 s while
+  there is nothing to report, and each re-check validates the credential by id rather
+  than re-hashing it. `--idle-timeout` does not cut a held long poll.
 - `--backup` and `--verify-backup` do different things and passing both is refused;
   `--backup` requires an explicit `--db` and will not overwrite an existing
   destination.

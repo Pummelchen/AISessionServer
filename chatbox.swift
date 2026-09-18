@@ -43,7 +43,17 @@ private func transientDestructor() -> sqlite3_destructor_type {
 // Long-poll tuning. A held inbox request is served by re-checking on this
 // interval rather than by blocking, so a waiter never occupies the server's
 // serial queue and every other request is answered normally while it waits.
+// The interval doubles while there is nothing to report, up to the cap, so an idle board of waiters
+// does not query at a fixed rate for the whole five-minute hold; a delivery is still picked up
+// within the cap. The re-check itself is a cached-principal validity read, not a full authorize:
+// the SHA-256 of the presented secret is not recomputed on every tick.
 private let longPollInterval: TimeInterval = 0.25
+private let longPollBackoffCap: TimeInterval = 1.0
+/// The most recipients one message may be delivered to. `--max-body` already bounds the list a
+/// request can carry; this is the stated ceiling on the fan-out work, so a send cannot make the
+/// board write an unbounded number of delivery rows in one transaction. 500 matches `--max-rows`,
+/// the board's other listing ceiling, and is far above any real fan-out for this product.
+private let maxRecipients = 500
 private let maxWaitSeconds = 300
 /// How many messages one inbox answer may carry. The cap is deliberate — a session that falls
 /// behind must not be handed an unbounded body — but it is never *silent*: the answer states how
@@ -383,10 +393,19 @@ private func validBoardID(_ s: String) -> Bool {
 
 /// Echoing a rejected value back is useful; echoing its line breaks is not, because
 /// the message is printed by clients and read by whatever is driving them.
+///
+/// The set is the characters a reader treats as a line break, not just `\n`: C0 controls and DEL,
+/// plus NEL (U+0085) and the Unicode line and paragraph separators LS/PS (U+2028/U+2029). A value
+/// carrying any of those is the value that can repaint a listing, and `oneLine`'s whole contract is
+/// that what it returns cannot start a new line. `hasControlByte` does not cover the separators
+/// (they are Zl/Zp, not Cc/Cf), so they are named here explicitly.
 private func oneLine(_ s: String) -> String {
     var out = ""
     for scalar in s.unicodeScalars {
-        if scalar.value < 0x20 || scalar.value == 0x7F { out.append(" ") } else { out.unicodeScalars.append(scalar) }
+        if scalar.value < 0x20 || scalar.value == 0x7F
+            || scalar.value == 0x85 || scalar.value == 0x2028 || scalar.value == 0x2029 {
+            out.append(" ")
+        } else { out.unicodeScalars.append(scalar) }
     }
     return out
 }
@@ -416,20 +435,6 @@ final class Deadline: Sendable {
     private let done = Mutex(false)
     var isCancelled: Bool { done.withLock { $0 } }
     func cancel() { done.withLock { $0 = true } }
-}
-
-/// What a `URLSession` completion reported: the status, the body and (for a refusal) the Location.
-/// The completion is `@Sendable` and cannot write into captured `var`s, so it stores them here —
-/// `Mutex` is `Sendable` when its value is, which is what makes this legal without an unsafe
-/// annotation.
-final class HTTPOutcome: Sendable {
-    private let state = Mutex<(status: Int, body: String, location: String)>((0, "", ""))
-
-    func store(status: Int, body: String, location: String) {
-        state.withLock { $0 = (status, body, location) }
-    }
-
-    var value: (status: Int, body: String, location: String) { state.withLock { $0 } }
 }
 
 /// A compact duration for operator-facing text, floored: `7d`, `3h`, `90s` -> `1m`.
@@ -559,6 +564,12 @@ final class Store: @unchecked Sendable {
         // The long-poll path only asks "is there anything unread?", so give that
         // question an index that does not have to scan a long history of read rows.
         exec("CREATE INDEX IF NOT EXISTS idx_del_unread ON deliveries(agent, acked_at);")
+        // The inbox listing is `agent = ?` ordered by message id DESC LIMIT n. `idx_del_unread`
+        // filters but does not order, so SQLite sorted the whole matching backlog in a temp b-tree
+        // on every poll — including every 0.25 s long-poll tick. This index provides the order, so
+        // the query reads the newest 200 rows and stops. (The query orders by `d.message_id`, which
+        // is the joined `m.id`, because SQLite cannot see that a join preserves order.)
+        exec("CREATE INDEX IF NOT EXISTS idx_del_inbox ON deliveries(agent, message_id DESC);")
         exec("""
         CREATE TABLE IF NOT EXISTS tokens (
           id TEXT PRIMARY KEY, hash TEXT NOT NULL, node TEXT, namespaces TEXT,
@@ -573,15 +584,29 @@ final class Store: @unchecked Sendable {
         // backfill fills it in for rows written before the column existed — once, with the empty
         // string for a recipient that had no machine, so a later registration cannot inherit it.
         addColumn("deliveries", "node", "TEXT")
-        exec("""
+        // The backfill's result is checked, not just logged: this is a write to the fastest-growing
+        // table, and a board that came up without it would report every delivery's machine as
+        // unknown. It is also the first write after the schema, so a write lock held by another
+        // process (a restart overlap, an operator's `--prune`) surfaces here as "database is locked"
+        // and the board refuses instead of serving a board it could not prepare.
+        let backfilled = exec("""
         UPDATE deliveries SET node = COALESCE((SELECT a.node FROM agents a WHERE a.id = deliveries.agent), '')
          WHERE node IS NULL;
         """)
+        if backfilled != SQLITE_OK {
+            FileHandle.standardError.write(Data("chatbox: \(path) could not backfill deliveries.node — refusing to serve a board it could not prepare\n".utf8))
+            exit(1)
+        }
         // A credential may carry an expiry. A board that predates the column gets it here: the
         // alter is idempotent, so a restart neither fails nor rewrites anything.
         addColumn("tokens", "expires_at", "TEXT")
         exec("CREATE INDEX IF NOT EXISTS idx_tokens_hash ON tokens(hash);")
         exec("CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_id);")
+        // `--prune` clears a deleted message's replies with `UPDATE messages SET reply_to=0 WHERE
+        // reply_to=?`, once per pruned message. Without this the statement is a full scan of the
+        // fastest-growing table, run once per candidate, so pruning is O(messages x pruned) and an
+        // operator abandons it. Measured: 1,000 such updates against 500k messages took 25.7 s.
+        exec("CREATE INDEX IF NOT EXISTS idx_msg_reply ON messages(reply_to);")
         // The conversation list is `ORDER BY last_at DESC LIMIT n`, and the served page asks for it
         // every five seconds per open tab: without an index that is a scan of every thread plus a
         // temp b-tree sort, on the queue every request shares. The composite index also serves the
@@ -730,14 +755,6 @@ final class Store: @unchecked Sendable {
         return only
     }
 
-    /// A count, or nil when the store could not answer. `scalar` returns "" both for a statement that
-    /// failed to prepare and for one that returned no row; `COUNT(*)` always returns a row, so an empty
-    /// or non-numeric answer means the store could not be read. Reporting that as 0 would turn
-    /// "unknown" into a measurement, which is the opposite of what a health check is for.
-    func countOrNil(_ sql: String) -> Int? {
-        Int(scalar(sql))
-    }
-
     /// Fold the write-ahead log back into the database file. Called on the way out, so a board that
     /// is stopped leaves a database a plain `cp` can read - the `-wal` is exactly the file a copy
     /// tool misses - and so the next start does not recover a log that grew for however long the
@@ -798,6 +815,31 @@ final class Store: @unchecked Sendable {
         """, [hash]).first
     }
 
+    /// Re-check a credential the request was already authorized under, by its id instead of by
+    /// re-hashing the presented secret. `nil` means it is still valid; otherwise the refusal body is
+    /// returned, with the same wording `authorize` uses, so a held long poll ends for exactly the
+    /// same reason a fresh request would be refused. It is one primary-key lookup — no SHA-256, no
+    /// `touchToken` write — which is what makes a waiter's periodic re-check cheap.
+    func tokenValidity(_ id: String) -> String? {
+        guard let row = rows("SELECT revoked_at, expires_at FROM tokens WHERE id = ? LIMIT 1", [id]).first else {
+            return "unauthorized: unknown token\n"
+        }
+        if !(row["revoked_at"] ?? "").isEmpty {
+            return "unauthorized: this credential has been revoked\n"
+        }
+        let expiresAt = row["expires_at"] ?? ""
+        if !expiresAt.isEmpty {
+            let canonical = expiresAt.count == 20 && expiresAt.hasSuffix("Z")
+            if !canonical {
+                return "unauthorized: this credential's expiry ('\(oneLine(expiresAt))') cannot be read — issue another\n"
+            }
+            if expiresAt <= nowISO() {
+                return "unauthorized: this credential expired at \(expiresAt) — issue another\n"
+            }
+        }
+        return nil
+    }
+
     /// Add a credential, and report what the store did. A route that prints a secret it did not
     /// store has handed the operator a credential that can never authenticate, with nothing in the
     /// answer to say so.
@@ -841,14 +883,31 @@ final class Store: @unchecked Sendable {
 
     func tokenCount() -> Int { Int(scalar("SELECT COUNT(*) FROM tokens")) ?? 0 }
 
-    /// Empty when the session has never registered.
-    func lastSeen(of id: String) -> String {
-        scalar("SELECT last_seen FROM agents WHERE id = ?", [id])
-    }
-
     /// nil when the session has never registered.
     func nodeOf(_ id: String) -> String? {
         rows("SELECT node FROM agents WHERE id = ? LIMIT 1", [id]).first.map { $0["node"] ?? "" }
+    }
+
+    /// Node and last-seen for a set of agent ids, in a bounded number of queries instead of one per
+    /// id. The send path used to ask for each recipient's node while inserting its delivery and then
+    /// for its last-seen up to three more times in the unseen-recipient warning — so one request's
+    /// query count grew with the length of its `to=` list, on the serial queue every request shares.
+    /// Chunked because SQLite's bound-variable limit is finite and a `to=` list is not.
+    func agentFacts(_ ids: [String]) -> [String: (node: String, lastSeen: String)] {
+        var out: [String: (node: String, lastSeen: String)] = [:]
+        var i = 0
+        while i < ids.count {
+            let end = min(i + 500, ids.count)
+            let chunk = Array(ids[i..<end])
+            i = end
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            for row in rows("SELECT id, node, last_seen FROM agents WHERE id IN (\(placeholders))",
+                            chunk.map { Optional($0) }) {
+                let id = row["id"] ?? ""
+                if !id.isEmpty { out[id] = (row["node"] ?? "", row["last_seen"] ?? "") }
+            }
+        }
+        return out
     }
 
     // MARK: domain helpers
@@ -861,7 +920,15 @@ final class Store: @unchecked Sendable {
     /// which is the worst way for it to happen. Runs once at startup, is idempotent, and
     /// leaves a key it cannot canonicalise exactly as it found it rather than dropping a
     /// claim.
+    ///
+    /// It really does run **once**: completion is recorded in `PRAGMA user_version` (0 = not yet
+    /// migrated, 1 = done), because otherwise every restart reads all four tables on the listener's
+    /// queue and may rewrite every non-canonical row of `messages`, the fastest-growing table — for
+    /// a migration that has nothing left to do. A board restored from a backup taken before the
+    /// record existed has version 0 and is migrated again; a change to the canonical rule itself
+    /// must bump the recorded version so the sweep happens for the board that predates it.
     func migrateRepoKeys() -> (changed: Int, left: Int) {
+        if (Int(scalar("PRAGMA user_version")) ?? 0) >= 1 { return (0, 0) }
         var changed = 0
         var left = 0
         func canonicalList(_ raw: String, _ canon: (String) -> String?) -> String {
@@ -930,6 +997,12 @@ final class Store: @unchecked Sendable {
             // banner cannot claim keys were normalised by a transaction that never landed.
             FileHandle.standardError.write(Data("chatbox: the key migration could not be committed (\(String(cString: sqlite3_errmsg(db)))) — nothing was migrated; the next start will try again\n".utf8))
             return (0, changed + left)
+        }
+        // Record it *after* the commit: a flag set before the work landed would skip the retry the
+        // failure above promises. If this write itself fails the migration simply runs again next
+        // start, which is idempotent.
+        if run("PRAGMA user_version=1") < 0 {
+            FileHandle.standardError.write(Data("chatbox: the key migration committed but its completion could not be recorded; the next start will run it again\n".utf8))
         }
         return (changed, left)
     }
@@ -1061,6 +1134,23 @@ final class Store: @unchecked Sendable {
         return (Int(r["a"] ?? "") ?? 0, Int(r["t"] ?? "") ?? 0, Int(r["m"] ?? "") ?? 0)
     }
 
+    /// A cheap fingerprint of the board that changes whenever `boardCounts` would change.
+    ///
+    /// Two `MAX(id)` reads on `INTEGER PRIMARY KEY` tables are index lookups, and `COUNT(*) FROM
+    /// agents` is a small table — where the three `COUNT(*)` over `messages` are a scan of the
+    /// fastest-growing table. `PRAGMA data_version` covers the write this connection cannot see:
+    /// it changes when *another* connection modifies the file, which is how an operator's `--prune`
+    /// in a second process is noticed. The SSE tick and `/health` both go through `Chatbox.boardState`,
+    /// which recomputes the counts only when this token changes.
+    func boardToken() -> String {
+        let r = rows("""
+        SELECT (SELECT COALESCE(MAX(id), 0) FROM messages) AS m,
+               (SELECT COALESCE(MAX(id), 0) FROM threads) AS t,
+               (SELECT COUNT(*) FROM agents) AS a
+        """).first ?? [:]
+        return "\(r["m"] ?? "")|\(r["t"] ?? "")|\(r["a"] ?? "")|\(scalar("PRAGMA data_version"))"
+    }
+
     func agentCount(visibleTo node: String?) -> Int {
         guard let node = node else { return Int(scalar("SELECT COUNT(*) FROM agents")) ?? 0 }
         return Int(scalar("SELECT COUNT(*) FROM agents a WHERE \(visibleAgentsWhere)",
@@ -1084,17 +1174,21 @@ final class Store: @unchecked Sendable {
                d.acked_at AS acked
         FROM deliveries d JOIN messages m ON m.id = d.message_id
         WHERE d.agent = ? \(includeAcked ? "" : "AND (d.acked_at IS NULL OR d.acked_at = '')")
-        ORDER BY m.id DESC LIMIT \(inboxLimit)
+        ORDER BY d.message_id DESC LIMIT \(inboxLimit)
         """
         return rows(sql, [agent])
     }
 
     /// How many deliveries match the same question `deliveries` answers, so a full page can say
     /// what it left out instead of dropping the oldest unread mail without a word.
+    ///
+    /// No join to `messages`: a delivery row is written in the same transaction as the message it
+    /// names and deleted before that message by `--prune`, so there is no orphan to filter, and the
+    /// join made SQLite walk a second table for a count `idx_del_unread` can answer alone.
     func deliveryCount(forAgent agent: String, includeAcked: Bool) -> Int {
         Int(scalar("""
-        SELECT COUNT(*) FROM deliveries d JOIN messages m ON m.id = d.message_id
-        WHERE d.agent = ? \(includeAcked ? "" : "AND (d.acked_at IS NULL OR d.acked_at = '')")
+        SELECT COUNT(*) FROM deliveries
+        WHERE agent = ? \(includeAcked ? "" : "AND (acked_at IS NULL OR acked_at = '')")
         """, [agent])) ?? 0
     }
 
@@ -1244,16 +1338,84 @@ private func formEncode(_ s: String) -> String {
     return out
 }
 
-/// Swallows redirects for the forward session. `URLSession` follows them by default, so a peer
-/// behind an http→https redirect would answer this board's `POST` with a `GET` somewhere else, and a
-/// final 2xx is what this board reports as `forwarded_to … (ok)` — a silent loss announced as a
-/// delivery. With the redirect refused, the 3xx comes back as the answer it is.
-final class NoForwardRedirects: NSObject, URLSessionTaskDelegate {
+/// The forward session's delegate. It does the two things `URLSession` will not do on its own.
+///
+/// It **refuses a redirect**: `URLSession` follows them by default, so a peer behind an
+/// http→https redirect would answer this board's `POST` with a `GET` somewhere else, and a final 2xx
+/// is what this board reports as `forwarded_to … (ok)` — a silent loss announced as a delivery. With
+/// the redirect refused, the 3xx comes back as the answer it is.
+///
+/// It also **caps the answer it buffers**. Only the peer's first line is ever read (the chatbox
+/// success line, or its refusal), but a completion-handler data task buffers the whole body first,
+/// and the peer — or whatever `--peer` actually points at — chooses how many bytes that is. A data
+/// delegate that counts as it reads lets the task be cancelled once the answer is longer than a
+/// chatbox answer can be, so the allocation is bounded by this constant rather than by the peer.
+///
+/// The task is therefore created with `dataTask(with:)` and **no completion handler**: when the
+/// session has a `URLSessionDataDelegate`, data is delivered to the delegate, not to a completion
+/// handler, and the first cut of this class used both — the completion's `data` was nil and the
+/// delegate never accumulated, so every forward looked like an empty answer.
+final class ForwardSessionDelegate: NSObject, URLSessionDataDelegate {
+    /// Generous for a first line: a chatbox answer is a few hundred bytes at most.
+    static let maxAnswerBytes = 64 * 1024
+    private let state = Mutex<(status: Int, location: String, body: Data, truncated: Bool, error: String)>(
+        (0, "", Data(), false, ""))
+    /// Signalled once, when the task completes (success, failure, or the cap's cancel).
+    private let finished = DispatchSemaphore(value: 0)
+
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let http = response as? HTTPURLResponse {
+            state.withLock {
+                $0.status = http.statusCode
+                $0.location = http.value(forHTTPHeaderField: "Location") ?? ""
+            }
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // The whole `withLock` result decides the cancel: `dataTask.cancel()` must not be called
+        // while the lock is held, and a chunk arriving after the cap (or after a cancel) is
+        // dropped without touching `body`.
+        let over = state.withLock { s -> Bool in
+            if s.truncated { return true }
+            if s.body.count + data.count > Self.maxAnswerBytes {
+                s.truncated = true
+                return true
+            }
+            s.body.append(data)
+            return false
+        }
+        if over { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let err = error {
+            state.withLock { if $0.error.isEmpty { $0.error = err.localizedDescription } }
+        }
+        finished.signal()
+    }
+
+    /// Wait for the task. `true` means it did not finish within the deadline.
+    func wait(timeout: DispatchTime) -> Bool { finished.wait(timeout: timeout) == .timedOut }
+
+    /// The answer to report: the peer's body, or the reason there is none.
+    var result: (status: Int, body: String, location: String) {
+        state.withLock { s in
+            if s.truncated {
+                return (s.status, "error: the peer's answer was longer than \(Self.maxAnswerBytes) bytes", s.location)
+            }
+            if s.body.isEmpty, !s.error.isEmpty { return (s.status, "error: \(s.error)", s.location) }
+            return (s.status, String(data: s.body, encoding: .utf8) ?? "", s.location)
+        }
     }
 }
 
@@ -1334,12 +1496,24 @@ final class Chatbox: @unchecked Sendable {
     let queue: DispatchQueue
     /// Forwards run here, not on `queue`. A peer that is slow or gone must not hold up the board,
     /// and the sender is still owed the peer's answer — so the answer waits on this queue while
-    /// every other request is served. Serial, so two forwards for the same repo reach the peer in
-    /// the order the sends were handled.
-    let forwardQueue = DispatchQueue(label: "chatbox.forward")
-    /// The session a forward goes out on: a redirect is refused rather than followed, so the answer
-    /// this board reports is the peer's own.
-    private let forwardSession: URLSession
+    /// every other request is served.
+    ///
+    /// **Concurrent, deliberately.** It used to be serial, so the Nth forward waited behind N-1
+    /// peer timeouts while its sender's connection stayed open: with a dead peer, N messages cost
+    /// roughly N x 10 s and enough of them exhausted `--max-connections`. Each forward now runs as
+    /// soon as it is accepted, so the wait for any one sender is bounded by the peer's own timeout
+    /// rather than by the queue depth. The cost is the ordering the serial queue gave: two forwards
+    /// for the same repo may reach the peer concurrently. `maxConcurrentForwards` bounds how many
+    /// outbound requests exist at once, and `maxConnections` bounds the held sender connections.
+    let forwardQueue = DispatchQueue(label: "chatbox.forward", attributes: .concurrent)
+    /// How many forwards may be in flight at once. It bounds the outbound URLSessions a burst can
+    /// create; beyond it a sender is told the board is already forwarding rather than queued behind
+    /// an unbounded backlog.
+    private let maxConcurrentForwards = 8
+    /// The number of forwards currently in flight. Only touched on `queue`, which is where it is
+    /// incremented (before handing the forward to `forwardQueue`) and decremented (in the completion
+    /// that hops back to `queue`), so no lock is needed.
+    private var forwardsInFlight = 0
 
     init(store: Store, token: String?, staleAfter: Int, tlsEnabled: Bool, maxBody: Int,
          idleTimeout: Int, maxConnections: Int, maxRows: Int, serverID: String,
@@ -1359,8 +1533,6 @@ final class Chatbox: @unchecked Sendable {
         self.maxHops = maxHops
         self.publicURL = publicURL
         self.queue = queue
-        self.forwardSession = URLSession(configuration: .ephemeral,
-                                         delegate: NoForwardRedirects(), delegateQueue: nil)
     }
 
     /// Connections that have been accepted and not yet finished. Kept as identities rather than a
@@ -1560,9 +1732,19 @@ final class Chatbox: @unchecked Sendable {
             // keeps one — the accept deadline was cancelled when the request arrived.
             let base = answer.body
             let finalReq = req
+            // Bounded concurrency: beyond the cap the sender is answered at once, truthfully, rather
+            // than queued behind an unbounded backlog (which is what held its connection open).
+            guard forwardsInFlight < maxConcurrentForwards else {
+                finish(finalReq, conn: conn, status: answer.status,
+                       body: base + "forward failed: the board is already forwarding \(forwardsInFlight) messages — the peer can be retried by hand\nthe message is stored here\n",
+                       headers: answer.headers)
+                return
+            }
+            forwardsInFlight += 1
             forwardQueue.async {
                 let note = self.forwardMessage(plan)
                 self.queue.async {
+                    self.forwardsInFlight -= 1
                     self.finish(finalReq, conn: conn, status: answer.status, body: base + note,
                                 headers: answer.headers)
                 }
@@ -1609,6 +1791,7 @@ final class Chatbox: @unchecked Sendable {
           reply     POST /message?from=<you>&thread=<id>&body=<text>
           inbox     GET  /inbox?id=<you>            (add &all=1 to include read)
                     add &wait=<seconds> to hold until a message arrives (max 300; empty body on timeout)
+                    add &full=1 to carry whole bodies instead of the 1200-character preview
           read      GET  /thread?id=<thread-id>
           ack       POST /ack?id=<you>&message=<message-id>   (or &thread=<id>, or &all=1 for everything unread)
           peers     GET  /peers                     (who owns what)
@@ -1641,23 +1824,27 @@ final class Chatbox: @unchecked Sendable {
 
     /// A probe that keys on the status code has to be able to see a store it cannot read. A failed
     /// count is not zero — it is unknown — and a board that answers 200 with empty counters while no
-    /// route can serve a request is precisely the failure a health check exists to report. `scalar`
-    /// logs the SQLite error and answers ""; here that emptiness is the signal.
+    /// route can serve a request is precisely the failure a health check exists to report. The counts
+    /// come from the same cached `boardState` the events feed uses, so a monitoring poll does not
+    /// scan the messages table for a number the feed just computed; `readFailed` is the signal that
+    /// the (cheap) read behind it did not complete.
     func health() -> Reply {
-        guard let a = store.countOrNil("SELECT COUNT(*) FROM agents"),
-              let t = store.countOrNil("SELECT COUNT(*) FROM threads"),
-              let m = store.countOrNil("SELECT COUNT(*) FROM messages") else {
+        let counts = boardState()
+        guard !store.readFailed else {
             return Reply(503, "error: the store could not be read — the counters are unknown, not zero\n"
                 + "sqlite: \(store.lastError())\n"
                 + "board: \(serverID)\nnow: \(nowISO())\n")
         }
+        let a = counts.agents
+        let t = counts.threads
+        let m = counts.messages
         let presence = staleAfter == 0 ? "off" : "stale after \(humanSeconds(staleAfter))"
         let transport = tlsEnabled ? "tls" : "plain http"
         let idle = idleTimeout == 0 ? "no idle deadline" : "\(idleTimeout)s idle deadline"
         // The board's own name is reported whether or not it forwards: it is the name a peer shows
         // in `(via …)` on a forwarded message, and an operator comparing two boards needs it.
         let peer = peerURL.isEmpty ? "none" : peerURL
-        return Reply(200, "ok chatbox up\n\(buildIdentity())\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nconnections: up to \(maxConnections), \(idle)\npeer: \(peer) (this board is \(serverID), accepts up to \(maxHops) hops)\nnow: \(nowISO())\n")
+        return Reply(200, "ok chatbox up\n\(buildIdentity())\nagents: \(a)\nthreads: \(t)\nmessages: \(m)\npresence: \(presence)\ntransport: \(transport)\nmax request: \(maxBody) bytes\nmax rows: \(maxRows)\nrecipients per message: \(maxRecipients)\nconnections: up to \(maxConnections), \(idle)\npeer: \(peer) (this board is \(serverID), accepts up to \(maxHops) hops)\nnow: \(nowISO())\n")
     }
 
     func register(_ req: Request, _ who: Principal) -> (Int, String) {
@@ -1765,9 +1952,9 @@ final class Chatbox: @unchecked Sendable {
         audit("registered id=\(oneLine(id)) node=\(oneLine(stored["node"] ?? "")) repos=\(storedRepos.isEmpty ? "(none)" : oneLine(storedRepos))")
         return (200, """
         ok registered
-        id: \(id)
-        node: \(stored["node"] ?? "")  agent: \(stored["agent"] ?? "")  session: \(stored["session"] ?? "")
-        ip: \(stored["ip"] ?? "")  harness: \(stored["harness"] ?? "")
+        id: \(oneLine(id))
+        node: \(oneLine(stored["node"] ?? ""))  agent: \(oneLine(stored["agent"] ?? ""))  session: \(oneLine(stored["session"] ?? ""))
+        ip: \(oneLine(stored["ip"] ?? ""))  harness: \(oneLine(stored["harness"] ?? ""))
         repos: \(storedRepos.isEmpty ? "(none declared)" : oneLine(storedRepos))
         at: \(ts)
 
@@ -1929,6 +2116,14 @@ final class Chatbox: @unchecked Sendable {
             store.run("ROLLBACK", [])
             return Reply(500, "error: the recipients could not be resolved — nothing was written\n")
         }
+        // An explicit bound on the fan-out. `--max-body` already bounds the request, so the list is
+        // finite, but the work per message (a delivery row each, and now a bounded set of lookups)
+        // should have a stated ceiling rather than one implied by the envelope size. Refused before
+        // anything is stored, so the transaction goes back.
+        guard recipients.count <= maxRecipients else {
+            store.run("ROLLBACK", [])
+            return Reply(400, "error: too many recipients — \(recipients.count) named, the limit here is \(maxRecipients)\n")
+        }
 
         // The thread's existence is enforced by the insert, not by a read before it:
         // `INSERT … SELECT … WHERE EXISTS` stores the row only while the thread is still
@@ -1962,10 +2157,19 @@ final class Chatbox: @unchecked Sendable {
             return Reply(500, "error: the message could not be stored — nothing was written\n")
         }
 
+        // One lookup for every recipient's node and last-seen, before the loop: the loop used to ask
+        // for one node per delivery row, and the warning below asked for last-seen up to three more
+        // times per delivered id. A failed read here means the delivery rows would record machines
+        // that are not the recipients', so it rolls back like the other failed reads on this path.
+        let facts = store.agentFacts(recipients)
+        if store.readFailed {
+            store.run("ROLLBACK", [])
+            return Reply(500, "error: the recipients' details could not be read — nothing was written\n")
+        }
         for r in recipients {
             let delivery = store.runReporting("""
             INSERT OR IGNORE INTO deliveries (message_id,agent,created_at,node) VALUES (?,?,?,?)
-            """, [String(msgId), r, nowISO(), store.nodeOf(r) ?? ""])
+            """, [String(msgId), r, nowISO(), facts[r]?.node ?? ""])
             guard delivery.rc == SQLITE_DONE else {
                 store.run("ROLLBACK", [])
                 FileHandle.standardError.write(Data("chatbox: the delivery to \(r) failed: \(store.lastError())\n".utf8))
@@ -2002,20 +2206,24 @@ final class Chatbox: @unchecked Sendable {
         let visibleToSender = scopedSender ? store.visibleAgentIds(forNode: who.node) : []
         // A recipient nobody is listening for: gone quiet, or never registered at all.
         let unseen = delivered.filter {
-            scopedSender ? !visibleToSender.contains($0) : isStale(store.lastSeen(of: $0), now: now)
+            scopedSender ? !visibleToSender.contains($0)
+                         : isStale(facts[$0]?.lastSeen ?? "", now: now)
         }
         func unseenLabel(_ id: String) -> String {
             scopedSender ? "not visible to this credential"
-                : (store.lastSeen(of: id).isEmpty ? "unregistered" : "stale")
+                : ((facts[id]?.lastSeen ?? "").isEmpty ? "unregistered" : "stale")
         }
         func unseenReason(_ id: String) -> String {
             if scopedSender { return "not a conversation this machine takes part in" }
-            let seen = store.lastSeen(of: id)
+            let seen = facts[id]?.lastSeen ?? ""
             return seen.isEmpty ? "never registered" : ageDescription(seen, now: now)
         }
         let deliveredTo = deliveredKnown
             ? (delivered.isEmpty ? "(nobody)"
-               : delivered.map { r in unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r }.joined(separator: ", "))
+               : delivered.map { r in
+                   let name = oneLine(r)
+                   return unseen.contains(r) ? "\(name) (\(unseenLabel(r)))" : name
+                 }.joined(separator: ", "))
             : "(could not be read)"
 
         // TRK-17: one hop to the configured peer, for a message this board accepted from a sender
@@ -2053,7 +2261,7 @@ final class Chatbox: @unchecked Sendable {
         if !unseen.isEmpty {
             // `unseenList`, not `who`: this function's `who` parameter is the credential, and
             // rebinding it here made every later read ambiguous at a glance.
-            let unseenList = unseen.map { "\($0) (\(unseenReason($0)))" }.joined(separator: ", ")
+            let unseenList = unseen.map { "\(oneLine($0)) (\(unseenReason($0)))" }.joined(separator: ", ")
             // Only claim nobody will read it when nobody is left to.
             let everyone = unseen.count == delivered.count
             // A scoped sender gets the same warning without the board's own numbers: "no sign of X
@@ -2115,6 +2323,13 @@ final class Chatbox: @unchecked Sendable {
 
     func renderInbox(_ req: Request, id: String, rows: [[String: String]]) -> String {
         let all = req.flag("all")
+        // `full=1` turns the 1200-character preview off for a caller that is *consuming* the inbox
+        // rather than glancing at it: `watch` delivers and acknowledges in one step, so a preview
+        // here is a report cut in half and marked read. The default stays a preview because the
+        // listing is read by humans too and `/thread` already carries whole bodies (up to
+        // `--max-rows` of them), so a full inbox is the same size class as a request the board
+        // already serves.
+        let full = req.flag("full")
         // The listing is capped, so a session that falls behind would otherwise stop being told
         // about its older unread mail without a word — the opposite of what a durable delivery
         // model promises. Both answers state how many deliveries there are and how many of them
@@ -2140,10 +2355,10 @@ final class Chatbox: @unchecked Sendable {
             // path a session actually reads, and "from: mac3-dsh" alone cannot tell a report from
             // the board next door apart from one written here.
             let via = (r["origin"] ?? "").isEmpty ? "" : " (via \(r["origin"]!))"
-            out += "  from: \(r["sender"] ?? "")\(via)   repo: \((r["repo"] ?? "").isEmpty ? "-" : r["repo"]!)\n"
-            if !(r["subject"] ?? "").isEmpty { out += "  subject: \(r["subject"]!)\n" }
+            out += "  from: \(oneLine(r["sender"] ?? ""))\(via)   repo: \((r["repo"] ?? "").isEmpty ? "-" : oneLine(r["repo"]!))\n"
+            if !(r["subject"] ?? "").isEmpty { out += "  subject: \(oneLine(r["subject"]!))\n" }
             let b = r["body"] ?? ""
-            out += "  body: \(b.count > 1200 ? String(b.prefix(1200)) + " …[truncated]" : b)\n"
+            out += "  body: \(b.count > 1200 && !full ? String(b.prefix(1200)) + " …[truncated]" : b)\n"
         }
         out += "\nread a thread: GET /thread?id=<thread>   ·   mark read: POST /ack?id=\(id)&message=<id>\n"
         return out
@@ -2197,27 +2412,20 @@ final class Chatbox: @unchecked Sendable {
         req.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
         if !peerToken.isEmpty { req.setValue("Bearer \(peerToken)", forHTTPHeaderField: "Authorization") }
         req.httpBody = Data(encoded.utf8)
-        let sem = DispatchSemaphore(value: 0)
-        let outcome = HTTPOutcome()
-        let task = forwardSession.dataTask(with: req) { data, response, error in
-            var status = 0
-            var location = ""
-            var body = ""
-            if let http = response as? HTTPURLResponse {
-                status = http.statusCode
-                location = http.value(forHTTPHeaderField: "Location") ?? ""
-            }
-            if let data = data, let text = String(data: data, encoding: .utf8) { body = text }
-            if let error = error { body = "error: \(error.localizedDescription)" }
-            outcome.store(status: status, body: body, location: location)
-            sem.signal()
-        }
+        // One session per forward: this delegate buffers *this* answer under a cap, and a shared
+        // session could not tell one forward's bytes from another's. Forwards are rare (only an
+        // unroutable repo on a board with federation configured), so the session is not pooled.
+        let delegate = ForwardSessionDelegate()
+        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        // No completion handler: with a data delegate, the body arrives at the delegate, which is
+        // what enforces the cap. `wait` returns when the task completes.
+        let task = session.dataTask(with: req)
         task.resume()
-        if sem.wait(timeout: .now() + 12) == .timedOut {
+        if delegate.wait(timeout: .now() + 12) {
             task.cancel()
             return "forward failed: \(peerURL) did not answer within 10s\nthe message is stored here; the peer can be retried by hand\n"
         }
-        let (status, answer, redirectedTo) = outcome.value
+        let (status, answer, redirectedTo) = delegate.result
         // A redirect is not a delivery, and this board does not follow one: a peer that moved is
         // named rather than guessed at, because the alternative is a 2xx somewhere else reported as
         // "forwarded".
@@ -2225,13 +2433,21 @@ final class Chatbox: @unchecked Sendable {
             let landed = redirectedTo.isEmpty ? "an address it did not name" : oneLine(redirectedTo)
             return "forward failed: \(peerURL) answered \(status) — it redirected to \(landed); point --peer at the board itself\nthe message is stored here; the peer can be retried by hand\n"
         }
-        if status >= 200 && status < 300 { return "forwarded_to: \(peerURL) (ok)\n" }
-        let why = answer.split(separator: "\n").first.map(String.init) ?? "no answer"
+        let first = answer.split(separator: "\n").first.map(String.init) ?? ""
+        // A 2xx is not by itself a delivery: the caller is told `forwarded_to … (ok)`, and only the
+        // board's own success line can say a message was stored. A fronting proxy, a captive portal
+        // or a mis-pointed peer answers 2xx to anything, and calling that delivered is the silent
+        // loss this path exists to prevent.
+        if status >= 200 && status < 300 {
+            if first == "ok posted" { return "forwarded_to: \(peerURL) (ok)\n" }
+            let said = first.isEmpty ? "no answer" : oneLine(first)
+            return "forward failed: \(peerURL) answered \(status) but not like a chatbox board — \(said)\nthe message is stored here; the peer can be retried by hand\n"
+        }
         // A transport failure has no status to report, and printing "0" for one would read like a
         // response code. The peer's first line is text this board did not write and it ends up in a
         // response a client prints, so it goes through the same one-line treatment as every echo.
         let said = status == 0 ? "— " : "answered \(status) — "
-        return "forward failed: \(peerURL) \(said)\(oneLine(why))\nthe message is stored here; the peer can be retried by hand\n"
+        return "forward failed: \(peerURL) \(said)\(oneLine(first.isEmpty ? "no answer" : first))\nthe message is stored here; the peer can be retried by hand\n"
     }
 
     // ---------- read-only web view ----------
@@ -2402,9 +2618,24 @@ final class Chatbox: @unchecked Sendable {
         let messages: Int
     }
 
+    /// The last computed counts and the `boardToken` they were computed under. Both `pollEvents`
+    /// and `health` run on the serial queue, so this needs no lock; it exists so an idle stream (or
+    /// a monitoring poll) does not scan the messages table several times a second for a number that
+    /// has not changed. A change this process cannot see (another process's `--prune`) moves
+    /// `PRAGMA data_version`, so the cache is not blind to it.
+    private var boardCache: (token: String, state: BoardState)?
+
     private func boardState() -> BoardState {
+        let token = store.boardToken()
+        // A token computed from a failed read is not a token: do not let it match the cache, and do
+        // not store a state read behind a failure. Without this, a board whose schema was dropped
+        // answered its second `/health` from a cache of the pre-failure counts, and the 503 body
+        // named `PRAGMA data_version`'s "not an error" instead of the failed count's cause.
+        if !store.readFailed, let cached = boardCache, cached.token == token { return cached.state }
         let c = store.boardCounts()
-        return BoardState(agents: c.agents, threads: c.threads, messages: c.messages)
+        let state = BoardState(agents: c.agents, threads: c.threads, messages: c.messages)
+        if !store.readFailed { boardCache = (token, state) }
+        return state
     }
 
     private func eventData(_ state: BoardState) -> String {
@@ -2472,14 +2703,20 @@ final class Chatbox: @unchecked Sendable {
         let now = Date()
         pollInbox(req, id: id, deadline: now.addingTimeInterval(TimeInterval(seconds)),
                   nextTouch: now.addingTimeInterval(longPollTouchInterval(staleAfter)),
-                  waiter: waiter, conn: conn)
+                  interval: longPollInterval, who: who, waiter: waiter, conn: conn)
     }
 
     /// Re-check on a timer until there is something to report or the deadline
     /// passes. Deliberately *not* a blocking wait: the re-check is scheduled, so
     /// the serial queue stays free and other requests are answered normally.
+    ///
+    /// The interval doubles from `longPollInterval` to `longPollBackoffCap` while there is nothing to
+    /// report, so a board full of idle waiters does not query at a fixed four times a second for the
+    /// whole five-minute hold. `who` is the principal the wait was authorized under; the credential
+    /// is re-checked by id (one primary-key lookup) rather than by re-hashing the presented secret,
+    /// so revocation and expiry still end the wait on the next tick with the same refusal text.
     private func pollInbox(_ req: Request, id: String, deadline: Date, nextTouch: Date,
-                           waiter: Waiter, conn: NWConnection) {
+                           interval: TimeInterval, who: Principal, waiter: Waiter, conn: NWConnection) {
         // The client may have given up. A clean end-of-stream is *not* treated as
         // abandonment — see beginInboxWait.
         if case .cancelled = conn.state { return }
@@ -2491,14 +2728,12 @@ final class Chatbox: @unchecked Sendable {
             return
         }
 
-        // Re-authorize every tick. A wait can last five minutes, and revoking a
-        // credential has to end it rather than let it keep delivering.
-        switch authorize(req) {
-        case .denied(let status, let body):
-            finish(req, conn: conn, status: status, body: body)
+        // A wait can last five minutes, and revoking a credential has to end it rather than let it
+        // keep delivering. The bootstrap secret has no id and no revocation route, so it needs no
+        // re-check; a scoped credential is re-checked by id on every tick.
+        if !who.isBootstrap, let denial = store.tokenValidity(who.tokenId) {
+            finish(req, conn: conn, status: 401, body: denial)
             return
-        case .ok:
-            break
         }
 
         // A waiting session that is still connected is alive, so keep last_seen
@@ -2531,9 +2766,10 @@ final class Chatbox: @unchecked Sendable {
             finish(req, conn: conn, status: 200, body: "")
             return
         }
-        queue.asyncAfter(deadline: .now() + longPollInterval) {
+        queue.asyncAfter(deadline: .now() + interval) {
             self.pollInbox(req, id: id, deadline: deadline, nextTouch: touch,
-                           waiter: waiter, conn: conn)
+                           interval: min(interval * 2, longPollBackoffCap),
+                           who: who, waiter: waiter, conn: conn)
         }
     }
 
@@ -2553,8 +2789,8 @@ final class Chatbox: @unchecked Sendable {
         guard !rows.isEmpty else { return (404, "no thread \(oneLine(id))\n") }
         if req.flag("json") { return (200, jsonRows(rows, key: "messages", matching: matching)) }
         let head = store.rows("SELECT repo, subject, created_at, created_by FROM threads WHERE id=?", [id]).first ?? [:]
-        var out = "thread \(id)  repo: \((head["repo"] ?? "").isEmpty ? "-" : head["repo"]!)  subject: \(head["subject"] ?? "-")\n"
-        out += "opened: \(head["created_at"] ?? "-") by \(head["created_by"] ?? "-")   "
+        var out = "thread \(id)  repo: \((head["repo"] ?? "").isEmpty ? "-" : oneLine(head["repo"]!))  subject: \(oneLine(head["subject"] ?? "-"))\n"
+        out += "opened: \(head["created_at"] ?? "-") by \(oneLine(head["created_by"] ?? "-"))   "
             + "\(rows.count)\(matching > rows.count ? " of \(matching)" : "") message(s)\n"
         if matching > rows.count {
             out += "note: the newest \(rows.count) are shown, \(matching - rows.count) older one(s) are not"
@@ -2562,8 +2798,8 @@ final class Chatbox: @unchecked Sendable {
         }
         for r in rows {
             let via = (r["origin"] ?? "").isEmpty ? "" : "  (via \(r["origin"]!))"
-            out += "\n--- [\(r["id"] ?? "")] \(r["created_at"] ?? "")  \(r["sender"] ?? "") → \((r["recipients"] ?? "").isEmpty ? "(nobody)" : r["recipients"]!)\(via)\n"
-            if !(r["subject"] ?? "").isEmpty, r["id"] == rows.first?["id"] { out += "subject: \(r["subject"]!)\n" }
+            out += "\n--- [\(r["id"] ?? "")] \(r["created_at"] ?? "")  \(oneLine(r["sender"] ?? "")) → \((r["recipients"] ?? "").isEmpty ? "(nobody)" : oneLine(r["recipients"]!))\(via)\n"
+            if !(r["subject"] ?? "").isEmpty, r["id"] == rows.first?["id"] { out += "subject: \(oneLine(r["subject"]!))\n" }
             if let rt = r["reply_to"], !rt.isEmpty, rt != "0" { out += "(reply to \(rt))\n" }
             out += "\(r["body"] ?? "")\n"
         }
@@ -2611,7 +2847,7 @@ final class Chatbox: @unchecked Sendable {
             out += "note: \(matchingThreads - rows.count) older one(s) are not shown — raise --max-rows to see them\n"
         }
         for r in rows {
-            out += "\n[\(r["id"] ?? "")] \(r["last_at"] ?? "")  \(r["n"] ?? "0") msg  repo: \((r["repo"] ?? "").isEmpty ? "-" : r["repo"]!)\n  \(r["subject"] ?? "-")\n"
+            out += "\n[\(r["id"] ?? "")] \(r["last_at"] ?? "")  \(r["n"] ?? "0") msg  repo: \((r["repo"] ?? "").isEmpty ? "-" : oneLine(r["repo"]!))\n  \(oneLine(r["subject"] ?? "-"))\n"
         }
         return (200, out)
     }
@@ -2686,10 +2922,10 @@ final class Chatbox: @unchecked Sendable {
         if staleAfter == 0 { out += "(staleness reporting is off)\n" }
         for r in rows {
             let status = r["status"] ?? "active"
-            out += "\n\(r["id"] ?? "")  (\(r["agent"] ?? "-") on \(r["node"] ?? "-"))  \(status == "stale" ? "STALE" : status)\n"
+            out += "\n\(oneLine(r["id"] ?? ""))  (\(oneLine(r["agent"] ?? "-")) on \(oneLine(r["node"] ?? "-")))  \(status == "stale" ? "STALE" : status)\n"
             out += "  repos: \((r["repos"] ?? "").isEmpty ? "(none declared)" : oneLine(r["repos"]!))\n"
             if !(r["ip"] ?? "").isEmpty || !(r["session"] ?? "").isEmpty {
-                out += "  ip: \(r["ip"] ?? "-")  session: \(r["session"] ?? "-")  harness: \(r["harness"] ?? "-")\n"
+                out += "  ip: \(oneLine(r["ip"] ?? "-"))  session: \(oneLine(r["session"] ?? "-"))  harness: \(oneLine(r["harness"] ?? "-"))\n"
             }
             out += "  last seen: \(r["last_seen"] ?? "-")  (\(r["age"] ?? "-"))\n"
         }
@@ -4000,8 +4236,10 @@ let shutdownHandler: @Sendable () -> Void = {
     store.checkpointWAL()
     FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))
     // The queue is serial, so everything already accepted has run by the time this runs; the held
-    // answers end on their own timers within half a second. This is the grace they get to leave.
-    server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+    // answers end on their own timers. A waiter's next tick is at most `longPollBackoffCap` away, so
+    // the grace is that plus a margin — a flat half-second was right only for the old fixed 0.25 s
+    // tick and cut a backed-off long poll's socket before it could send its 503.
+    server.queue.asyncAfter(deadline: .now() + longPollBackoffCap + 0.5) { exit(0) }
 }
 stopSource.setEventHandler(handler: shutdownHandler)
 stopSourceInt.setEventHandler(handler: shutdownHandler)

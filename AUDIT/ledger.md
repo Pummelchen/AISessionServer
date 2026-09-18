@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 13 | done: 83 | blocked: 0 | total: 96** (S0 7, S1 31, S2 50, S3 8)
+**Open: 14 | done: 83 | blocked: 0 | total: 97** (S0 7, S1 31, S2 51, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -62,18 +62,18 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0054](#0054) | S2 | M3 | `chatbox-cli.sh:355` | canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls] | logic | **DONE** | node1 | phase-B/L1-architecture,M3-client |
 | [0055](#0055) | S2 | M3 | `chatbox-cli.sh:686` | GET query strings are concatenated unencoded, so ids with a space or & break the request | bug | **DONE** | node1 | phase-B/M3-client |
 | [0056](#0056) | S2 | M3 | `chatbox-cli.sh:703` | ack silently drops --all, then the server error names the flag the caller passed | logic | **DONE** | node1 | phase-B/M3-client |
-| [0057](#0057) | S2 | M3 | `chatbox-cli.sh:775` | watch delivers the 1200-character inbox preview and then acks it | incomplete | **START** | node1 | phase-B/M3-client |
+| [0057](#0057) | S2 | M3 | `chatbox-cli.sh:775` | watch delivers the 1200-character inbox preview and then acks it | incomplete | **TEST** | node1 | phase-B/M3-client |
 | [0058](#0058) | S2 | M2 | `chatbox-mcp.swift:177` | Well-formed non-object JSON is reported as -32700 parse error instead of -32600 Invalid Request | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0059](#0059) | S2 | M2 | `chatbox-mcp.swift:197` | notifications/cancelled is a no-op that can never be observed while a call blocks the read loop | incomplete | **START** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0059](#0059) | S2 | M2 | `chatbox-mcp.swift:197` | notifications/cancelled is a no-op that can never be observed while a call blocks the read loop | incomplete | **TEST** | node1 | phase-B/M2-mcp-and-placeholders |
 | [0060](#0060) | S2 | M2 | `chatbox-mcp.swift:91` | Tool schema declares additionalProperties:false but undeclared arguments are forwarded to the server | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0061](#0061) | S2 | M1 | `chatbox.swift:1553` | Per-recipient N+1 queries on the send path; recipient count is bounded only by --max-body | perf | **START** | node1 | phase-B/L5-performance |
+| [0061](#0061) | S2 | M1 | `chatbox.swift:1553` | Per-recipient N+1 queries on the send path; recipient count is bounded only by --max-body | perf | **TEST** | node1 | phase-B/L5-performance |
 | [0062](#0062) | S2 | M1 | `chatbox.swift:1654` | Boolean parameters are true for any non-empty value: all=0 includes read mail and json=0 emits JSON | logic | **DONE** | node1 | phase-B/L2-server-http |
-| [0063](#0063) | S2 | M1 | `chatbox.swift:1748` | Serial forward queue plus a 12 s semaphore wait holds one connection per queued federation forward | perf | **START** | node1 | phase-B/L5-performance |
-| [0064](#0064) | S2 | M1 | `chatbox.swift:1752` | Federation forward buffers the peer's entire response body with no size cap | unsafe | **START** | node1 | phase-B/L2-server-http |
-| [0065](#0065) | S2 | M1 | `chatbox.swift:1773` | Any 2xx from the peer is reported as a delivery without checking the peer is a chatbox board | bug | **START** | node1 | phase-B/L2-server-http |
-| [0066](#0066) | S2 | M1 | `chatbox.swift:1934` | SSE ticks run three board-wide COUNT(*) queries on the shared serial queue every 0.5 s per stream | perf | **START** | node1 | phase-B/L5-performance |
-| [0067](#0067) | S2 | M1 | `chatbox.swift:2017` | Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s | perf | **START** | node1 | phase-B/L5-performance |
-| [0068](#0068) | S2 | M1 | `chatbox.swift:2179` | Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop | bug | **START** | node1 | phase-B/L2-server-http |
+| [0063](#0063) | S2 | M1 | `chatbox.swift:1748` | Serial forward queue plus a 12 s semaphore wait holds one connection per queued federation forward | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0064](#0064) | S2 | M1 | `chatbox.swift:1752` | Federation forward buffers the peer's entire response body with no size cap | unsafe | **TEST** | node1 | phase-B/L2-server-http |
+| [0065](#0065) | S2 | M1 | `chatbox.swift:1773` | Any 2xx from the peer is reported as a delivery without checking the peer is a chatbox board | bug | **TEST** | node1 | phase-B/L2-server-http |
+| [0066](#0066) | S2 | M1 | `chatbox.swift:1934` | SSE ticks run three board-wide COUNT(*) queries on the shared serial queue every 0.5 s per stream | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0067](#0067) | S2 | M1 | `chatbox.swift:2017` | Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0068](#0068) | S2 | M1 | `chatbox.swift:2179` | Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop | bug | **TEST** | node1 | phase-B/L2-server-http |
 | [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **DONE** | node1 | phase-B/L7-ops |
 | [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **DONE** | node1 | phase-B/L2-server-core |
 | [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **DONE** | node1 | phase-B/L4-security |
@@ -83,9 +83,9 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0075](#0075) | S2 | M1 | `chatbox.swift:499` | Store.scalar returns an arbitrary column via Dictionary.values.first | logic | **DONE** | node1 | phase-B/L3-line-level |
 | [0076](#0076) | S2 | M1 | `chatbox.swift:50` | nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient | perf | **DONE** | node1 | phase-B/L5-performance |
 | [0077](#0077) | S2 | M1 | `chatbox.swift:610` | Repo-key migration ignores BEGIN/COMMIT failures | bug | **DONE** | node1 | phase-B/L2-server-core |
-| [0078](#0078) | S2 | M1 | `chatbox.swift:611` | Startup key migration re-reads all four tables and rewrites every non-canonical row on every start | perf | **START** | node1 | phase-B/L5-performance |
-| [0079](#0079) | S2 | M1 | `chatbox.swift:716` | prune() clears reply_to with one full-table-scan UPDATE per pruned message (O(messages x pruned)) | perf | **START** | node1 | phase-B/L5-performance |
-| [0080](#0080) | S2 | M1 | `chatbox.swift:799` | Inbox listing sorts the whole matching backlog in a temp b-tree to return 200 rows | perf | **START** | node1 | phase-B/L5-performance |
+| [0078](#0078) | S2 | M1 | `chatbox.swift:611` | Startup key migration re-reads all four tables and rewrites every non-canonical row on every start | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0079](#0079) | S2 | M1 | `chatbox.swift:716` | prune() clears reply_to with one full-table-scan UPDATE per pruned message (O(messages x pruned)) | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0080](#0080) | S2 | M1 | `chatbox.swift:799` | Inbox listing sorts the whole matching backlog in a temp b-tree to return 200 rows | perf | **TEST** | node1 | phase-B/L5-performance |
 | [0081](#0081) | S2 | M4 | `tests/protocol.sh:1478` | Aux-server readiness accepts any answering server, not the one just started | test | **DONE** | node1 | phase-B/L6-tests |
 | [0082](#0082) | S2 | M4 | `tests/protocol.sh:3254` | Fixed 'bulk' and 'exact' literals break the suite's per-run namespace on re-runs | test | **DONE** | node1 | phase-B/L6-tests |
 | [0083](#0083) | S2 | M4 | `tests/protocol.sh:3576` | Expiry issuance asserted with 'expires: 20' and no 1/36500 boundaries | test | **DONE** | node1 | phase-B/L6-tests |
@@ -98,6 +98,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0093](#0093) | S2 | M8 | `(repository state)` | The audit branch was reconciled with nine commits that landed on main while it ran | deps | **DONE** | node1 | main moved during the audit |
 | [0094](#0094) | S2 | M4 | `tests/protocol.sh:1515,4471` | Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board | test | **DONE** | node1 | new-this-session (the audit/0062 verification run) |
 | [0096](#0096) | S2 | M7 | `AUDIT/mutate.sh:1714 ; tests/protocol.sh:271` | The mutation matrix could only run cells serially and probed the suite's literal fixture ports, so a full sweep could not fit one slot and a per-cell port override was invisible to the preflight | test | **DONE** | node1 | audit/0069 verification run |
+| [0097](#0097) | S2 | M1 | `chatbox.swift renderInbox/showThread/listThreads (subject, sender, recipients, repo)` | A message's subject, sender, recipients and repo are echoed unescaped on the inbox/thread/threads read paths, so a subject containing a line break forges lines in a listing | bug | **TEST** | node1 | audit/0068 follow-up |
 | [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
 | [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **DONE** | node1 | phase-A |
 | [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **DONE** | node1 | L0 secret-scan triage |
@@ -971,13 +972,15 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / incomplete / M3
 - **Location:** `chatbox-cli.sh:775`
 - **Title:** watch delivers the 1200-character inbox preview and then acks it
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** The loop polls GET /inbox (chatbox-cli.sh:775, 795) and frames the plain-text listing (804-816). That renderer truncates every body at 1200 characters with ' ... [truncated]' (chatbox.swift:1694), while the JSON view carries the full body. The client then acks the same messages (:819-820), so the consumer's copy is capped and marked read. tests/protocol.sh:2161 and 2220-2221 confirm the 1200 preview is deliberate.
 
 WHY IT MATTERS: watch is the primary wake path (README:148-153) and the envelope allows bodies up to --max-body (8192 bytes). A report longer than 1200 characters reaches the agent - and a --hook reason - incomplete, and because the delivery is acked the inbox will not offer it again; only a manual `chatbox thread <id>` recovers the rest.
 
 CONFIDENCE: medium
-- **Fix:** Detect the truncation marker (or use json=1) and fetch the full body from /thread before delivering, or refuse to ack a message the listing truncated.
+- **Fix:** The server's text inbox gains `full=1`, which turns the 1200-character preview off, and `chatbox watch` sends it: the loop delivers and acknowledges in one step, so a preview here was a report cut in half and marked read. The default listing keeps the preview (humans read it), and the JSON form already carried whole bodies.
+- **Evidence (after):** TEST. Three checks in section 12: the plain inbox still shows `[truncated]` (the preview is deliberate), `watch --exec cat` hands over the 1411-character body's tail marker, and the delivered text does not contain the truncation marker. `full=1` is documented in the usage text, README and AGENTS.md. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** Rejected: fetching each truncated body from /thread and splicing it into the listing - the text listing is not reliably parseable because a body may itself contain newlines, so the split would be guesswork. Also rejected: refusing to ack a truncated page - the message would come back for ever. `full=1` is bounded by the same `inboxLimit x --max-body` envelope `/thread` already serves.
 
 ### 0058
 
@@ -1000,13 +1003,15 @@ CONFIDENCE: medium
 - **Severity / category / module:** S2 / incomplete / M2
 - **Location:** `chatbox-mcp.swift:197`
 - **Title:** notifications/cancelled is a no-op that can never be observed while a call blocks the read loop
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** Line 197 handles 'notifications/cancelled' with an empty break. call() blocks the single stdio loop on DispatchSemaphore.wait (line 65) for up to 70s, so no further stdin line is read while a tool call is in flight. MCP says a server SHOULD cancel the matching in-flight request on notifications/cancelled; here the notification is both ignored and structurally unreachable.
 
 WHY IT MATTERS: A host that cancels a slow inbox(wait=...) or thread call cannot stop it, and every other tool call is queued behind it for up to the timeout. The adapter behaves as a single-request server, so one slow board call stalls the whole MCP session.
 
 CONFIDENCE: high
-- **Fix:** Dispatch each tool call off the read loop and keep a map from JSON-RPC id to URLSessionTask so notifications/cancelled can cancel it; read stdin continuously.
+- **Fix:** `chatbox-mcp` no longer blocks the stdio loop: a `tools/call` starts a URLSession task, is filed by JSON-RPC id in `InFlightCalls`, and answers from the completion. `notifications/cancelled` claims and cancels the matching task, and a claimed-away completion emits nothing. stdout writes are serialised with a lock, and after stdin ends `waitForAll` drains in-flight calls after their answers are written.
+- **Evidence (after):** TEST. Section 31 adds: a ping is answered while an `inbox wait=3` call is in flight (first reply id 41), the slow call still answers (id 40), and a call cancelled by `notifications/cancelled` emits no `id:42` at all. The wait release is ordered after the stdout write - the first cut released it before, and every tool call answered with nothing. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** The completion rebuilds the JSON-RPC id from its key (`rpcID(fromKey:)`) instead of capturing `Any?`, which is not `Sendable`; no `@unchecked` was added. A cancellation for an unknown id is a no-op, as MCP specifies.
 
 ### 0060
 
@@ -1029,13 +1034,15 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / perf / M1
 - **Location:** `chatbox.swift:1553`
 - **Title:** Per-recipient N+1 queries on the send path; recipient count is bounded only by --max-body
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** The delivery loop 1550-1554 runs one `store.nodeOf(r)` SELECT plus one INSERT per recipient. Then 1568-1579 runs `store.lastSeen(of:)` once per recipient in the `unseen` filter and again inside unseenReason for each unseen id: up to three extra queries per id. Nothing caps the to= list; at the default --max-body=8192 a request carries roughly 1000 ids (~3000 queries), and the documented 4 MB ceiling roughly 500k.
 
 WHY IT MATTERS: One authenticated request chooses how much work the server does, all serialized on the single queue on the write path, so a large to= list stalls every other client for the duration.
 
 CONFIDENCE: high
-- **Fix:** Batch the lookups: one `SELECT id, node, last_seen FROM agents WHERE id IN (?,...)` (or a temp table) before the loop, reuse it for the delivery rows and the unseen check, and impose an explicit recipient-count cap.
+- **Fix:** `Store.agentFacts` reads every recipient's node and last-seen in chunked `IN` queries instead of one node lookup per delivery row and up to three last-seen lookups per warning; the send path uses it for both. A resolved fan-out over `maxRecipients` (500, reported by /health) is refused before anything is written.
+- **Evidence (after):** TEST. Section 59 pins the ceiling (500 accepted, 501 refused with 'too many recipients') and /health reports `recipients per message: 500`; the existing unseen-recipient and delivered_to checks exercise the batched values unchanged. A failed facts read rolls the transaction back. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** The batching itself is behaviour-preserving, so no new check can see it; the ceiling is the behavioural half and is pinned. 500 matches `--max-rows`. Rejected: a new `--max-recipients` flag - the brief asks for a stated cap, and adding a tunable for a fan-out this product never has is more surface than the defect warrants.
 
 ### 0062
 
@@ -1058,78 +1065,90 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / perf / M1
 - **Location:** `chatbox.swift:1748`
 - **Title:** Serial forward queue plus a 12 s semaphore wait holds one connection per queued federation forward
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** forwardQueue is serial (1024). performForward (1731-1780) blocks on `sem.wait(timeout: .now() + 12)` after a URLRequest with timeoutInterval 10 (1744, 1762). dispatch (1198-1211) answers the sender only after that completes, and the accept/idle deadline was already cancelled at 2501, so the connection is held for the whole wait; with a peer down, the Nth queued forward waits roughly N x 10 s.
 
 WHY IT MATTERS: A single dead peer turns every POST /message for an unowned repo into a 10-12 s stall, and queued forwards tie up connection slots until maxConnections (default 256) is exhausted, after which every client receives 503.
 
 CONFIDENCE: medium
-- **Fix:** Enforce a total deadline across the queue, use a bounded concurrent worker pool instead of a serial queue, or store the message and answer 202 immediately while retrying the peer in the background.
+- **Fix:** `forwardQueue` is concurrent with a bound of 8 in-flight forwards; beyond the bound the sender is answered at once with a truthful 'already forwarding' line instead of being queued behind an unbounded backlog.
+- **Evidence (after):** TEST. Section 33 starts a threaded Python peer that records the peak simultaneous requests: three forwards report a peak of 3. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** Behaviour change, recorded: the serial queue guaranteed two forwards for one repo reached the peer in send order; concurrent forwards do not. Forwards open a new thread at the peer anyway, and the peer assigns its own ids, so ordering was never load-bearing. `maxConnections` still bounds held sender connections.
 
 ### 0064
 
 - **Severity / category / module:** S2 / unsafe / M1
 - **Location:** `chatbox.swift:1752`
 - **Title:** Federation forward buffers the peer's entire response body with no size cap
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** In performForward the dataTask completion does `if let data = data, let text = String(data: data, encoding: .utf8) { answer = text }` (1757) — URLSession buffers the complete response body first. Nothing bounds how many bytes the peer (or whatever --peer happens to point at) returns; the 12s semaphore wait (1762) bounds only time. On timeout the task is cancelled, but bytes already buffered were allocated on the serial forwardQueue's behalf.
 
 WHY IT MATTERS: A hostile or mis-pointed peer can force a large allocation and occupies the single forwardQueue (comments 1020-1023 say all other sends' forwards queue behind it), on a path that runs for every unroutable message.
 
 CONFIDENCE: medium
-- **Fix:** Cap the readable body (inspect Content-Length and abort past a few KB, or use a streamed delegate that stops at a limit); only the first line of the answer is ever used.
+- **Fix:** `ForwardSessionDelegate` counts the body as it arrives and cancels the task past 64 KB, instead of letting `dataTask(with:completionHandler:)` buffer whatever the peer sends. The task is created with `dataTask(with:)` and answered by the delegate, because a session data delegate and a completion handler cannot both receive the body.
+- **Evidence (after):** TEST. Section 33's streaming peer advertises 10 MB and sends 200 KB; the forward is reported as 'longer than 65536 bytes' and never as delivered. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** The first cut used both a completion handler and a data delegate: the completion's data was nil and the delegate accumulated nothing, so every forward in the suite looked like an empty answer. The fix is the documented one - with a data delegate, the delegate receives the data.
 
 ### 0065
 
 - **Severity / category / module:** S2 / bug / M1
 - **Location:** `chatbox.swift:1773`
 - **Title:** Any 2xx from the peer is reported as a delivery without checking the peer is a chatbox board
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** performForward ends with `if status >= 200 && status < 300 { return "forwarded_to: \(peerURL) (ok)\n" }` (1773). The peer's body is discarded except for its first line on failure, and nothing verifies the chatbox success line ("ok posted"). Any host that answers 200 to POST /message is treated as a successful forward.
 
 WHY IT MATTERS: If --peer is misconfigured (or a fronting proxy answers 2xx itself), the sender is told forwarded_to ... (ok) although nothing was stored — the same 'silent loss announced as a delivery' the redirect refusal at 1766-1772 exists to prevent. The README promises the response says what actually happened.
 
 CONFIDENCE: medium
-- **Fix:** Require the peer's answer to begin with the chatbox success line before reporting forwarded_to; otherwise report the peer's own words as a failure.
+- **Fix:** A 2xx is a delivery only when the peer's first line is the chatbox success line (`ok posted`); anything else is reported as a failure that quotes the peer's own first line.
+- **Evidence (after):** TEST. Section 33's non-board peer answers 200 with `hello from a proxy`: the forward is a failure, names what the host said, and never says `forwarded_to:`. The real-peer checks still pass. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** The success line is the server's own first line from `POST /message`; requiring it is what distinguishes a board from a proxy that answers 2xx to anything.
 
 ### 0066
 
 - **Severity / category / module:** S2 / perf / M1
 - **Location:** `chatbox.swift:1934`
 - **Title:** SSE ticks run three board-wide COUNT(*) queries on the shared serial queue every 0.5 s per stream
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** pollEvents (1895-1926) calls boardState() every tick; boardState (1934-1937) calls boardCounts (767-774), whose query is three `SELECT COUNT(*)` over agents, threads and messages. Ticks are scheduled on `queue` (the only serial queue, 1019) every 0.5 s idle and every 0.25 s after a change (1911, 1923). health() (1279-1282) issues the same three COUNTs on every /health request. Measured: 3.1 ms per boardCounts at 500k messages, warm, and linear in history.
 
 WHY IT MATTERS: The cost scales with board history and with the number of SSE clients, and every scan runs on the same serial queue that serves all requests, so monitoring traffic steals throughput from message delivery and long polls.
 
 CONFIDENCE: medium
-- **Fix:** Keep the counts incrementally (update on insert/delete), or detect change with an O(1) signal such as `PRAGMA data_version` or MAX(id) on messages/deliveries, and serve /health from the same cached counters.
+- **Fix:** `Store.boardToken` is an O(1) fingerprint (MAX(id) of messages/threads, agents count, `PRAGMA data_version`); `Chatbox.boardState` recomputes the counts only when it changes and caches them for both the SSE tick and `/health`. A token read that failed is not trusted and not cached.
+- **Evidence (after):** TEST. Section 1 posts a message and requires /health's count to move; section 41's unreadable-store fixture still answers 503 and now names the store's own error (`no such table`), which the first cut broke by answering the second request from a cache of the pre-failure counts. The existing SSE activity checks still see changes. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** `PRAGMA data_version` is what notices a write by another process (an operator's `--prune`); MAX(id) is what notices this connection's inserts. Counts after a delete by a second process are refreshed on the next change. `countOrNil` was removed as it became unused.
 
 ### 0067
 
 - **Severity / category / module:** S2 / perf / M1
 - **Location:** `chatbox.swift:2017`
 - **Title:** Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** pollInbox (2008-2053) re-runs authorize(req) on every tick (2017) - a SHA-256 plus tokens(hash) lookup (authorize 1105-1152) - and `store.hasUnread(forAgent:)` (2039), rescheduling at longPollInterval = 0.25 s (36, 2049). A 300 s wait (maxWaitSeconds, 37) is about 1200 iterations; maxConnections defaults to 256 (3024), so a full board of idle waiters issues on the order of a thousand auth+query pairs per second.
 
 WHY IT MATTERS: Idle waiting sessions consume continuous CPU and SQLite work proportional to the number of waiters rather than to messages, so the delivery bus gets more expensive as sessions connect even when nothing is being sent.
 
 CONFIDENCE: medium
-- **Fix:** Signal waiters from the send path (per-agent condition/broadcast or a shared generation counter) and back the poll off (e.g. 0.25 s rising to 5 s); cache the authorized principal for the life of the wait and re-check revocation on a slower interval.
+- **Fix:** The long-poll interval doubles from 0.25 s to a 1 s cap while idle. The per-tick re-check no longer recomputes SHA-256: `Store.tokenValidity` validates the cached principal by id (one primary-key lookup) and returns the same refusal text for revoked, expired, unreadable-expiry and unknown credentials.
+- **Evidence (after):** TEST. The existing 'revoking a credential ends a wait that is already held' check (401 and no message posted after revocation) still passes, and the shutdown path's grace is now `longPollBackoffCap + 0.5` so a backed-off waiter still sends its 503 rather than being cut. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** Rejected: caching the principal for a fixed interval - that would delay revocation. The id re-check keeps revocation at one tick. Rejected: an event-driven wake registry - it needs a stored `DispatchWorkItem` per waiter on a `Sendable` type, and the codebase's established idiom avoids that.
 
 ### 0068
 
 - **Severity / category / module:** S2 / bug / M1
 - **Location:** `chatbox.swift:2179`
 - **Title:** Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** peers prints r["agent"] and r["node"] (2179) then r["ip"], r["session"] and r["harness"] (2182) raw, but wraps r["repos"] in oneLine() (2180). register echoes the stored node/agent/session/ip/harness raw at 1388-1391. register's p() only trims whitespace at the ends of a value, so interior CR/LF (e.g. harness=a%0Ab) is stored and later emitted as extra lines.
 
 WHY IT MATTERS: The sh client frames its read paths (chatbox-cli.sh:232-285) so it survives this, but chatbox-mcp.swift returns the body verbatim as tool content (toolResult, 136-140): a second consumer of the same response receives forged lines. oneLine's own doc (315-316) says echoing a value's line breaks is not acceptable.
 
 CONFIDENCE: medium
-- **Fix:** Apply oneLine() to every echoed field in peers/register (or reject control characters in register's node/agent/harness/session/ip), as repos already is.
+- **Fix:** Every peer-controlled field echoed by `peers` and `register` goes through `oneLine`, and `oneLine` now names NEL (U+0085) and the Unicode line/paragraph separators LS/PS (U+2028/U+2029) as well as C0/DEL, so the function's contract - the result cannot start a line - holds for the separators `hasControlByte` does not cover. The same treatment was applied to the recipient ids in the send answer and to the read paths of task #0097.
+- **Evidence (after):** TEST. Section 57 registers a session whose node/agent/harness/session/ip contain interior newlines, and whose id contains U+2028; it asserts the flattened form in the register answer and in /peers, and that a U+2028 recipient id is flattened in `delivered_to`. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** Expanded, not narrowed: the task named the peers/register loop, and extending `oneLine` closed the same hole for the separators and for the other read paths (recorded as #0097).
 
 ### 0069
 
@@ -1282,39 +1301,45 @@ CONFIDENCE: high
 - **Severity / category / module:** S2 / perf / M1
 - **Location:** `chatbox.swift:611`
 - **Title:** Startup key migration re-reads all four tables and rewrites every non-canonical row on every start
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** migrateRepoKeys (594-651) runs unconditionally at 3210 before the listener serves, on the listener's queue (3231), and loops `SELECT id, repos FROM agents` (611), `SELECT id, repo FROM threads` (619), `SELECT id, namespaces FROM tokens` (630) and `SELECT id, repo FROM messages` (641), issuing an individual UPDATE per changed row inside one BEGIN IMMEDIATE. Each SELECT materializes every row of its table in memory.
 
 WHY IT MATTERS: On a large board every restart blocks all request processing while it reads, and may rewrite, the whole messages table, even though the migration is idempotent and its work was completed on the first start.
 
 CONFIDENCE: medium
-- **Fix:** Record completion in `PRAGMA user_version` or a meta table and skip the scans once it has run; at minimum bound the messages pass so an oversized board does not look hung.
+- **Fix:** `migrateRepoKeys` records completion in `PRAGMA user_version` and returns immediately once it is set, so a restart does not re-read four tables. The `deliveries.node` backfill right after the schema now exits on failure instead of logging and continuing, so the write-lock refusal the suite pins still happens now that the migration may be skipped.
+- **Evidence (after):** TEST. Section 17 adds: the completion is recorded as `user_version=1`, and a non-canonical key written *after* the migration is left alone on the next start (proving the scan did not run). The existing write-lock check in section 55 still exits 1 naming `UPDATE deliveries`. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** The fixture resets `user_version=0` when it writes the old shape, because that is what a board predating the marker looks like; a change to the canonical rule must bump the recorded version.
 
 ### 0079
 
 - **Severity / category / module:** S2 / perf / M1
 - **Location:** `chatbox.swift:716`
 - **Title:** prune() clears reply_to with one full-table-scan UPDATE per pruned message (O(messages x pruned))
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** The delete loop at 713-719 runs, per candidate id: `UPDATE messages SET reply_to=0 WHERE reply_to=?` (716), `DELETE FROM deliveries WHERE message_id=?` (717) and `DELETE FROM messages WHERE id=?` (718). No index on messages.reply_to exists among the CREATE INDEX statements (420-446); EXPLAIN QUERY PLAN is `SCAN messages`. Measured: 1,000 such UPDATEs against a 500k-row messages table took 25.7 s in one process (~25 ms each).
 
 WHY IT MATTERS: --prune is the only supported way to bound the board and its cost is quadratic: 100k candidates on a 500k-row board is over 40 minutes of repeated full scans, and hours on a multi-million-row board, so operators abandon pruning and the database only grows.
 
 CONFIDENCE: high
-- **Fix:** Add `CREATE INDEX idx_msg_reply ON messages(reply_to)`, or delete in one set-based pass inside the transaction: `UPDATE messages SET reply_to=0 WHERE reply_to IN (...)` with the candidate id list.
+- **Fix:** `CREATE INDEX idx_msg_reply ON messages(reply_to)` turns prune's per-message `UPDATE messages SET reply_to=0 WHERE reply_to=?` from a full scan into an index seek.
+- **Evidence (after):** TEST. Section 58 reads `EXPLAIN QUERY PLAN` from the populated board: no `SCAN messages` and the plan names `idx_msg_reply`. Measured before the index: `SCAN messages`. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** The index is created by `CREATE INDEX IF NOT EXISTS`, so existing boards gain it on their next start.
 
 ### 0080
 
 - **Severity / category / module:** S2 / perf / M1
 - **Location:** `chatbox.swift:799`
 - **Title:** Inbox listing sorts the whole matching backlog in a temp b-tree to return 200 rows
-- **Status:** START
+- **Status:** TEST
 - **Evidence (before):** deliveries(forAgent:includeAcked:) (792-802) is `SELECT ... FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.agent = ? ... ORDER BY m.id DESC LIMIT 200`. The available index is `idx_del_unread ON deliveries(agent, acked_at)` (423), which does not order by message_id; EXPLAIN QUERY PLAN shows `SEARCH d USING INDEX idx_del_unread` plus `USE TEMP B-TREE FOR ORDER BY`. deliveryCount (806-811) joins messages only to count delivery rows.
 
 WHY IT MATTERS: A session with a large unread backlog makes the server sort the entire backlog on every inbox poll (including every 0.25 s long-poll tick) in order to emit 200 rows, and the effort is chosen by the backlog size.
 
 CONFIDENCE: high
-- **Fix:** Add `CREATE INDEX idx_del_inbox ON deliveries(agent, acked_at, message_id DESC)` so the ORDER BY is index-satisfied, and drop the messages join from deliveryCount.
+- **Fix:** `CREATE INDEX idx_del_inbox ON deliveries(agent, message_id DESC)`; `deliveries(forAgent:)` orders by `d.message_id` (the same value as the joined `m.id`, but one SQLite can satisfy from the index); `deliveryCount` drops the join it did not need.
+- **Evidence (after):** TEST. Section 58's plan for the unread listing has no `TEMP B-TREE` and names `idx_del_inbox`; the count uses `idx_del_unread` as a covering index. Measured before: `idx_del_unread` plus `USE TEMP B-TREE FOR ORDER BY`. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** Dropping the join from the count relies on the invariant the writer already keeps: a delivery row is written in the message's transaction and pruned before its message, so there are no orphans.
 
 ### 0081
 
@@ -1507,6 +1532,21 @@ CONFIDENCE: high (both halves are structural, not timing).
 - **Evidence (after):** TEST (gate, bounded probes, not a full sweep): with a Python `http.server` answering on 8777 - the default `CHATBOX_JSON_PORT` - `sh tests/protocol.sh` exits **2** naming `8777`; with `CHATBOX_JSON_PORT=9877` and the server on 9877 it exits **2** naming `9877`, so it is the override that is probed; with every fixture port free the same invocation proceeds past the preflight to section 1 (observed). The harness itself was exercised end to end by the #0069 run: base cell GREEN at 1127/0, one mutant cell red at 1123/4, relative-path cell GREEN, all through this code. `sh -n`, `dash -n` and `shellcheck -s sh` are clean on both files (mutate.sh 0, protocol.sh 0).
 - **Commit:** `29ce901`
 - **Notes:** This was inherited as an uncommitted working-tree change from the session that produced the #0069 cell; it is recorded and committed here rather than left unrecorded. Honest limit: the multi-worker path is not itself exercised by the default run (JOBS=1), and only one cell has been run through a worker; the port-band arithmetic was checked against every `CHATBOX_*PORT` default in the frozen suite (max fixture default 9410 + 3*2000 = 15410, main bands 8801-9280, no overlap) but a multi-worker full sweep would still be the first run to exercise four bands at once.
+
+### 0097
+
+- **Severity / category / module:** S2 / bug / M1
+- **Location:** `chatbox.swift renderInbox/showThread/listThreads (subject, sender, recipients, repo)`
+- **Title:** A message's subject, sender, recipients and repo are echoed unescaped on the inbox/thread/threads read paths, so a subject containing a line break forges lines in a listing
+- **Status:** TEST
+- **Evidence (before):** Found while fixing #0068. `renderInbox` printed `subject: \(subject)` and `from: \(sender)` raw, `showThread` printed the thread head's repo/subject/created_by and each message's sender/recipients/subject raw, and `listThreads` printed repo/subject raw. `subject` is `req.p("subject")`, which trims only the ends, so interior CR/LF is stored and later echoed - and a subject is read by an agent in `inbox`, `thread` and `threads`, where a forged line is a peer instruction presented as the listing's own text.
+
+WHY IT MATTERS: the shell client frames its reads and the MCP adapter frames `inbox`/`thread`/`peers`, so the frame is the boundary; but a field that breaks the listing's structure inside the frame is still a peer-chosen line in tool output, and #0068's own rule is that every echo is flattened. The recipients field is comma-joined ids whose split is already load-bearing (#0043).
+
+CONFIDENCE: high (static, and the fix is the same treatment `repos` already had in `peers`).
+- **Fix:** `oneLine` is applied to the subject, sender, recipients and repo echoes in `renderInbox`, `showThread` and `listThreads`, exactly as it already was in `peers`; `oneLine` also gained the Unicode line/paragraph separators.
+- **Evidence (after):** TEST. Section 57 sends a message whose subject contains a newline and one whose subject contains U+2028, then asserts the flattened `subject: s<RUN> FORGED<RUN>` in the inbox, the thread and the threads listing, and the flattened U+2028 form in the inbox. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).
+- **Notes:** Same remedy as #0068 by design: a new field-level validator would be a second rule to keep in sync, while the echo sites already funnel through `oneLine`. The message body is deliberately left raw - it is the content, and both clients frame it.
 
 ### 0011
 

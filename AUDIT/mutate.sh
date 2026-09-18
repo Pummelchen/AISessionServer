@@ -105,12 +105,14 @@ m('14-noparticipants', r'''            if !threadIn.isEmpty {
             }''')
 m('16-waitignored', '''        guard let raw = Int(req.p("wait")), raw > 0 else { return 0 }
         return min(raw, maxWaitSeconds)''', '''        return 0''')
-m('17-blockingwait', '''        queue.asyncAfter(deadline: .now() + longPollInterval) {
+m('17-blockingwait', '''        queue.asyncAfter(deadline: .now() + interval) {
             self.pollInbox(req, id: id, deadline: deadline, nextTouch: touch,
-                           waiter: waiter, conn: conn)
+                           interval: min(interval * 2, longPollBackoffCap),
+                           who: who, waiter: waiter, conn: conn)
         }''', '''        Thread.sleep(forTimeInterval: longPollInterval)
         self.pollInbox(req, id: id, deadline: deadline, nextTouch: touch,
-                       waiter: waiter, conn: conn)''')
+                       interval: min(interval * 2, longPollBackoffCap),
+                       who: who, waiter: waiter, conn: conn)''')
 m('18-timeouterror', '''            finish(req, conn: conn, status: 200, body: "")''',
   '''            finish(req, conn: conn, status: 404, body: "no messages\\n")''')
 m('19-ackonwait', r'''        store.beginRequest()
@@ -149,12 +151,14 @@ m('23-fixeddeadline', '''deadline: now.addingTimeInterval(TimeInterval(seconds))
   '''deadline: now.addingTimeInterval(15),''')
 m('24-pluseight', '''deadline: now.addingTimeInterval(TimeInterval(seconds)),''',
   '''deadline: now.addingTimeInterval(TimeInterval(seconds) + 8),''')
-m('25-block5', '''        queue.asyncAfter(deadline: .now() + longPollInterval) {
+m('25-block5', '''        queue.asyncAfter(deadline: .now() + interval) {
             self.pollInbox(req, id: id, deadline: deadline, nextTouch: touch,
-                           waiter: waiter, conn: conn)
+                           interval: min(interval * 2, longPollBackoffCap),
+                           who: who, waiter: waiter, conn: conn)
         }''', '''        Thread.sleep(forTimeInterval: 5)
         self.pollInbox(req, id: id, deadline: deadline, nextTouch: touch,
-                       waiter: waiter, conn: conn)''')
+                       interval: min(interval * 2, longPollBackoffCap),
+                       who: who, waiter: waiter, conn: conn)''')
 m('26-nocap', '''        return min(raw, maxWaitSeconds)''', '''        return raw''')
 # The F2 bug: let already-read mail satisfy the wait, which makes --all --wait spin.
 m('27-wakeonread', '''        if store.hasUnread(forAgent: id) {''',
@@ -194,12 +198,9 @@ m('36-wildcardclaim', '''            guard let key = canonicalRepoKey(repo) else
 m('37-nokeptvalidation', '''            for claimed in effectiveRepos.split(separator: ",") {''',
   '''            for claimed in repos.split(separator: ",") {''')
 # M1: no re-authorization inside the poll loop, so a revoked waiter keeps running.
-m('38-nopollauth', '''        switch authorize(req) {
-        case .denied(let status, let body):
-            finish(req, conn: conn, status: status, body: body)
+m('38-nopollauth', '''        if !who.isBootstrap, let denial = store.tokenValidity(who.tokenId) {
+            finish(req, conn: conn, status: 401, body: denial)
             return
-        case .ok:
-            break
         }
 
         // A waiting session that is still connected is alive''', '''        // A waiting session that is still connected is alive''')
@@ -279,7 +280,10 @@ m('49-nostale', '''        guard staleAfter > 0 else { return false }
         guard let then = Self.parseISO(lastSeen) else { return true }
         return now.timeIntervalSince(then) > Double(staleAfter)''',
   '''        return false''')
-m('50-nomarker', r'''               : delivered.map { r in unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r }.joined(separator: ", "))''',
+m('50-nomarker', r'''               : delivered.map { r in
+                   let name = oneLine(r)
+                   return unseen.contains(r) ? "\(name) (\(unseenLabel(r)))" : name
+                 }.joined(separator: ", "))''',
   r'''               : delivered.joined(separator: ", "))''')
 m('51-nopeersstatus', '''            rows[i]["status"] = staleAfter == 0 ? "unknown"
                 : (isStale(seen, now: now) ? "stale" : "active")
@@ -412,7 +416,10 @@ m('78-noidcheck', '''        guard validId(id) else { return (400, "error: id mu
 m('79-nokeyline', '''    if raw.isEmpty || hasControlByte(raw) { return nil }''', '''    if raw.isEmpty { return nil }''')
 m('80-noidline', '''    return !hasControlByte(id)''', '''    return true''')
 # The refusal must not hand the break back.
-m('81-noflatten', '''        if scalar.value < 0x20 || scalar.value == 0x7F { out.append(" ") } else { out.unicodeScalars.append(scalar) }''',
+m('81-noflatten', '''        if scalar.value < 0x20 || scalar.value == 0x7F
+            || scalar.value == 0x85 || scalar.value == 0x2028 || scalar.value == 0x2029 {
+            out.append(" ")
+        } else { out.unicodeScalars.append(scalar) }''',
   '''        out.unicodeScalars.append(scalar)''')
 # The send path used to accept a key it never validated, and store it on the thread.
 # A thread written before that check must not echo its key back either.
@@ -788,7 +795,7 @@ m('175-trk30-jsonflat', '''        if req.flag("json") { return (200, jsonRows(r
 # same commit that made it unreachable is recorded in the ledger under #0042.
 
 # TRK-28: a credential may carry an expiry, and an expired one is refused.
-m('166-trk28-noexpirycheck', '''        if !expiresAt.isEmpty {''', '''        if false, !expiresAt.isEmpty {''')
+m('166-trk28-noexpirycheck', '''        if !expiresAt.isEmpty {''', '''        if false, !expiresAt.isEmpty {''', count=2)
 m('167-trk28-noissueexpiry', '''        let expiresRaw = req.p("expires")''', '''        let expiresRaw = ""''')
 m('168-trk28-nolistexpiry', '''            out += "  expires: \\(expires.isEmpty ? "never (until revoked)" : expires)\\n"''',
   '''            out += ""''')
@@ -797,7 +804,7 @@ m('169-trk28-noexpiredstate', '''            let state = revoked || expired ? (r
 
 # Audit fixes: an expiry in a shape the server cannot compare is not trusted, and the client's
 # --expires must actually reach the server.
-m('176-trk28-noncanonicaltrusted', '''            if !canonical {''', '''            if false, !canonical {''')
+m('176-trk28-noncanonicaltrusted', '''            if !canonical {''', '''            if false, !canonical {''', count=2)
 m('177-trk28-clientnoexpires', '''    if [ -n "$EXPIRES" ]; then''', '''    if false; then''', target='cli')
 
 # TRK-27: a credential reads the conversations its machine takes part in.
@@ -897,8 +904,8 @@ m('214-trk17-noorigincolumn', r'''        addColumn("messages", "origin", "TEXT"
 m('215-trk17-nofedbanner', r'''        print("federation: \(server.peerURL.isEmpty ? "off — this board is '\(server.serverID)' and forwards nothing" : "forwarding to \(server.peerURL) as '\(server.serverID)', at most \(server.maxHops) hops accepted")")''',
   r'''        print("federation: off")''')
 # A forward that does not wait for the peer is a forward whose answer is a guess.
-m('216-trk17-nowait', r'''        if sem.wait(timeout: .now() + 12) == .timedOut {''',
-  r'''        if sem.wait(timeout: .now() + 0) == .timedOut {''')
+m('216-trk17-nowait', r'''        if delegate.wait(timeout: .now() + 12) {''',
+  r'''        if delegate.wait(timeout: .now() + 0) {''')
 
 
 # TRK-17 audit fixes: a board id that is invisible whitespace used to arrive empty on the peer and be
@@ -1015,14 +1022,13 @@ m('242-audit0033-doubledbye',
                       completion: .contentProcessed { _ in conn.cancel() })''')
 
 # AUDIT #0029: an unreadable store must not be rounded down to zero. This is the pre-fix reading of a
-# failed count - the empty string became 0, and /health answered 200 with empty counters.
+# failed count - it became 0, and /health answered 200 with empty counters. The guard now reads the
+# `readFailed` flag the (cached) `boardState` read leaves, so the mutation removes the guard.
 m('243-audit0029-healthzero',
-  r'''    func countOrNil(_ sql: String) -> Int? {
-        Int(scalar(sql))
-    }''',
-  r'''    func countOrNil(_ sql: String) -> Int? {
-        Int(scalar(sql)) ?? 0
-    }''')
+  r'''        let counts = boardState()
+        guard !store.readFailed else {''',
+  r'''        let counts = boardState()
+        guard true else {''')
 
 # AUDIT #0036: an ack the store refused must not be answered. This is the pre-fix message-form branch:
 # `run` (whose -1 was ignored) followed by `changedRows()`.
@@ -1453,8 +1459,10 @@ let shutdownHandler: @Sendable () -> Void = {
     store.checkpointWAL()
     FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))
     // The queue is serial, so everything already accepted has run by the time this runs; the held
-    // answers end on their own timers within half a second. This is the grace they get to leave.
-    server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+    // answers end on their own timers. A waiter's next tick is at most `longPollBackoffCap` away, so
+    // the grace is that plus a margin — a flat half-second was right only for the old fixed 0.25 s
+    // tick and cut a backed-off long poll's socket before it could send its 503.
+    server.queue.asyncAfter(deadline: .now() + longPollBackoffCap + 0.5) { exit(0) }
 }
 stopSource.setEventHandler(handler: shutdownHandler)
 stopSourceInt.setEventHandler(handler: shutdownHandler)
@@ -1482,8 +1490,10 @@ let shutdownHandler: @Sendable () -> Void = {
     store.checkpointWAL()
     FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))
     // The queue is serial, so everything already accepted has run by the time this runs; the held
-    // answers end on their own timers within half a second. This is the grace they get to leave.
-    server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+    // answers end on their own timers. A waiter's next tick is at most `longPollBackoffCap` away, so
+    // the grace is that plus a margin — a flat half-second was right only for the old fixed 0.25 s
+    // tick and cut a backed-off long poll's socket before it could send its 503.
+    server.queue.asyncAfter(deadline: .now() + longPollBackoffCap + 0.5) { exit(0) }
 }
 stopSource.setEventHandler(handler: shutdownHandler)
 stopSourceInt.setEventHandler(handler: shutdownHandler)
@@ -1502,7 +1512,7 @@ let shutdownHandler: @Sendable () -> Void = {
     listener.cancel()
     store.checkpointWAL()
     FileHandle.standardError.write(Data("chatbox: \(nowISO()) shutdown: stopped accepting, held answers ended, WAL checkpointed — exiting\n".utf8))
-    server.queue.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+    server.queue.asyncAfter(deadline: .now() + longPollBackoffCap + 0.5) { exit(0) }
 }
 stopSource.setEventHandler(handler: shutdownHandler)
 stopSourceInt.setEventHandler(handler: shutdownHandler)
@@ -1621,6 +1631,80 @@ m('248-audit0024-nobackoff',
   r'''      if [ "$_ok" -eq 0 ]; then
         printf 'chatbox: delivery failed; leaving the message unread\n' >&2
       elif [ "$NOACK" != 1 ]; then''', target='cli')
+
+# --- the echo path: a peer-chosen value that can paint its own lines into a read answer -----------
+# Section 57 pins that every echo of a peer-controlled field goes through `oneLine`, and that
+# `oneLine` removes CR/LF *and* the Unicode line separators. Each cell below is one of those
+# echoes put back the way it was, or the separator half of `oneLine` removed.
+m('298-audit0068-peersraw',
+  r'''            out += "\n\(oneLine(r["id"] ?? ""))  (\(oneLine(r["agent"] ?? "-")) on \(oneLine(r["node"] ?? "-")))  \(status == "stale" ? "STALE" : status)\n"''',
+  r'''            out += "\n\(r["id"] ?? "")  (\(r["agent"] ?? "-") on \(r["node"] ?? "-"))  \(status == "stale" ? "STALE" : status)\n"''')
+m('299-audit0068-registerraw',
+  r'''        ip: \(oneLine(stored["ip"] ?? ""))  harness: \(oneLine(stored["harness"] ?? ""))''',
+  r'''        ip: \(stored["ip"] ?? "")  harness: \(stored["harness"] ?? "")''')
+m('300-audit0097-subjectraw',
+  r'''            if !(r["subject"] ?? "").isEmpty { out += "  subject: \(oneLine(r["subject"]!))\n" }''',
+  r'''            if !(r["subject"] ?? "").isEmpty { out += "  subject: \(r["subject"]!)\n" }''')
+m('301-audit0068-lineseparators',
+  r'''        if scalar.value < 0x20 || scalar.value == 0x7F
+            || scalar.value == 0x85 || scalar.value == 0x2028 || scalar.value == 0x2029 {''',
+  r'''        if scalar.value < 0x20 || scalar.value == 0x7F {''')
+m('302-audit0068-deliveredraw',
+  r'''               : delivered.map { r in
+                   let name = oneLine(r)
+                   return unseen.contains(r) ? "\(name) (\(unseenLabel(r)))" : name
+                 }.joined(separator: ", "))''',
+  r'''               : delivered.map { r in unseen.contains(r) ? "\(r) (\(unseenLabel(r)))" : r }.joined(separator: ", "))''')
+
+# --- the forward path: a 2xx is not a delivery, and the peer does not choose the allocation -------
+# A host that is not a board answers 2xx to anything, and only the chatbox success line says a
+# message was stored; a peer that streams bytes chooses how much the board buffers. Section 33's
+# fake-2xx and streaming fixtures pin both.
+m('303-audit0065-any2xx',
+  r'''        if status >= 200 && status < 300 {
+            if first == "ok posted" { return "forwarded_to: \(peerURL) (ok)\n" }
+            let said = first.isEmpty ? "no answer" : oneLine(first)
+            return "forward failed: \(peerURL) answered \(status) but not like a chatbox board — \(said)\nthe message is stored here; the peer can be retried by hand\n"
+        }''',
+  r'''        if status >= 200 && status < 300 { return "forwarded_to: \(peerURL) (ok)\n" }''')
+m('304-audit0064-uncapped',
+  r'''    static let maxAnswerBytes = 64 * 1024''',
+  r'''    static let maxAnswerBytes = Int.max''')
+
+# --- polling and forwarding cost ------------------------------------------------------------------
+# #0066 caches the board counts behind a change token so the SSE tick and /health do not scan the
+# messages table; a cache that never re-checks would report a number that stopped changing.
+# #0067 re-checks a held waiter's credential by id and backs the interval off; skipping the re-check
+# lets a revoked credential keep a wait alive. #0063 runs forwards concurrently so a slow peer does
+# not serialise every later forward behind its timeout.
+m('305-audit0066-stalecache',
+  r'''        if !store.readFailed, let cached = boardCache, cached.token == token { return cached.state }''',
+  r'''        if let cached = boardCache { return cached.state }''')
+m('306-audit0067-norecheck',
+  r'''        if !who.isBootstrap, let denial = store.tokenValidity(who.tokenId) {''',
+  r'''        if who.tokenId.isEmpty, let denial = store.tokenValidity(who.tokenId) {''')
+m('307-audit0063-serialforward',
+  r'''    let forwardQueue = DispatchQueue(label: "chatbox.forward", attributes: .concurrent)''',
+  r'''    let forwardQueue = DispatchQueue(label: "chatbox.forward")''')
+# #0057: watch consumes and acknowledges, so the listing it receives must not be the 1200-character
+# preview. Inverting the flag makes the default full and the watch request truncated.
+m('308-audit0057-fullignored',
+  r'''b.count > 1200 && !full ?''',
+  r'''b.count > 1200 && full ?''')
+# #0061: the recipient fan-out has a stated ceiling the board reports. This raises it so the
+# over-ceiling send is accepted.
+m('309-audit0061-nocap',
+  r'''        guard recipients.count <= maxRecipients else {''',
+  r'''        guard recipients.count <= maxRecipients + 100000 else {''')
+# #0059: a cancelled tool call gets no response. This is the pre-fix no-op notification handler.
+m('310-audit0059-nocancel',
+  r'''    case "notifications/cancelled":
+        // A cancellation names the request it is about. The matching call is removed and its task
+        // cancelled; its completion then finds no entry and emits no response, which is what MCP
+        // asks of a cancelled request. A cancellation for an id that is not in flight is a no-op.
+        if let key = callKey(params["requestId"]) { calls.cancel(key) }''',
+  r'''    case "notifications/cancelled":
+        break''', target='mcp')
 
 cli = open(os.path.join(fr, 'chatbox-cli.sh')).read()
 mcp = open(os.path.join(fr, 'chatbox-mcp.swift')).read()
