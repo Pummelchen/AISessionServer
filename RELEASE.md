@@ -186,13 +186,30 @@ Leave previous releases' notes and performance tables alone.
 
 ## AISessionServer — Shell, no release yet
 
-- **Identity** semantic version, not yet established.
+- **Identity** semantic version, not yet established. There is no `VERSION` file and
+  no tag, so §1.3 applies in full the moment the first release is cut; the MCP
+  adapter's `protocolVersion`/`serverInfo.version` are a protocol draft, a separate
+  axis (§1.3), and are not the product version.
+- **The lint and standard gates are committed, not improvised.** `.swift-format`,
+  `.swiftlint.yml` and `ruff.toml` are in the tree, and `ci.yml` runs each as a gate:
+  `xcrun swift-format lint --strict`, `swiftlint lint --strict`, the strict
+  concurrency typecheck (`-swift-version 6 -strict-concurrency=complete
+  -warnings-as-errors`), and `ruff check`/`ruff format --check` for the audit
+  helpers. A release runs the same commands locally before the clean build (§1.5).
 - **Two Swift binaries are compiled, but neither is committed.** `xcrun swiftc -O
   chatbox.swift -o chatbox`, and the same for `chatbox-mcp.swift`; both outputs are
   gitignored. A release would therefore carry either the built binaries (native
   `arm64` only, per §1.2.1–§1.2.4) or a tagged source archive with a documented entry
   point. There is no release script.
+- **The client is one file on purpose.** `chatbox-cli.sh` is installed by copying it
+  to `~/.local/bin/chatbox` on each machine; it is not split into sourced libraries,
+  because that would turn installation into a build step. Any reorganisation must keep
+  the one-file install working.
 - **Code scanning** runs CodeQL **advanced** setup (`.github/workflows/codeql.yml`,
   Swift, `build-mode: manual`). **Default setup is not configured and must stay
   that way** — it ran `swift build`, found no `Package.swift`, and analysed nothing
   while failing.
+- **The one accepted scanner finding is waived in writing.** CodeQL's
+  `swift/cleartext-transmission` alert on the plain-HTTP listener is accurate and
+  dismissed as *won't fix*; [SECURITY.md](SECURITY.md) records why (TLS is available
+  and documented; plain is the private-tailnet default) and what would close it.

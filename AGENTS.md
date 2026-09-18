@@ -16,7 +16,7 @@ An HTTP + SQLite message board that lets two independent AI agent sessions, on
 different machines and different harnesses, exchange plain text **by repository
 key** without sharing any access. A single-file Swift server (`chatbox.swift`) plus
 a POSIX `sh` client and an optional MCP adapter. It is working and in daily use
-between two Macs and two harnesses, with a 6617-line protocol regression suite;
+between two Macs and two harnesses, with a 6627-line protocol regression suite;
 there are **no releases and no tags**, so distribution is build-from-source. It is
 for anyone running more than one peer agent session that needs to talk without
 granting a mount, a checkout or a permission.
@@ -31,9 +31,13 @@ a repository.
   federation, operator modes.
 - `chatbox-mcp.swift` (464 lines) — a stateless stdio MCP adapter.
 - `chatbox-cli.sh` (994 lines) — the POSIX `sh` client, installed as `chatbox`.
-- `tests/protocol.sh` (6617 lines) — the end-to-end suite.
-- `.github/workflows/ci.yml`, `codeql.yml`; `.github/traffic.json` (badge data).
-- There is **no `Package.swift`, no `Sources/` and no lockfile.** Runtime state
+  **Deliberately one file**: it is installed by copying it to `~/.local/bin/chatbox`,
+  so a split would turn installation into a build step.
+- `tests/protocol.sh` (6627 lines) — the end-to-end suite.
+- `.swift-format`, `.swiftlint.yml`, `ruff.toml` — the committed language configs
+  CI runs `--strict` (see **Gates**).
+- `.github/workflows/ci.yml`, `codeql.yml`.
+- There is **no `Package.swift` and no lockfile.** Runtime state
   (`chatbox`, `chatbox.token`, `chatbox.sqlite*`, `chatbox.log`, `tests/.scratch/`)
   is gitignored.
 
@@ -81,18 +85,24 @@ envelope, `--max-rows` 500 per listing (always stating `shown` of `matching`),
 ## Identity
 
 No product version. `chatbox-mcp.swift` declares `protocolVersion = "2024-11-05"`
-and `serverInfo.version = "1.0"`. The source is **Swift 6** (no version pin: the
-toolchain is whatever `runs-on: xcode-27` provides), and the standard is enforced in
-CI — both binaries are typechecked under `-swift-version 6
--strict-concurrency=complete -warnings-as-errors`, and the exit code is a gate. GitHub reports this repository's primary
-language as **Shell**, not Swift, despite `chatbox.swift` being the bulk of the code.
+and `serverInfo.version = "1.0"` (a protocol draft, not a product version). The
+source is **Swift 6** (no version pin: the toolchain is whatever `runs-on: xcode-27`
+provides), and the standard is enforced in CI: both binaries are typechecked under
+`-swift-version 6 -strict-concurrency=complete -warnings-as-errors`, `swift-format
+lint --strict` and `swiftlint lint --strict` run on both, and each exit code is a
+gate. GitHub reports this repository's primary language as **Shell**, not Swift,
+despite `chatbox.swift` being the bulk of the code.
 
 ## Gates
 
-- `.github/workflows/ci.yml`: builds both binaries with the documented commands,
-  starts a disposable server, runs `tests/protocol.sh` with all its env vars, then
-  exercises `--backup`/`--verify-backup` against an empty file, a table-less 4 KB
-  database, a stale copy and an existing destination.
+- `.github/workflows/ci.yml`: builds both binaries with the documented commands and
+  fails on any compiler diagnostic; runs the strict typecheck
+  (`-swift-version 6 -strict-concurrency=complete -warnings-as-errors`) and the
+  formatter/linter gates (`swift-format lint --strict`, `swiftlint lint --strict`,
+  with SwiftLint installed on the runner when absent); starts a disposable server;
+  runs `tests/protocol.sh` with all its env vars; then exercises
+  `--backup`/`--verify-backup` against an empty file, a table-less 4 KB database, a
+  stale copy and an existing destination.
 - `.github/workflows/codeql.yml`: Swift, `build-mode: manual`, weekly cron,
   `cancel-in-progress: false`. **The advanced setup exists because default setup ran
   `swift build`, found no `Package.swift`, and analysed nothing while failing.**
