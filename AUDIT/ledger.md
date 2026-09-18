@@ -4,7 +4,7 @@ Machine-readable twin: [`ledger.json`](ledger.json) (it wins on conflict). Envir
 
 Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -strict-concurrency=complete, -warnings-as-errors; POSIX sh, sh -n + dash -n + shellcheck.
 
-**Open: 14 | done: 83 | blocked: 0 | total: 97** (S0 7, S1 31, S2 51, S3 8)
+**Open: 13 | done: 84 | blocked: 0 | total: 97** (S0 7, S1 31, S2 51, S3 8)
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
@@ -99,7 +99,7 @@ Status gates (a status may not advance without the artefact): START = reproduced
 | [0094](#0094) | S2 | M4 | `tests/protocol.sh:1515,4471` | Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board | test | **DONE** | node1 | new-this-session (the audit/0062 verification run) |
 | [0096](#0096) | S2 | M7 | `AUDIT/mutate.sh:1714 ; tests/protocol.sh:271` | The mutation matrix could only run cells serially and probed the suite's literal fixture ports, so a full sweep could not fit one slot and a per-cell port override was invisible to the preflight | test | **DONE** | node1 | audit/0069 verification run |
 | [0097](#0097) | S2 | M1 | `chatbox.swift renderInbox/showThread/listThreads (subject, sender, recipients, repo)` | A message's subject, sender, recipients and repo are echoed unescaped on the inbox/thread/threads read paths, so a subject containing a line break forges lines in a listing | bug | **TEST** | node1 | audit/0068 follow-up |
-| [0011](#0011) | S3 | M1/M2/M4 | `repository-wide` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **START** | node1 | L0 |
+| [0011](#0011) | S3 | M1/M2/M4 | `.swift-format ; .swiftlint.yml ; chatbox.swift ; chatbox-mcp.swift` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **DONE** | node1 | L0 |
 | [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **DONE** | node1 | phase-A |
 | [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **DONE** | node1 | L0 secret-scan triage |
 | [0016](#0016) | S3 | M3 | `chatbox-cli.sh:30` | SC1090: the client sources a non-constant path (~/.chatbox) | style | **DONE** | node1 | L0 shellcheck baseline |
@@ -1551,12 +1551,16 @@ CONFIDENCE: high (static, and the fix is the same treatment `repos` already had 
 ### 0011
 
 - **Severity / category / module:** S3 / style / M1/M2/M4
-- **Location:** `repository-wide`
+- **Location:** `.swift-format ; .swiftlint.yml ; chatbox.swift ; chatbox-mcp.swift`
 - **Title:** Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings
-- **Status:** START
-- **Evidence (before):** AUDIT/baseline/swift-format.txt (3309), AUDIT/baseline/swiftlint-counts.txt (303: identifier_name 124, line_length 83, non_optional_string_data_conversion 63, cyclomatic_complexity 8, ...)
-- **Fix:** Add a committed formatter config matching the project's real style, apply it in one formatting-only commit, and keep swiftlint's substantive rules on while disabling the ones that fight documented design (file_length for the single-file constraint) with a written reason.
-- **Notes:** Formatting must be its own commit, never mixed into a fix (brief S10).
+- **Status:** DONE
+- **Evidence (before):** Baseline (captured at 971faae): `xcrun swift-format lint --strict` reported 3309 findings and `swiftlint lint` 303 across 14 rules. On the pre-#0011 revision the counts were 4189 swift-format and 279 SwiftLint, and no `.swift-format` or `.swiftlint.yml` existed, so no formatter or linter config was in force and nothing in the build failed without one.
+
+WHY IT MATTERS: the brief's Swift standard names a committed formatter config and a committed linter config run with --strict. Without them a style regression (including a force-unwrap) lands silently.
+- **Fix:** Committed `.swift-format` (4-space, lineLength 120, respectsExistingLineBreaks, multiline strings never reflowed, GroupNumericLiterals off) and `.swiftlint.yml` (every substantive rule on, including opt-in force_unwrapping; only rules that fight the documented single-file design or duplicate a formatting decision swift-format makes differently are disabled, each with a written reason). Formatted both Swift files, removed the 18 force-unwraps the enabled rule found, fixed for_where/implicit-optional/CFF force cast, added `ruff.toml`, and added a Format and lint step (both --strict) to CI. Because the formatter rewrites whitespace, `AUDIT/mutate.sh` now matches a Swift mutation fragment on its token sequence so 200+ cells cannot silently go stale; the stale-anchor guarantee is unchanged.
+- **Evidence (after):** SWEPT (S3 gate). `swift-format lint --strict --configuration .swift-format chatbox.swift chatbox-mcp.swift` reports 0; `swiftlint lint --strict --config .swiftlint.yml chatbox.swift chatbox-mcp.swift` reports 0 and exits 0; both strict-concurrency typechecks are 0/0; the full protocol suite is **1162 passed / 0 failed** on the formatted revision; all 305 mutation anchors match. The violation proofs are in AUDIT/tool-coverage.md. Commit 6950542.
+- **Commit:** `6950542`
+- **Notes:** Disabled with reasons, not waived: file_length/type_body_length/function_body_length/cyclomatic_complexity/large_tuple/function_parameter_count (the single-file design), opening_brace/closure_parameter_position (swift-format formats these differently), and optional_data_string_conversion (it fires on String(decoding:) over a raw SQLite byte buffer, where the failable form would turn a row into "" on non-UTF-8 bytes). identifier_name is configured (min_length 1), not disabled. Rejected: a full swift-format default reformat without the token matcher - it invalidated 225 of 305 mutation anchors, which would have silently skipped them.
 
 ### 0012
 
