@@ -17,6 +17,14 @@
 # gone the run *aborts* before any cell executes: a cell that no longer matches is a check that
 # stopped existing, and a run that quietly skips it looks exactly like a clean one.
 #
+# A Swift fragment is matched **whitespace-insensitively at the token level** (see `frag_pattern`):
+# whitespace, `;`, and whitespace around `( ) [ ] { } , .` are ignored, and the tokens of a
+# multi-line string literal are compared without their indentation. That is not laxity - the
+# behaviour a cell tests does not change when a formatter reflows the line - and it is what lets
+# `swift-format` (the committed config) format the source without 200 cells silently going stale.
+# The same guarantee holds: a fragment whose *tokens* are gone still aborts the run. Shell
+# fragments are matched exactly, because no formatter touches the shell sources.
+#
 # Scratch state stays under tests/.scratch/, which is gitignored.
 set -u
 
@@ -584,8 +592,13 @@ m('117-prunedryrunwrites', '''        if !dryRun {
 # A thread left with no messages is clutter, and the report has to count it.
 m('118-prunethread', '''            for thread in emptied {
                 // Re-checked inside the transaction: a thread with anything left in it stays.
-                if run("DELETE FROM threads WHERE id = ? AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = ?)",
-                       [thread, thread]) < 0 { return abandon() }
+                // Named rather than inlined into the `if`, so the loop body is not a single `if`
+                // (which reads as a filter and is what SwiftLint's `for_where` asks to rewrite).
+                let stale =
+                    run(
+                        "DELETE FROM threads WHERE id = ? AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = ?)",
+                        [thread, thread]) < 0
+                if stale { return abandon() }
             }
 ''', '''            _ = emptied
 ''')
@@ -863,7 +876,7 @@ m('196-trk17-hopnostamp', r'''("body", plan.body), ("hop", serverID)]''',
   r'''("body", plan.body), ("hop", "")]''')
 m('197-trk17-nooriginstore', r'''recipients.joined(separator: ","), hops.first, String(threadId)])''',
   r'''recipients.joined(separator: ","), nil, String(threadId)])''')
-m('198-trk17-nooriginshow', r'''            let via = (r["origin"] ?? "").isEmpty ? "" : "  (via \(r["origin"]!))"''',
+m('198-trk17-nooriginshow', r'''            let via = (r["origin"] ?? "").isEmpty ? "" : "  (via \(r["origin"] ?? ""))"''',
   r'''            let via = ""''')
 m('199-trk17-hopunchecked', r'''                guard !hop.isEmpty else {
                     return Reply(400, "error: hop names boards, one per entry — an empty entry is not a board\n")
@@ -927,7 +940,7 @@ m('221-trk17-redirectunnamed', r'''        if status >= 300 && status < 400 {
             return "forward failed: \(peerURL) answered \(status) — it redirected to \(landed); point --peer at the board itself\nthe message is stored here; the peer can be retried by hand\n"
         }
 ''', '')
-m('222-trk17-inboxnoorigin', r'''            let via = (r["origin"] ?? "").isEmpty ? "" : " (via \(r["origin"]!))"''',
+m('222-trk17-inboxnoorigin', r'''            let via = (r["origin"] ?? "").isEmpty ? "" : " (via \(r["origin"] ?? ""))"''',
   r'''            let via = ""''')
 m('224-trk17-selfpeerok', r'''    if peerPort == Int(port), selfHosts.contains((peerComps.host ?? "").lowercased()) {''',
   r'''    if false {''')
@@ -1643,7 +1656,7 @@ m('299-audit0068-registerraw',
   r'''        ip: \(oneLine(stored["ip"] ?? ""))  harness: \(oneLine(stored["harness"] ?? ""))''',
   r'''        ip: \(stored["ip"] ?? "")  harness: \(stored["harness"] ?? "")''')
 m('300-audit0097-subjectraw',
-  r'''            if !(r["subject"] ?? "").isEmpty { out += "  subject: \(oneLine(r["subject"]!))\n" }''',
+  r'''            if !(r["subject"] ?? "").isEmpty { out += "  subject: \(oneLine(r["subject"] ?? ""))\n" }''',
   r'''            if !(r["subject"] ?? "").isEmpty { out += "  subject: \(r["subject"]!)\n" }''')
 m('301-audit0068-lineseparators',
   r'''        if scalar.value < 0x20 || scalar.value == 0x7F
@@ -1706,12 +1719,81 @@ m('310-audit0059-nocancel',
   r'''    case "notifications/cancelled":
         break''', target='mcp')
 
+import re as _re
+
+def frag_pattern(frag):
+    parts = []
+    i = 0
+    n = len(frag)
+    while i < n:
+        if frag[i].isspace():
+            j = i
+            while j < n and frag[j].isspace():
+                j += 1
+            parts.append(r'\s+')
+            i = j
+            continue
+        if frag.startswith('"""', i):
+            j = frag.find('"""', i + 3)
+            if j < 0:
+                parts.append(_re.escape('"""'))
+                i += 3
+                continue
+            j += 3
+            toks = frag[i:j].split()
+            parts.append(r'\s+'.join(_re.escape(t) for t in toks) if toks else '')
+            i = j
+            continue
+        if frag[i] == '"':
+            j = i + 1
+            depth = 0
+            while j < n:
+                c = frag[j]
+                if c == '\\' and j + 1 < n:
+                    if frag[j+1] == '(':
+                        depth += 1
+                    j += 2
+                    continue
+                if c == '"' and depth == 0:
+                    j += 1
+                    break
+                if c == ')' and depth > 0:
+                    depth -= 1
+                j += 1
+            parts.append(_re.escape(frag[i:j]))
+            i = j
+            continue
+        if frag[i] == ';':
+            parts.append(';?')
+            i += 1
+            continue
+        if frag[i] == ';':
+            parts.append(r'\s*;?\s*')
+            i += 1
+            continue
+        if frag[i] in '()[]{},.':
+            parts.append(r'\s*' + _re.escape(frag[i]) + r'\s*')
+            i += 1
+            continue
+        j = i
+        while (j < n and not frag[j].isspace() and frag[j] != '"'
+               and frag[j] not in '()[]{},;.'):
+            j += 1
+        parts.append(_re.escape(frag[i:j]))
+        i = j
+    return _re.compile(''.join(parts))
+
 cli = open(os.path.join(fr, 'chatbox-cli.sh')).read()
 mcp = open(os.path.join(fr, 'chatbox-mcp.swift')).read()
 bad = []
 for d in M:
     hay = cli if d['target'] == 'cli' else (mcp if d['target'] == 'mcp' else src)
-    n = hay.count(d['old'])
+    if d['target'] == 'cli':
+        pat = None
+        n = hay.count(d['old'])
+    else:
+        pat = frag_pattern(d['old'])
+        n = len(pat.findall(hay))
     if n != d['count']:
         bad.append(f"{d['name']}: anchor found {n}x, expected {d['count']}x")
         continue
@@ -1724,10 +1806,10 @@ for d in M:
         # The adapter's mutants are Swift files too, so they live in their own directory: the
         # server loop globs *.swift and would otherwise try to run them as servers.
         os.makedirs(os.path.join(sc, 'mut-mcp'), exist_ok=True)
-        open(os.path.join(sc, 'mut-mcp', d['name'] + '.swift'), 'w').write(d['hay'].replace(d['old'], rep))
+        open(os.path.join(sc, 'mut-mcp', d['name'] + '.swift'), 'w').write(hay.replace(d['old'], rep) if pat is None else pat.sub(lambda mm: rep, hay))
         continue
     ext = '.sh' if d['target'] == 'cli' else '.swift'
-    open(os.path.join(sc, 'mut', d['name'] + ext), 'w').write(d['hay'].replace(d['old'], rep))
+    open(os.path.join(sc, 'mut', d['name'] + ext), 'w').write(hay.replace(d['old'], rep) if pat is None else pat.sub(lambda mm: rep, hay))
 if bad:
     print('ANCHOR PROBLEMS (the run is aborted; no cell was tested):')
     [print(' ', b) for b in bad]

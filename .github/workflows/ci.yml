@@ -55,6 +55,17 @@ jobs:
           xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox.swift
           xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox-mcp.swift
 
+      # The committed formatter and linter configs, run with --strict so a style regression fails
+      # the build instead of becoming a review comment. swift-format ships with the toolchain;
+      # SwiftLint is installed only if the runner image does not already carry it.
+      - name: Format and lint
+        run: |
+          set -eu
+          xcrun swift-format lint --strict --configuration .swift-format chatbox.swift chatbox-mcp.swift
+          if ! command -v swiftlint >/dev/null 2>&1; then brew install swiftlint; fi
+          swiftlint version
+          swiftlint lint --strict --config .swiftlint.yml chatbox.swift chatbox-mcp.swift
+
       - name: Start a disposable server
         run: |
           set -eu

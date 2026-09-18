@@ -26,7 +26,7 @@ programs:
 
 | Language | Present | Standard applied |
 |---|---|---|
-| Swift (6.4) | yes — `chatbox.swift`, `chatbox-mcp.swift` | strict concurrency, warnings-as-errors |
+| Swift (6.4) | yes — `chatbox.swift`, `chatbox-mcp.swift` | strict concurrency, warnings-as-errors, `.swift-format` + `.swiftlint.yml` `--strict` |
 | POSIX `sh` | yes — `chatbox-cli.sh`, `tests/protocol.sh`, `AUDIT/mutate.sh` | `sh -n`, `dash -n`, `shellcheck` |
 | Python 3.14 | **audit tooling only** — `AUDIT/gen-ledger.py` (not product code) | Ruff format + lint, `python -m compileall`; no type checker or coverage (brief §1 de-scope for test/glue) |
 | C# / .NET | **no** | n/a |
@@ -80,6 +80,32 @@ brew install swiftlint shellcheck gitleaks semgrep dash llvm actionlint ruff
 ```
 
 `swift-format` needs no install: it ships with the 6.4 CommandLineTools (`xcrun swift-format`).
+
+## Committed language configs (the standard, in force)
+
+The Swift standard is not a convention; it is carried by files in the repository and run by CI, so a
+violation fails the build (the proofs are in [`tool-coverage.md`](tool-coverage.md)).
+
+| Config | Tool | Gate |
+|---|---|---|
+| `.swift-format` | `xcrun swift-format` (CLI 6.4) | `swift-format lint --strict --configuration .swift-format chatbox.swift chatbox-mcp.swift` |
+| `.swiftlint.yml` | SwiftLint 0.65.1 | `swiftlint lint --strict --config .swiftlint.yml chatbox.swift chatbox-mcp.swift` |
+| `ruff.toml` | Ruff 0.16.7 | `ruff check` / `ruff format --check` on the committed Python |
+| `AUDIT/mutate.sh` (token matcher) | harness | a fragment whose tokens are gone aborts before any cell runs |
+
+`.swift-format` uses 4-space indentation, `lineLength: 120`, `respectsExistingLineBreaks` and
+`reflowMultilineStringLiterals: never`, so it matches the project's real style rather than
+reflowing it into a different one; `GroupNumericLiterals` is off because `100_000` is not this
+codebase's spelling. `.swiftlint.yml` keeps every substantive rule on (including the opt-in
+`force_unwrapping`) and disables only rules that fight the documented single-file design or
+duplicate a formatting decision swift-format makes differently, each with a written reason in the
+file itself. CI runs both `--strict`, so a new warning is a failed build.
+
+Because the formatter rewrites whitespace, `AUDIT/mutate.sh` matches a Swift mutation fragment on
+its **token sequence** (whitespace, `;`, and spacing around `( ) [ ] { } , .` are ignored;
+multi-line string literal contents are compared without indentation). The guarantee is unchanged: a
+fragment whose tokens are gone still aborts the run. Shell fragments are matched exactly.
+
 
 ## The ledger is generated, not hand-maintained
 
