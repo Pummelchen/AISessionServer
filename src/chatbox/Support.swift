@@ -169,7 +169,11 @@ func loadTLSIdentity(p12Path: String, password: String) -> sec_identity_t? {
 /// binary serving (`pkill -f "AISessionServer/chatbox"` silently matches nothing, because the process
 /// shows as `./chatbox --port …`), so the first question after a rollback is "which build is this?" —
 /// and there was no way to ask it, from the banner, from `/health` or from the command line.
-let sourceRevision = "audit/2026-09-15"
+///
+/// There is no version pin and no generated revision file: a binary built from a working tree has no
+/// single revision, so the honest default is `source`. A builder who wants a specific name sets
+/// `CHATBOX_REVISION`, for example `CHATBOX_REVISION="$(git rev-parse --short HEAD)"`.
+let sourceRevision = ProcessInfo.processInfo.environment["CHATBOX_REVISION"] ?? "source"
 
 func buildIdentity() -> String {
     var info = stat()
