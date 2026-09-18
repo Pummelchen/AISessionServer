@@ -16,7 +16,7 @@ An HTTP + SQLite message board that lets two independent AI agent sessions, on
 different machines and different harnesses, exchange plain text **by repository
 key** without sharing any access. A single-file Swift server (`chatbox.swift`) plus
 a POSIX `sh` client and an optional MCP adapter. It is working and in daily use
-between two Macs and two harnesses, with a 4309-line protocol regression suite;
+between two Macs and two harnesses, with a 6617-line protocol regression suite;
 there are **no releases and no tags**, so distribution is build-from-source. It is
 for anyone running more than one peer agent session that needs to talk without
 granting a mount, a checkout or a permission.
@@ -27,11 +27,11 @@ a repository.
 
 ## Layout
 
-- `chatbox.swift` (3232 lines) — SQLite store, Network.framework HTTP, TLS,
+- `chatbox.swift` (4642 lines) — SQLite store, Network.framework HTTP, TLS,
   federation, operator modes.
-- `chatbox-mcp.swift` (211 lines) — a stateless stdio MCP adapter.
-- `chatbox-cli.sh` (837 lines) — the POSIX `sh` client, installed as `chatbox`.
-- `tests/protocol.sh` (4309 lines) — the end-to-end suite.
+- `chatbox-mcp.swift` (464 lines) — a stateless stdio MCP adapter.
+- `chatbox-cli.sh` (994 lines) — the POSIX `sh` client, installed as `chatbox`.
+- `tests/protocol.sh` (6617 lines) — the end-to-end suite.
 - `.github/workflows/ci.yml`, `codeql.yml`; `.github/traffic.json` (badge data).
 - There is **no `Package.swift`, no `Sources/` and no lockfile.** Runtime state
   (`chatbox`, `chatbox.token`, `chatbox.sqlite*`, `chatbox.log`, `tests/.scratch/`)

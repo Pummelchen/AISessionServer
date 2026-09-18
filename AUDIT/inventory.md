@@ -16,6 +16,11 @@ Committed before any Phase B finding, as required. Line counts are from `971faae
 | M7 | `AUDIT/mutate.sh` | POSIX `sh` + embedded Python | ~1160 | none | runs 239 mutations against the suite | Mac | **yes — committed** since #0091 (a matrix that only exists on one machine cannot be reproduced) |
 | M8 | wiki (`aisessionserver-wiki`, separate repo) | Markdown | 8 pages | none | — | any | separate repo, branch `master` |
 
+The LOC column is the **pre-audit snapshot** at the base revision, which is what an inventory is
+for. After the audit the counts are: `chatbox.swift` 4642, `chatbox-mcp.swift` 464,
+`chatbox-cli.sh` 994, `tests/protocol.sh` 6617, `AUDIT/mutate.sh` 305 cells. `AGENTS.md` carries
+the living counts and was updated to match (task #0098).
+
 Not present, and therefore not audited as if they were: no Python, no C#, no C, no package
 manager, no lockfiles, no container images, no database migrations directory, no IaC.
 Full-history file inventory (`git log --all --diff-filter=A --name-only`) is `.swift`, `.sh`,
