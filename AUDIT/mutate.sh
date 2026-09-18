@@ -1854,7 +1854,7 @@ run_one() { # label, binary, port
         CHATBOX_SERVER_LOG="$SC/mut/$_label.log" CHATBOX_DB="$SC/mut/$_label.sqlite" \
         CHATBOX_CLI="$CLI_FOR_RUN" CHATBOX_BIN="$BIN_FOR_RUN" CHATBOX_MCP="$MCP_FOR_RUN" \
         CHATBOX_SRC="${SRC_FOR_RUN:-}" \
-        sh "$FROZEN/tests/protocol.sh" 2>&1)
+        sh "$FROZEN/tests/protocol.sh" </dev/null 2>&1)
   rc=$?
   kill "$_p" 2>/dev/null; wait "$_p" 2>/dev/null
   printf '%s' "$out" > "$SC/mut/$_label.out"
@@ -1972,7 +1972,10 @@ worker() { # worker index
   mkdir -p "$CHATBOX_SCRATCH"
   _p=$((8801 + _w * 120))
   : > "$SC/mut/results-$_w.txt"
-  while IFS=' ' read -r _kind _name; do
+  # The list is read on fd 3, not stdin: the suite and the fixture servers inherit stdin, and one of
+  # them reading it consumed the rest of this worker's cells (a cell run then reported BUILDFAIL for
+  # every cell it never reached, which is a false pass). `run_one` also gives the suite /dev/null.
+  while IFS=' ' read -r _kind _name <&3; do
     [ -n "$_name" ] || continue
     case "$_kind" in
       swift)
@@ -2008,7 +2011,7 @@ worker() { # worker index
     printf '%s|%s|%s\n' "$_name" "$([ $_rc -eq 0 ] && echo GREEN || echo red)" "$_last" >> "$SC/mut/results-$_w.txt"
     prune_cell "$_name"
     _p=$((_p + 1))
-  done < "$SC/mut/tasks-$_w.txt"
+  done 3< "$SC/mut/tasks-$_w.txt"
 }
 
 _w=0
