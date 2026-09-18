@@ -1722,6 +1722,10 @@ m('310-audit0059-nocancel',
 import re as _re
 
 def frag_pattern(frag):
+    # Strip the fragment's own leading/trailing whitespace: the pattern must start and end on a
+    # token, or the trailing `\s*` would eat the newline after the fragment and the leading `\s+`
+    # the indentation before it, gluing the replacement to the neighbouring statement.
+    frag = frag.strip()
     parts = []
     i = 0
     n = len(frag)
@@ -1781,7 +1785,15 @@ def frag_pattern(frag):
             j += 1
         parts.append(_re.escape(frag[i:j]))
         i = j
-    return _re.compile(''.join(parts))
+    pattern = ''.join(parts)
+    # The first and last tokens must not carry the `\s*` that punctuation handling adds around
+    # itself: otherwise the match eats the newline before or after the fragment and the replacement
+    # is glued to the neighbouring statement (`}let x = ...`, `breakcase ...`).
+    if pattern.startswith(r'\s*'):
+        pattern = pattern[3:]
+    if pattern.endswith(r'\s*'):
+        pattern = pattern[:-3]
+    return _re.compile(pattern)
 
 cli = open(os.path.join(fr, 'chatbox-cli.sh')).read()
 mcp = open(os.path.join(fr, 'chatbox-mcp.swift')).read()
