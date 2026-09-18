@@ -4948,8 +4948,9 @@ two"
       concpeak="$SCRATCH/fed-conc-${RUN}.txt"
       concready="$concpeak.ready"
       conclog="$SCRATCH/fed-conc-peer-${RUN}.log"
+      concscript="$SCRATCH/fed-conc-peer-${RUN}.py"
       rm -f "$concpeak" "$concready"
-      python3 - "$concport" "$concpeak" "$concready" >"$conclog" 2>&1 <<'PY' &
+      cat > "$concscript" <<'PY'
 import http.server, socketserver, sys, threading, time
 port, out, ready = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 cond = threading.Condition()
@@ -4998,6 +4999,10 @@ with open(ready, 'w') as fh:
     fh.write('1')
 server.serve_forever()
 PY
+      # Run the peer from a file, not `python3 - <<'PY' &`: an asynchronous job's standard input is
+      # /dev/null in some shells, and on CI the heredoc-fed interpreter read nothing, bound nothing
+      # and wrote no error, so the fixture looked like a code failure.
+      python3 "$concscript" "$concport" "$concpeak" "$concready" >"$conclog" 2>&1 &
       concpid=$!
       _concwaited=0
       while [ ! -s "$concready" ] && [ "$_concwaited" -lt 60 ]; do
