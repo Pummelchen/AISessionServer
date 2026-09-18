@@ -8,111 +8,111 @@ Branch `audit/2026-09-15`, base `971faae`. Standard: 6.4, -swift-version 6, -str
 
 Status gates (a status may not advance without the artefact): START = reproduced/statically proven + expected behaviour written down; PROGRESS = the diff; TEST = a check that fails before and passes after, full suite green, no new warnings; AUDIT = cold re-read + lint/analyzer/scanners re-run + no baseline regression; DONE = committed atomically to the audit branch.
 
-| id | sev | module | file:line | title | category | status | host | discovered by |
-|---|---|---|---|---|---|---|---|---|
-| [0017](#0017) | S0 | M3 | `chatbox-cli.sh:33` | Client ships a hard-coded third-party URL and silently sends the token there when CHATBOX_URL is unset [also: a trailing slash in CHATBOX_URL breaks every route; Shipped client defaults to a hard-coded third-party host, so an unset CHATBOX_URL sends the token there; Client default endpoint is the author's fixed tailnet host, not loopback] | unsafe | **DONE** | node1 | phase-B/L1-architecture,L7-ops,M2-mcp-and-placeholders,M3-client |
-| [0018](#0018) | S0 | M3 | `chatbox-cli.sh:820` | watch acknowledges with all=1, losing messages it never delivered | bug | **DONE** | node1 | phase-B/M3-client |
-| [0019](#0019) | S0 | M2 | `chatbox-mcp.swift:49` | MCP adapter silently corrupts every argument containing '+' because the server decodes '+' as space [also: CHATBOX_URL with a trailing slash yields //path and 404s every tool call] | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0020](#0020) | S0 | M1 | `chatbox.swift:1550` | Delivery rows are written with an unchecked run(), so a failed delivery is announced as delivered and the message is unreachable | bug | **DONE** | node1 | phase-B/L1-architecture |
-| [0021](#0021) | S0 | M1 | `chatbox.swift:1826` | GET /ui builds 'path + ?token=' and always gets 401, so the read-only view shows an empty board [also: GET /ui concatenates window.location.search onto paths that already contain a query, so its own credential is swallowed and every fetch is unauthenticated] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-http |
-| [0022](#0022) | S0 | M1 | `chatbox.swift:2300` | Revocation is reported successful without checking whether the UPDATE ran [also: Credential issue and revoke ignore the write result and report success] | unsafe | **DONE** | node1 | phase-B/L2-server-core,L3-line-level |
-| [0023](#0023) | S0 | M1 | `chatbox.swift:2830` | --token "" silently starts a fully open board [also: An explicitly empty --token silently starts an open board (fails open, unlike --token-file); `--token ""` (an unset variable) starts an unauthenticated board; --token beats --token-file although the code says the file is preferred] | incomplete | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L4-security,L7-ops |
-| [0001](#0001) | S1 | M1 | `chatbox.swift (whole file)` | Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors) | unsafe | **DONE** | node1 | phase-A baseline |
-| [0002](#0002) | S1 | M1 | `chatbox.swift:1062,1070` | Static ISO8601DateFormatter instances are shared mutable state (not Sendable) | unsafe | **DONE** | node1 | phase-A baseline |
-| [0003](#0003) | S1 | M1 | `chatbox.swift:1238` | `Chatbox.publicURL` is a mutable static global | unsafe | **DONE** | node1 | phase-A baseline |
-| [0004](#0004) | S1 | M1 | `chatbox.swift:27,3215,3217,3221` | Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code | unsafe | **DONE** | node1 | phase-A baseline |
-| [0005](#0005) | S1 | M1 | `chatbox.swift:2464,1155-1180,1700-1745,1600-1660` | Non-Sendable captures and captured-var mutation across @Sendable closures (DispatchWorkItem, URLSession completion, waiters, event poll) | unsafe | **DONE** | node1 | phase-A baseline |
-| [0015](#0015) | S1 | M1 | `chatbox.swift:896,373` | `@unchecked Sendable` on Chatbox and Store suppresses all concurrency checking | unsafe | **DONE** | node1 | L2 |
-| [0024](#0024) | S1 | M3 | `chatbox-cli.sh:817` | a failed --exec or print spins the wake loop with no backoff | bug | **DONE** | node1 | phase-B/M3-client |
-| [0025](#0025) | S1 | M2 | `chatbox-mcp.swift:138` | MCP adapter feeds raw peer text to the model with no untrusted frame [also: MCP adapter returns peer text to the model with no untrusted frame] | unsafe | **DONE** | node1 | phase-B/L1-architecture,L4-security |
-| [0026](#0026) | S1 | M2 | `chatbox-mcp.swift:191` | JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally) | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0027](#0027) | S1 | M2 | `chatbox-mcp.swift:47` | MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)] | bug | **DONE** | node1 | phase-B/L1-architecture,L3-line-level |
-| [0028](#0028) | S1 | M2 | `chatbox-mcp.swift:54` | inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)] | bug | **DONE** | node1 | phase-B/L3-line-level,M2-mcp-and-placeholders |
-| [0029](#0029) | S1 | M1 | `chatbox.swift:1279` | /health answers 200 with empty counters when the store cannot be read, and omits uptime/build/db state | bug | **DONE** | node1 | phase-B/L7-ops |
-| [0030](#0030) | S1 | M1 | `chatbox.swift:1358` | register and token issuance report success when the store write failed [also: Registration reports success without checking its write] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-core |
-| [0031](#0031) | S1 | M1 | `chatbox.swift:1509` | Reply resolution loads every message of the thread, bodies included, with no bound | perf | **DONE** | node1 | phase-B/L5-performance |
-| [0032](#0032) | S1 | M1 | `chatbox.swift:1551` | Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row] | bug | **DONE** | node1 | phase-B/L2-server-core,L3-line-level |
-| [0033](#0033) | S1 | M1 | `chatbox.swift:1902` | SSE 'bye' frame is built with a doubled backslash, so the documented bye event is never delivered [also: SSE deadline frame uses literal backslash-n, so the bye event is never terminated] | bug | **DONE** | node1 | phase-B/L2-server-http,L3-line-level |
-| [0034](#0034) | S1 | M1 | `chatbox.swift:2095` | Scoped credential's /threads count is board-wide, breaking read scoping [also: Scoped GET /threads?json=1 reports the board-wide thread count; GET /threads?json=1 leaks the board-wide thread count to a scoped credential; GET /threads JSON 'matching' counts the whole board, not the scoped caller's visible set] | unsafe | **DONE** | node1 | phase-B/L1-architecture,L2-server-core,L2-server-http,L4-security |
-| [0035](#0035) | S1 | M1 | `chatbox.swift:2107` | /threads hardcodes LIMIT 100 and its text answer hides the truncation [also: GET /threads is permanently capped at the newest 100 with no offset or cursor; ORDER BY threads.last_at has no index; every /threads call scans and sorts the whole threads table; GET /threads silently truncates at a hard-coded 100, ignores --max-rows, and the text form omits the count; GET /threads text form truncates at a hardcoded 100 and never states the matching count] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-http,L3-line-level,L5-performance |
-| [0036](#0036) | S1 | M1 | `chatbox.swift:2135` | Ack reports acknowledgements that did not happen, from an unchecked UPDATE | bug | **DONE** | node1 | phase-B/L2-server-core |
-| [0037](#0037) | S1 | M1 | `chatbox.swift:2138` | ack reports sqlite3_changes() even when the UPDATE failed, so a failed ack answers 'ok acked N' | bug | **DONE** | node1 | phase-B/L3-line-level |
-| [0038](#0038) | S1 | M1 | `chatbox.swift:2232` | A credential's secret is returned even when the token INSERT did not store it | bug | **DONE** | node1 | phase-B/L2-server-core |
-| [0039](#0039) | S1 | M1 | `chatbox.swift:2406` | Request log records no time, peer, principal or route context; credential issue/revoke unaudited [also: Request target control bytes are echoed into logs and the 404 body (log injection)] | bug | **DONE** | node1 | phase-B/L3-line-level,L7-ops |
-| [0040](#0040) | S1 | M1 | `chatbox.swift:2431` | Connections refused at the ceiling get no idle deadline and are not counted, so stalled TLS handshakes accumulate without bound | unsafe | **DONE** | node1 | phase-B/L2-server-http |
-| [0041](#0041) | S1 | M1 | `chatbox.swift:2810` | `--port` and `--stale-after` silently fall back to their defaults on an unparseable value [also: --port and --stale-after silently substitute the default for an unusable value] | logic | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L7-ops |
-| [0042](#0042) | S1 | M1 | `chatbox.swift:2939` | `--prune`/`--prune-dry-run` on a mistyped `--db` creates a new board and reports success [also: --prune opens (and creates) a database before validating it, so a wrong --db path yields success on a brand-new board; Operator modes: Store is opened before --prune validation, a mistyped --db creates a board and reports 'pruned: 0', and conflicting modes silently win; --prune-dry-run can create or rewrite the database it promises not to touch] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-core,L3-line-level,L7-ops |
-| [0043](#0043) | S1 | M1 | `chatbox.swift:298` | Agent ids may contain ',', but recipients are stored comma-joined and re-split, so a reply can be delivered to an unintended session | bug | **DONE** | node1 | phase-B/L2-server-http |
-| [0044](#0044) | S1 | M1 | `chatbox.swift:3232` | No SIGTERM/SIGINT/SIGHUP handling: no drain, no WAL checkpoint, no log reopen | bug | **DONE** | node1 | phase-B/L7-ops |
-| [0045](#0045) | S1 | M1 | `chatbox.swift:484` | Store.rows treats every non-ROW step result as end-of-data, returning partial results as complete | incomplete | **DONE** | node1 | phase-B/L3-line-level |
-| [0046](#0046) | S1 | M1 | `chatbox.swift:827` | Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender) | perf | **DONE** | node1 | phase-B/L5-performance |
-| [0047](#0047) | S1 | M4 | `tests/protocol.sh:1505` | --port and --stale-after silently fall back to defaults on an unusable value; no check | test | **DONE** | node1 | phase-B/L6-tests |
-| [0048](#0048) | S1 | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **DONE** | node1 | phase-B/L6-tests |
-| [0006](#0006) | S2 | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **DONE** | node1 | L0 |
-| [0007](#0007) | S2 | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **DONE** | node1 | L0 swiftlint baseline |
-| [0008](#0008) | S2 | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **DONE** | node1 | L0 shellcheck baseline |
-| [0009](#0009) | S2 | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **DONE** | node1 | L0 shellcheck baseline |
-| [0010](#0010) | S2 | M4 | `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941` | Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329) | test | **DONE** | node1 | L0 shellcheck baseline |
-| [0014](#0014) | S2 | M1 | `chatbox.swift:2426` | CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change | unsafe | **DONE** | node1 | L0 |
-| [0049](#0049) | S2 | repo | `.github/workflows/codeql.yml:57` | CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned | test | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0050](#0050) | S2 | repo | `aisessionserver-wiki/Deployment.md:92` | Local test runbook starts the disposable server on the suite's own staleness port | docs | **DONE** | node1 | phase-B/L7-ops |
-| [0051](#0051) | S2 | repo | `aisessionserver-wiki/Quick-Start.md:255` | Documented local test command silently skips checks and cannot print the promised result | docs | **DONE** | node1 | phase-B/L7-ops |
-| [0052](#0052) | S2 | M3 | `chatbox-cli.sh:150` | Client puts the credential in curl argv, exposing it to every local user via ps | unsafe | **DONE** | node1 | phase-B/L4-security |
-| [0053](#0053) | S2 | M3 | `chatbox-cli.sh:29` | ~/.chatbox overrides the environment instead of defaulting to it | logic | **DONE** | node1 | phase-B/M3-client |
-| [0054](#0054) | S2 | M3 | `chatbox-cli.sh:355` | canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls] | logic | **DONE** | node1 | phase-B/L1-architecture,M3-client |
-| [0055](#0055) | S2 | M3 | `chatbox-cli.sh:686` | GET query strings are concatenated unencoded, so ids with a space or & break the request | bug | **DONE** | node1 | phase-B/M3-client |
-| [0056](#0056) | S2 | M3 | `chatbox-cli.sh:703` | ack silently drops --all, then the server error names the flag the caller passed | logic | **DONE** | node1 | phase-B/M3-client |
-| [0057](#0057) | S2 | M3 | `chatbox-cli.sh:775` | watch delivers the 1200-character inbox preview and then acks it | incomplete | **TEST** | node1 | phase-B/M3-client |
-| [0058](#0058) | S2 | M2 | `chatbox-mcp.swift:177` | Well-formed non-object JSON is reported as -32700 parse error instead of -32600 Invalid Request | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0059](#0059) | S2 | M2 | `chatbox-mcp.swift:197` | notifications/cancelled is a no-op that can never be observed while a call blocks the read loop | incomplete | **TEST** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0060](#0060) | S2 | M2 | `chatbox-mcp.swift:91` | Tool schema declares additionalProperties:false but undeclared arguments are forwarded to the server | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0061](#0061) | S2 | M1 | `chatbox.swift:1553` | Per-recipient N+1 queries on the send path; recipient count is bounded only by --max-body | perf | **TEST** | node1 | phase-B/L5-performance |
-| [0062](#0062) | S2 | M1 | `chatbox.swift:1654` | Boolean parameters are true for any non-empty value: all=0 includes read mail and json=0 emits JSON | logic | **DONE** | node1 | phase-B/L2-server-http |
-| [0063](#0063) | S2 | M1 | `chatbox.swift:1748` | Serial forward queue plus a 12 s semaphore wait holds one connection per queued federation forward | perf | **TEST** | node1 | phase-B/L5-performance |
-| [0064](#0064) | S2 | M1 | `chatbox.swift:1752` | Federation forward buffers the peer's entire response body with no size cap | unsafe | **TEST** | node1 | phase-B/L2-server-http |
-| [0065](#0065) | S2 | M1 | `chatbox.swift:1773` | Any 2xx from the peer is reported as a delivery without checking the peer is a chatbox board | bug | **TEST** | node1 | phase-B/L2-server-http |
-| [0066](#0066) | S2 | M1 | `chatbox.swift:1934` | SSE ticks run three board-wide COUNT(*) queries on the shared serial queue every 0.5 s per stream | perf | **TEST** | node1 | phase-B/L5-performance |
-| [0067](#0067) | S2 | M1 | `chatbox.swift:2017` | Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s | perf | **TEST** | node1 | phase-B/L5-performance |
-| [0068](#0068) | S2 | M1 | `chatbox.swift:2179` | Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop | bug | **TEST** | node1 | phase-B/L2-server-http |
-| [0069](#0069) | S2 | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **DONE** | node1 | phase-B/L7-ops |
-| [0070](#0070) | S2 | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **DONE** | node1 | phase-B/L2-server-core |
-| [0071](#0071) | S2 | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **DONE** | node1 | phase-B/L4-security |
-| [0072](#0072) | S2 | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **DONE** | node1 | phase-B/L4-security |
-| [0073](#0073) | S2 | M1 | `chatbox.swift:449` | Store.exec ignores every SQLite error, and the db-open refusal drops the cause | incomplete | **DONE** | node1 | phase-B/L7-ops |
-| [0074](#0074) | S2 | M1 | `chatbox.swift:460` | Stored text is silently truncated at an embedded NUL byte | bug | **DONE** | node1 | phase-B/L2-server-core |
-| [0075](#0075) | S2 | M1 | `chatbox.swift:499` | Store.scalar returns an arbitrary column via Dictionary.values.first | logic | **DONE** | node1 | phase-B/L3-line-level |
-| [0076](#0076) | S2 | M1 | `chatbox.swift:50` | nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient | perf | **DONE** | node1 | phase-B/L5-performance |
-| [0077](#0077) | S2 | M1 | `chatbox.swift:610` | Repo-key migration ignores BEGIN/COMMIT failures | bug | **DONE** | node1 | phase-B/L2-server-core |
-| [0078](#0078) | S2 | M1 | `chatbox.swift:611` | Startup key migration re-reads all four tables and rewrites every non-canonical row on every start | perf | **TEST** | node1 | phase-B/L5-performance |
-| [0079](#0079) | S2 | M1 | `chatbox.swift:716` | prune() clears reply_to with one full-table-scan UPDATE per pruned message (O(messages x pruned)) | perf | **TEST** | node1 | phase-B/L5-performance |
-| [0080](#0080) | S2 | M1 | `chatbox.swift:799` | Inbox listing sorts the whole matching backlog in a temp b-tree to return 200 rows | perf | **TEST** | node1 | phase-B/L5-performance |
-| [0081](#0081) | S2 | M4 | `tests/protocol.sh:1478` | Aux-server readiness accepts any answering server, not the one just started | test | **DONE** | node1 | phase-B/L6-tests |
-| [0082](#0082) | S2 | M4 | `tests/protocol.sh:3254` | Fixed 'bulk' and 'exact' literals break the suite's per-run namespace on re-runs | test | **DONE** | node1 | phase-B/L6-tests |
-| [0083](#0083) | S2 | M4 | `tests/protocol.sh:3576` | Expiry issuance asserted with 'expires: 20' and no 1/36500 boundaries | test | **DONE** | node1 | phase-B/L6-tests |
-| [0084](#0084) | S2 | M4 | `tests/protocol.sh:3748` | The /events max= ceiling is never exercised | test | **DONE** | node1 | phase-B/L6-tests |
-| [0085](#0085) | S2 | M4 | `tests/protocol.sh:395` | /token?json=1 secret check is vacuous: the JSON form is never asserted | test | **DONE** | node1 | phase-B/L6-tests |
-| [0086](#0086) | S2 | M4 | `tests/protocol.sh:3967` | fed_refuse decides "refused" with a fixed sleep and never checks the exit status | test | **DONE** | node1 | phase-B/L6-tests |
-| [0090](#0090) | S2 | M1 | `chatbox.swift:2279` | GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1] | bug | **DONE** | node1 | audit/0034 follow-up |
-| [0091](#0091) | S2 | M1 | `AUDIT/mutate.sh` | The mutation matrix silently skips cells whose anchor no longer matches the code, and cannot be reproduced from a clone | test | **DONE** | node1 | audit/0034 run |
-| [0092](#0092) | S2 | M5 | `.github/workflows/ci.yml:45` | CI builds with -O only, so the audit build standard is not enforced and can regress silently | test | **DONE** | node1 | audit/0001 closure |
-| [0093](#0093) | S2 | M8 | `(repository state)` | The audit branch was reconciled with nine commits that landed on main while it ran | deps | **DONE** | node1 | main moved during the audit |
-| [0094](#0094) | S2 | M4 | `tests/protocol.sh:1515,4471` | Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board | test | **DONE** | node1 | new-this-session (the audit/0062 verification run) |
-| [0096](#0096) | S2 | M7 | `AUDIT/mutate.sh:1714 ; tests/protocol.sh:271` | The mutation matrix could only run cells serially and probed the suite's literal fixture ports, so a full sweep could not fit one slot and a per-cell port override was invisible to the preflight | test | **DONE** | node1 | audit/0069 verification run |
-| [0097](#0097) | S2 | M1 | `chatbox.swift renderInbox/showThread/listThreads (subject, sender, recipients, repo)` | A message's subject, sender, recipients and repo are echoed unescaped on the inbox/thread/threads read paths, so a subject containing a line break forges lines in a listing | bug | **TEST** | node1 | audit/0068 follow-up |
-| [0011](#0011) | S3 | M1/M2/M4 | `.swift-format ; .swiftlint.yml ; chatbox.swift ; chatbox-mcp.swift` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **DONE** | node1 | L0 |
-| [0012](#0012) | S3 | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **DONE** | node1 | phase-A |
-| [0013](#0013) | S3 | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **DONE** | node1 | L0 secret-scan triage |
-| [0016](#0016) | S3 | M3 | `chatbox-cli.sh:30` | SC1090: the client sources a non-constant path (~/.chatbox) | style | **DONE** | node1 | L0 shellcheck baseline |
-| [0087](#0087) | S3 | repo | `.github/traffic.json:4` | Canned view count served as the live 'Views (14d)' README badge | placeholder | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
-| [0088](#0088) | S3 | M1 | `chatbox.swift:1617` | Local `who` shadows the Principal parameter in message() | style | **DONE** | node1 | phase-B/L3-line-level |
-| [0089](#0089) | S3 | M1 | `chatbox.swift:260` | The '?' element of the repo-key character check is unreachable | dead | **DONE** | node1 | phase-B/L3-line-level |
-| [0095](#0095) | S3 | M4 | `tests/protocol.sh (every fixture section)` | A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port | test | **DONE** | node1 | new-this-session (the audit/0090 matrix base cell) |
+| id | sev | tier | module | file:line | title | category | status | host | discovered by |
+|---|---|---|---|---|---|---|---|---|---|
+| [0017](#0017) | S0 | A | M3 | `chatbox-cli.sh:33` | Client ships a hard-coded third-party URL and silently sends the token there when CHATBOX_URL is unset [also: a trailing slash in CHATBOX_URL breaks every route; Shipped client defaults to a hard-coded third-party host, so an unset CHATBOX_URL sends the token there; Client default endpoint is the author's fixed tailnet host, not loopback] | unsafe | **DONE** | node1 | phase-B/L1-architecture,L7-ops,M2-mcp-and-placeholders,M3-client |
+| [0018](#0018) | S0 | A | M3 | `chatbox-cli.sh:820` | watch acknowledges with all=1, losing messages it never delivered | bug | **DONE** | node1 | phase-B/M3-client |
+| [0019](#0019) | S0 | A | M2 | `chatbox-mcp.swift:49` | MCP adapter silently corrupts every argument containing '+' because the server decodes '+' as space [also: CHATBOX_URL with a trailing slash yields //path and 404s every tool call] | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0020](#0020) | S0 | A | M1 | `chatbox.swift:1550` | Delivery rows are written with an unchecked run(), so a failed delivery is announced as delivered and the message is unreachable | bug | **DONE** | node1 | phase-B/L1-architecture |
+| [0021](#0021) | S0 | A | M1 | `chatbox.swift:1826` | GET /ui builds 'path + ?token=' and always gets 401, so the read-only view shows an empty board [also: GET /ui concatenates window.location.search onto paths that already contain a query, so its own credential is swallowed and every fetch is unauthenticated] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-http |
+| [0022](#0022) | S0 | A | M1 | `chatbox.swift:2300` | Revocation is reported successful without checking whether the UPDATE ran [also: Credential issue and revoke ignore the write result and report success] | unsafe | **DONE** | node1 | phase-B/L2-server-core,L3-line-level |
+| [0023](#0023) | S0 | A | M1 | `chatbox.swift:2830` | --token "" silently starts a fully open board [also: An explicitly empty --token silently starts an open board (fails open, unlike --token-file); `--token ""` (an unset variable) starts an unauthenticated board; --token beats --token-file although the code says the file is preferred] | incomplete | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L4-security,L7-ops |
+| [0001](#0001) | S1 | A | M1 | `chatbox.swift (whole file)` | Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors) | unsafe | **DONE** | node1 | phase-A baseline |
+| [0002](#0002) | S1 | A | M1 | `chatbox.swift:1062,1070` | Static ISO8601DateFormatter instances are shared mutable state (not Sendable) | unsafe | **DONE** | node1 | phase-A baseline |
+| [0003](#0003) | S1 | A | M1 | `chatbox.swift:1238` | `Chatbox.publicURL` is a mutable static global | unsafe | **DONE** | node1 | phase-A baseline |
+| [0004](#0004) | S1 | A | M1 | `chatbox.swift:27,3215,3217,3221` | Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code | unsafe | **DONE** | node1 | phase-A baseline |
+| [0005](#0005) | S1 | A | M1 | `chatbox.swift:2464,1155-1180,1700-1745,1600-1660` | Non-Sendable captures and captured-var mutation across @Sendable closures (DispatchWorkItem, URLSession completion, waiters, event poll) | unsafe | **DONE** | node1 | phase-A baseline |
+| [0015](#0015) | S1 | A | M1 | `chatbox.swift:896,373` | `@unchecked Sendable` on Chatbox and Store suppresses all concurrency checking | unsafe | **DONE** | node1 | L2 |
+| [0024](#0024) | S1 | A | M3 | `chatbox-cli.sh:817` | a failed --exec or print spins the wake loop with no backoff | bug | **DONE** | node1 | phase-B/M3-client |
+| [0025](#0025) | S1 | A | M2 | `chatbox-mcp.swift:138` | MCP adapter feeds raw peer text to the model with no untrusted frame [also: MCP adapter returns peer text to the model with no untrusted frame] | unsafe | **DONE** | node1 | phase-B/L1-architecture,L4-security |
+| [0026](#0026) | S1 | A | M2 | `chatbox-mcp.swift:191` | JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally) | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0027](#0027) | S1 | A | M2 | `chatbox-mcp.swift:47` | MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)] | bug | **DONE** | node1 | phase-B/L1-architecture,L3-line-level |
+| [0028](#0028) | S1 | A | M2 | `chatbox-mcp.swift:54` | inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)] | bug | **DONE** | node1 | phase-B/L3-line-level,M2-mcp-and-placeholders |
+| [0029](#0029) | S1 | A | M1 | `chatbox.swift:1279` | /health answers 200 with empty counters when the store cannot be read, and omits uptime/build/db state | bug | **DONE** | node1 | phase-B/L7-ops |
+| [0030](#0030) | S1 | A | M1 | `chatbox.swift:1358` | register and token issuance report success when the store write failed [also: Registration reports success without checking its write] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-core |
+| [0031](#0031) | S1 | A | M1 | `chatbox.swift:1509` | Reply resolution loads every message of the thread, bodies included, with no bound | perf | **DONE** | node1 | phase-B/L5-performance |
+| [0032](#0032) | S1 | A | M1 | `chatbox.swift:1551` | Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row] | bug | **DONE** | node1 | phase-B/L2-server-core,L3-line-level |
+| [0033](#0033) | S1 | A | M1 | `chatbox.swift:1902` | SSE 'bye' frame is built with a doubled backslash, so the documented bye event is never delivered [also: SSE deadline frame uses literal backslash-n, so the bye event is never terminated] | bug | **DONE** | node1 | phase-B/L2-server-http,L3-line-level |
+| [0034](#0034) | S1 | A | M1 | `chatbox.swift:2095` | Scoped credential's /threads count is board-wide, breaking read scoping [also: Scoped GET /threads?json=1 reports the board-wide thread count; GET /threads?json=1 leaks the board-wide thread count to a scoped credential; GET /threads JSON 'matching' counts the whole board, not the scoped caller's visible set] | unsafe | **DONE** | node1 | phase-B/L1-architecture,L2-server-core,L2-server-http,L4-security |
+| [0035](#0035) | S1 | A | M1 | `chatbox.swift:2107` | /threads hardcodes LIMIT 100 and its text answer hides the truncation [also: GET /threads is permanently capped at the newest 100 with no offset or cursor; ORDER BY threads.last_at has no index; every /threads call scans and sorts the whole threads table; GET /threads silently truncates at a hard-coded 100, ignores --max-rows, and the text form omits the count; GET /threads text form truncates at a hardcoded 100 and never states the matching count] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-http,L3-line-level,L5-performance |
+| [0036](#0036) | S1 | A | M1 | `chatbox.swift:2135` | Ack reports acknowledgements that did not happen, from an unchecked UPDATE | bug | **DONE** | node1 | phase-B/L2-server-core |
+| [0037](#0037) | S1 | A | M1 | `chatbox.swift:2138` | ack reports sqlite3_changes() even when the UPDATE failed, so a failed ack answers 'ok acked N' | bug | **DONE** | node1 | phase-B/L3-line-level |
+| [0038](#0038) | S1 | A | M1 | `chatbox.swift:2232` | A credential's secret is returned even when the token INSERT did not store it | bug | **DONE** | node1 | phase-B/L2-server-core |
+| [0039](#0039) | S1 | A | M1 | `chatbox.swift:2406` | Request log records no time, peer, principal or route context; credential issue/revoke unaudited [also: Request target control bytes are echoed into logs and the 404 body (log injection)] | bug | **DONE** | node1 | phase-B/L3-line-level,L7-ops |
+| [0040](#0040) | S1 | A | M1 | `chatbox.swift:2431` | Connections refused at the ceiling get no idle deadline and are not counted, so stalled TLS handshakes accumulate without bound | unsafe | **DONE** | node1 | phase-B/L2-server-http |
+| [0041](#0041) | S1 | A | M1 | `chatbox.swift:2810` | `--port` and `--stale-after` silently fall back to their defaults on an unparseable value [also: --port and --stale-after silently substitute the default for an unusable value] | logic | **DONE** | node1 | phase-B/L1-architecture,L3-line-level,L7-ops |
+| [0042](#0042) | S1 | A | M1 | `chatbox.swift:2939` | `--prune`/`--prune-dry-run` on a mistyped `--db` creates a new board and reports success [also: --prune opens (and creates) a database before validating it, so a wrong --db path yields success on a brand-new board; Operator modes: Store is opened before --prune validation, a mistyped --db creates a board and reports 'pruned: 0', and conflicting modes silently win; --prune-dry-run can create or rewrite the database it promises not to touch] | bug | **DONE** | node1 | phase-B/L1-architecture,L2-server-core,L3-line-level,L7-ops |
+| [0043](#0043) | S1 | A | M1 | `chatbox.swift:298` | Agent ids may contain ',', but recipients are stored comma-joined and re-split, so a reply can be delivered to an unintended session | bug | **DONE** | node1 | phase-B/L2-server-http |
+| [0044](#0044) | S1 | A | M1 | `chatbox.swift:3232` | No SIGTERM/SIGINT/SIGHUP handling: no drain, no WAL checkpoint, no log reopen | bug | **DONE** | node1 | phase-B/L7-ops |
+| [0045](#0045) | S1 | A | M1 | `chatbox.swift:484` | Store.rows treats every non-ROW step result as end-of-data, returning partial results as complete | incomplete | **DONE** | node1 | phase-B/L3-line-level |
+| [0046](#0046) | S1 | A | M1 | `chatbox.swift:827` | Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender) | perf | **DONE** | node1 | phase-B/L5-performance |
+| [0047](#0047) | S1 | C | M4 | `tests/protocol.sh:1505` | --port and --stale-after silently fall back to defaults on an unusable value; no check | test | **DONE** | node1 | phase-B/L6-tests |
+| [0048](#0048) | S1 | C | M4 | `tests/protocol.sh:3442` | No startup-boundary test for --idle-timeout, --max-connections or --max-rows | test | **DONE** | node1 | phase-B/L6-tests |
+| [0006](#0006) | S2 | B | M5 | `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60` | CI actions are pinned to mutable tags, not commit SHAs | deps | **DONE** | node1 | L0 |
+| [0007](#0007) | S2 | A | M1/M2 | `chatbox.swift (63 sites), chatbox-mcp.swift` | 63 force-unwrapped String.data(using:.utf8)! conversions | unsafe | **DONE** | node1 | L0 swiftlint baseline |
+| [0008](#0008) | S2 | A | M3 | `chatbox-cli.sh:203` | Variable interpolated into a printf format string (SC2059) | bug | **DONE** | node1 | L0 shellcheck baseline |
+| [0009](#0009) | S2 | A | M3 | `chatbox-cli.sh:456,463` | A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk | bug | **DONE** | node1 | L0 shellcheck baseline |
+| [0010](#0010) | S2 | C | M4 | `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941` | Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329) | test | **DONE** | node1 | L0 shellcheck baseline |
+| [0014](#0014) | S2 | A | M1 | `chatbox.swift:2426` | CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change | unsafe | **DONE** | node1 | L0 |
+| [0049](#0049) | S2 | C | repo | `.github/workflows/codeql.yml:57` | CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned | test | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0050](#0050) | S2 | C | repo | `aisessionserver-wiki/Deployment.md:92` | Local test runbook starts the disposable server on the suite's own staleness port | docs | **DONE** | node1 | phase-B/L7-ops |
+| [0051](#0051) | S2 | C | repo | `aisessionserver-wiki/Quick-Start.md:255` | Documented local test command silently skips checks and cannot print the promised result | docs | **DONE** | node1 | phase-B/L7-ops |
+| [0052](#0052) | S2 | A | M3 | `chatbox-cli.sh:150` | Client puts the credential in curl argv, exposing it to every local user via ps | unsafe | **DONE** | node1 | phase-B/L4-security |
+| [0053](#0053) | S2 | A | M3 | `chatbox-cli.sh:29` | ~/.chatbox overrides the environment instead of defaulting to it | logic | **DONE** | node1 | phase-B/M3-client |
+| [0054](#0054) | S2 | A | M3 | `chatbox-cli.sh:355` | canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls] | logic | **DONE** | node1 | phase-B/L1-architecture,M3-client |
+| [0055](#0055) | S2 | A | M3 | `chatbox-cli.sh:686` | GET query strings are concatenated unencoded, so ids with a space or & break the request | bug | **DONE** | node1 | phase-B/M3-client |
+| [0056](#0056) | S2 | A | M3 | `chatbox-cli.sh:703` | ack silently drops --all, then the server error names the flag the caller passed | logic | **DONE** | node1 | phase-B/M3-client |
+| [0057](#0057) | S2 | A | M3 | `chatbox-cli.sh:775` | watch delivers the 1200-character inbox preview and then acks it | incomplete | **TEST** | node1 | phase-B/M3-client |
+| [0058](#0058) | S2 | A | M2 | `chatbox-mcp.swift:177` | Well-formed non-object JSON is reported as -32700 parse error instead of -32600 Invalid Request | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0059](#0059) | S2 | A | M2 | `chatbox-mcp.swift:197` | notifications/cancelled is a no-op that can never be observed while a call blocks the read loop | incomplete | **TEST** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0060](#0060) | S2 | A | M2 | `chatbox-mcp.swift:91` | Tool schema declares additionalProperties:false but undeclared arguments are forwarded to the server | bug | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0061](#0061) | S2 | A | M1 | `chatbox.swift:1553` | Per-recipient N+1 queries on the send path; recipient count is bounded only by --max-body | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0062](#0062) | S2 | A | M1 | `chatbox.swift:1654` | Boolean parameters are true for any non-empty value: all=0 includes read mail and json=0 emits JSON | logic | **DONE** | node1 | phase-B/L2-server-http |
+| [0063](#0063) | S2 | A | M1 | `chatbox.swift:1748` | Serial forward queue plus a 12 s semaphore wait holds one connection per queued federation forward | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0064](#0064) | S2 | A | M1 | `chatbox.swift:1752` | Federation forward buffers the peer's entire response body with no size cap | unsafe | **TEST** | node1 | phase-B/L2-server-http |
+| [0065](#0065) | S2 | A | M1 | `chatbox.swift:1773` | Any 2xx from the peer is reported as a delivery without checking the peer is a chatbox board | bug | **TEST** | node1 | phase-B/L2-server-http |
+| [0066](#0066) | S2 | A | M1 | `chatbox.swift:1934` | SSE ticks run three board-wide COUNT(*) queries on the shared serial queue every 0.5 s per stream | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0067](#0067) | S2 | A | M1 | `chatbox.swift:2017` | Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0068](#0068) | S2 | A | M1 | `chatbox.swift:2179` | Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop | bug | **TEST** | node1 | phase-B/L2-server-http |
+| [0069](#0069) | S2 | A | M1 | `chatbox.swift:2598` | No --version, no --help and no build identifier: a rollback cannot be verified | incomplete | **DONE** | node1 | phase-B/L7-ops |
+| [0070](#0070) | S2 | A | M1 | `chatbox.swift:2776` | --verify-backup compares only row counts, so a stale copy can verify as current | logic | **DONE** | node1 | phase-B/L2-server-core |
+| [0071](#0071) | S2 | A | M1 | `chatbox.swift:3093` | --peer-token exists only on the command line, so the federation credential is visible in ps | unsafe | **DONE** | node1 | phase-B/L4-security |
+| [0072](#0072) | S2 | A | M1 | `chatbox.swift:387` | Server-created database, WAL and backups are world-readable (0644) | unsafe | **DONE** | node1 | phase-B/L4-security |
+| [0073](#0073) | S2 | A | M1 | `chatbox.swift:449` | Store.exec ignores every SQLite error, and the db-open refusal drops the cause | incomplete | **DONE** | node1 | phase-B/L7-ops |
+| [0074](#0074) | S2 | A | M1 | `chatbox.swift:460` | Stored text is silently truncated at an embedded NUL byte | bug | **DONE** | node1 | phase-B/L2-server-core |
+| [0075](#0075) | S2 | A | M1 | `chatbox.swift:499` | Store.scalar returns an arbitrary column via Dictionary.values.first | logic | **DONE** | node1 | phase-B/L3-line-level |
+| [0076](#0076) | S2 | A | M1 | `chatbox.swift:50` | nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient | perf | **DONE** | node1 | phase-B/L5-performance |
+| [0077](#0077) | S2 | A | M1 | `chatbox.swift:610` | Repo-key migration ignores BEGIN/COMMIT failures | bug | **DONE** | node1 | phase-B/L2-server-core |
+| [0078](#0078) | S2 | A | M1 | `chatbox.swift:611` | Startup key migration re-reads all four tables and rewrites every non-canonical row on every start | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0079](#0079) | S2 | A | M1 | `chatbox.swift:716` | prune() clears reply_to with one full-table-scan UPDATE per pruned message (O(messages x pruned)) | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0080](#0080) | S2 | A | M1 | `chatbox.swift:799` | Inbox listing sorts the whole matching backlog in a temp b-tree to return 200 rows | perf | **TEST** | node1 | phase-B/L5-performance |
+| [0081](#0081) | S2 | C | M4 | `tests/protocol.sh:1478` | Aux-server readiness accepts any answering server, not the one just started | test | **DONE** | node1 | phase-B/L6-tests |
+| [0082](#0082) | S2 | C | M4 | `tests/protocol.sh:3254` | Fixed 'bulk' and 'exact' literals break the suite's per-run namespace on re-runs | test | **DONE** | node1 | phase-B/L6-tests |
+| [0083](#0083) | S2 | C | M4 | `tests/protocol.sh:3576` | Expiry issuance asserted with 'expires: 20' and no 1/36500 boundaries | test | **DONE** | node1 | phase-B/L6-tests |
+| [0084](#0084) | S2 | C | M4 | `tests/protocol.sh:3748` | The /events max= ceiling is never exercised | test | **DONE** | node1 | phase-B/L6-tests |
+| [0085](#0085) | S2 | C | M4 | `tests/protocol.sh:395` | /token?json=1 secret check is vacuous: the JSON form is never asserted | test | **DONE** | node1 | phase-B/L6-tests |
+| [0086](#0086) | S2 | C | M4 | `tests/protocol.sh:3967` | fed_refuse decides "refused" with a fixed sleep and never checks the exit status | test | **DONE** | node1 | phase-B/L6-tests |
+| [0090](#0090) | S2 | A | M1 | `chatbox.swift:2279` | GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1] | bug | **DONE** | node1 | audit/0034 follow-up |
+| [0091](#0091) | S2 | A | M1 | `AUDIT/mutate.sh` | The mutation matrix silently skips cells whose anchor no longer matches the code, and cannot be reproduced from a clone | test | **DONE** | node1 | audit/0034 run |
+| [0092](#0092) | S2 | B | M5 | `.github/workflows/ci.yml:45` | CI builds with -O only, so the audit build standard is not enforced and can regress silently | test | **DONE** | node1 | audit/0001 closure |
+| [0093](#0093) | S2 | C | M8 | `(repository state)` | The audit branch was reconciled with nine commits that landed on main while it ran | deps | **DONE** | node1 | main moved during the audit |
+| [0094](#0094) | S2 | C | M4 | `tests/protocol.sh:1515,4471` | Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board | test | **DONE** | node1 | new-this-session (the audit/0062 verification run) |
+| [0096](#0096) | S2 | B | M7 | `AUDIT/mutate.sh:1714 ; tests/protocol.sh:271` | The mutation matrix could only run cells serially and probed the suite's literal fixture ports, so a full sweep could not fit one slot and a per-cell port override was invisible to the preflight | test | **DONE** | node1 | audit/0069 verification run |
+| [0097](#0097) | S2 | A | M1 | `chatbox.swift renderInbox/showThread/listThreads (subject, sender, recipients, repo)` | A message's subject, sender, recipients and repo are echoed unescaped on the inbox/thread/threads read paths, so a subject containing a line break forges lines in a listing | bug | **TEST** | node1 | audit/0068 follow-up |
+| [0011](#0011) | S3 | A | M1/M2/M4 | `.swift-format ; .swiftlint.yml ; chatbox.swift ; chatbox-mcp.swift` | Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings | style | **DONE** | node1 | L0 |
+| [0012](#0012) | S3 | A | M6/M1 | `README.md:11, chatbox.swift:6` | Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency) | docs | **DONE** | node1 | phase-A |
+| [0013](#0013) | S3 | B | M7 | `tests/.scratch` | Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures | style | **DONE** | node1 | L0 secret-scan triage |
+| [0016](#0016) | S3 | A | M3 | `chatbox-cli.sh:30` | SC1090: the client sources a non-constant path (~/.chatbox) | style | **DONE** | node1 | L0 shellcheck baseline |
+| [0087](#0087) | S3 | C | repo | `.github/traffic.json:4` | Canned view count served as the live 'Views (14d)' README badge | placeholder | **DONE** | node1 | phase-B/M2-mcp-and-placeholders |
+| [0088](#0088) | S3 | A | M1 | `chatbox.swift:1617` | Local `who` shadows the Principal parameter in message() | style | **DONE** | node1 | phase-B/L3-line-level |
+| [0089](#0089) | S3 | A | M1 | `chatbox.swift:260` | The '?' element of the repo-key character check is unreachable | dead | **DONE** | node1 | phase-B/L3-line-level |
+| [0095](#0095) | S3 | C | M4 | `tests/protocol.sh (every fixture section)` | A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port | test | **DONE** | node1 | new-this-session (the audit/0090 matrix base cell) |
 
 ## Task detail
 
 ### 0017
 
-- **Severity / category / module:** S0 / unsafe / M3
+- **Severity / category / module / tier:** S0 / unsafe / M3 / A
 - **Location:** `chatbox-cli.sh:33`
 - **Title:** Client ships a hard-coded third-party URL and silently sends the token there when CHATBOX_URL is unset [also: a trailing slash in CHATBOX_URL breaks every route; Shipped client defaults to a hard-coded third-party host, so an unset CHATBOX_URL sends the token there; Client default endpoint is the author's fixed tailnet host, not loopback]
 - **Status:** DONE
@@ -134,7 +134,7 @@ Mutation (gate, after correcting a first attempt whose replacement lost a newlin
 
 ### 0018
 
-- **Severity / category / module:** S0 / bug / M3
+- **Severity / category / module / tier:** S0 / bug / M3 / A
 - **Location:** `chatbox-cli.sh:820`
 - **Title:** watch acknowledges with all=1, losing messages it never delivered
 - **Status:** DONE
@@ -151,7 +151,7 @@ AUDIT (gate): re-read cold. The ids come from a response header, which is struct
 
 ### 0019
 
-- **Severity / category / module:** S0 / bug / M2
+- **Severity / category / module / tier:** S0 / bug / M2 / A
 - **Location:** `chatbox-mcp.swift:49`
 - **Title:** MCP adapter silently corrupts every argument containing '+' because the server decodes '+' as space [also: CHATBOX_URL with a trailing slash yields //path and 404s every tool call]
 - **Status:** DONE
@@ -170,7 +170,7 @@ AUDIT (gate): re-read cold. queryEncode escapes everything outside the RFC 3986 
 
 ### 0020
 
-- **Severity / category / module:** S0 / bug / M1
+- **Severity / category / module / tier:** S0 / bug / M1 / A
 - **Location:** `chatbox.swift:1550`
 - **Title:** Delivery rows are written with an unchecked run(), so a failed delivery is announced as delivered and the message is unreachable
 - **Status:** DONE
@@ -190,7 +190,7 @@ AUDIT (gate): re-read cold. One write covers thread creation, the message row, t
 
 ### 0021
 
-- **Severity / category / module:** S0 / bug / M1
+- **Severity / category / module / tier:** S0 / bug / M1 / A
 - **Location:** `chatbox.swift:1826`
 - **Title:** GET /ui builds 'path + ?token=' and always gets 401, so the read-only view shows an empty board [also: GET /ui concatenates window.location.search onto paths that already contain a query, so its own credential is swallowed and every fetch is unauthenticated]
 - **Status:** DONE
@@ -209,7 +209,7 @@ AUDIT (gate): re-read cold. withQuery is pure and total (empty search returns th
 
 ### 0022
 
-- **Severity / category / module:** S0 / unsafe / M1
+- **Severity / category / module / tier:** S0 / unsafe / M1 / A
 - **Location:** `chatbox.swift:2300`
 - **Title:** Revocation is reported successful without checking whether the UPDATE ran [also: Credential issue and revoke ignore the write result and report success]
 - **Status:** DONE
@@ -228,7 +228,7 @@ AUDIT (gate): re-read cold. Both store methods use runReporting and return (rc, 
 
 ### 0023
 
-- **Severity / category / module:** S0 / incomplete / M1
+- **Severity / category / module / tier:** S0 / incomplete / M1 / A
 - **Location:** `chatbox.swift:2830`
 - **Title:** --token "" silently starts a fully open board [also: An explicitly empty --token silently starts an open board (fails open, unlike --token-file); `--token ""` (an unset variable) starts an unauthenticated board; --token beats --token-file although the code says the file is preferred]
 - **Status:** DONE
@@ -251,7 +251,7 @@ AUDIT (gate): change re-read cold against the finding; the two guards sit before
 
 ### 0001
 
-- **Severity / category / module:** S1 / unsafe / M1
+- **Severity / category / module / tier:** S1 / unsafe / M1 / A
 - **Location:** `chatbox.swift (whole file)`
 - **Title:** Source does not build under the audit standard (Swift 6 language mode, strict concurrency, warnings-as-errors)
 - **Status:** DONE
@@ -264,7 +264,7 @@ AUDIT (gate): re-read cold, and the one thing this closure does *not* claim is t
 
 ### 0002
 
-- **Severity / category / module:** S1 / unsafe / M1
+- **Severity / category / module / tier:** S1 / unsafe / M1 / A
 - **Location:** `chatbox.swift:1062,1070`
 - **Title:** Static ISO8601DateFormatter instances are shared mutable state (not Sendable)
 - **Status:** DONE
@@ -277,7 +277,7 @@ AUDIT (gate): re-read cold. No `@unchecked Sendable`, no `nonisolated(unsafe)`, 
 
 ### 0003
 
-- **Severity / category / module:** S1 / unsafe / M1
+- **Severity / category / module / tier:** S1 / unsafe / M1 / A
 - **Location:** `chatbox.swift:1238`
 - **Title:** `Chatbox.publicURL` is a mutable static global
 - **Status:** DONE
@@ -291,7 +291,7 @@ AUDIT (gate): re-read cold. `publicURL` is now a `let` on the instance, passed t
 
 ### 0004
 
-- **Severity / category / module:** S1 / unsafe / M1
+- **Severity / category / module / tier:** S1 / unsafe / M1 / A
 - **Location:** `chatbox.swift:27,3215,3217,3221`
 - **Title:** Top-level configuration `let`s are MainActor-isolated and referenced from nonisolated code
 - **Status:** DONE
@@ -304,7 +304,7 @@ AUDIT (gate): re-read cold. `TRANSIENT` became `transientDestructor()` (a C func
 
 ### 0005
 
-- **Severity / category / module:** S1 / unsafe / M1
+- **Severity / category / module / tier:** S1 / unsafe / M1 / A
 - **Location:** `chatbox.swift:2464,1155-1180,1700-1745,1600-1660`
 - **Title:** Non-Sendable captures and captured-var mutation across @Sendable closures (DispatchWorkItem, URLSession completion, waiters, event poll)
 - **Status:** DONE
@@ -318,7 +318,7 @@ REMAINING (deliberately separate, #0015): `Chatbox` and `Store` still carry `@un
 
 ### 0015
 
-- **Severity / category / module:** S1 / unsafe / M1
+- **Severity / category / module / tier:** S1 / unsafe / M1 / A
 - **Location:** `chatbox.swift:896,373`
 - **Title:** `@unchecked Sendable` on Chatbox and Store suppresses all concurrency checking
 - **Status:** DONE
@@ -334,7 +334,7 @@ NO MUTATION IS ADDED FOR THIS TASK, deliberately: removing a `dispatchPreconditi
 
 ### 0024
 
-- **Severity / category / module:** S1 / bug / M3
+- **Severity / category / module / tier:** S1 / bug / M3 / A
 - **Location:** `chatbox-cli.sh:817`
 - **Title:** a failed --exec or print spins the wake loop with no backoff
 - **Status:** DONE
@@ -352,7 +352,7 @@ AUDIT (gate): re-read cold. The backoff reuses the loop's existing cap and sleep
 
 ### 0025
 
-- **Severity / category / module:** S1 / unsafe / M2
+- **Severity / category / module / tier:** S1 / unsafe / M2 / A
 - **Location:** `chatbox-mcp.swift:138`
 - **Title:** MCP adapter feeds raw peer text to the model with no untrusted frame [also: MCP adapter returns peer text to the model with no untrusted frame]
 - **Status:** DONE
@@ -369,7 +369,7 @@ PHASE-D NOTE (a check of mine that was too weak, found by the mutant): the regis
 
 ### 0026
 
-- **Severity / category / module:** S1 / bug / M2
+- **Severity / category / module / tier:** S1 / bug / M2 / A
 - **Location:** `chatbox-mcp.swift:191`
 - **Title:** JSON-RPC notifications receive responses (initialize, ping, tools/list, tools/call reply unconditionally)
 - **Status:** DONE
@@ -386,7 +386,7 @@ AUDIT (gate): re-read cold. `isNotification` was already computed and already us
 
 ### 0027
 
-- **Severity / category / module:** S1 / bug / M2
+- **Severity / category / module / tier:** S1 / bug / M2 / A
 - **Location:** `chatbox-mcp.swift:47`
 - **Title:** MCP adapter corrupts any message text containing '+' [also: MCP adapter corrupts every + in a parameter value (query built with URLQueryItem)]
 - **Status:** DONE
@@ -402,7 +402,7 @@ CONFIDENCE: high
 
 ### 0028
 
-- **Severity / category / module:** S1 / bug / M2
+- **Severity / category / module / tier:** S1 / bug / M2 / A
 - **Location:** `chatbox-mcp.swift:54`
 - **Title:** inbox wait advertised up to 300s but the adapter's HTTP client gives up at 60s [also: MCP HTTP timeout (60/70 s) is shorter than the inbox wait it advertises (max 300 s)]
 - **Status:** DONE
@@ -420,7 +420,7 @@ AUDIT (gate): re-read cold. The deadline is `wait + 20` when a wait is given and
 
 ### 0029
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:1279`
 - **Title:** /health answers 200 with empty counters when the store cannot be read, and omits uptime/build/db state
 - **Status:** DONE
@@ -438,7 +438,7 @@ AUDIT (gate): re-read cold. The fix is additive at the route and subtractive now
 
 ### 0030
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:1358`
 - **Title:** register and token issuance report success when the store write failed [also: Registration reports success without checking its write]
 - **Status:** DONE
@@ -454,7 +454,7 @@ CONFIDENCE: high
 
 ### 0031
 
-- **Severity / category / module:** S1 / perf / M1
+- **Severity / category / module / tier:** S1 / perf / M1 / A
 - **Location:** `chatbox.swift:1509`
 - **Title:** Reply resolution loads every message of the thread, bodies included, with no bound
 - **Status:** DONE
@@ -470,7 +470,7 @@ CONFIDENCE: high
 
 ### 0032
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:1551`
 - **Title:** Delivery rows are inserted unchecked; the answer still claims delivered_to [also: Delivery inserts are unchecked, so a stored message can be reported as delivered without any delivery row]
 - **Status:** DONE
@@ -486,7 +486,7 @@ CONFIDENCE: high
 
 ### 0033
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:1902`
 - **Title:** SSE 'bye' frame is built with a doubled backslash, so the documented bye event is never delivered [also: SSE deadline frame uses literal backslash-n, so the bye event is never terminated]
 - **Status:** DONE
@@ -504,7 +504,7 @@ AUDIT (gate): re-read cold. `sendEvent` is now the single definition of the fram
 
 ### 0034
 
-- **Severity / category / module:** S1 / unsafe / M1
+- **Severity / category / module / tier:** S1 / unsafe / M1 / A
 - **Location:** `chatbox.swift:2095`
 - **Title:** Scoped credential's /threads count is board-wide, breaking read scoping [also: Scoped GET /threads?json=1 reports the board-wide thread count; GET /threads?json=1 leaks the board-wide thread count to a scoped credential; GET /threads JSON 'matching' counts the whole board, not the scoped caller's visible set]
 - **Status:** DONE
@@ -522,7 +522,7 @@ AUDIT (gate): re-read cold. The change removes an unscoped counter instead of ad
 
 ### 0035
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:2107`
 - **Title:** /threads hardcodes LIMIT 100 and its text answer hides the truncation [also: GET /threads is permanently capped at the newest 100 with no offset or cursor; ORDER BY threads.last_at has no index; every /threads call scans and sorts the whole threads table; GET /threads silently truncates at a hard-coded 100, ignores --max-rows, and the text form omits the count; GET /threads text form truncates at a hardcoded 100 and never states the matching count]
 - **Status:** DONE
@@ -539,7 +539,7 @@ AUDIT (gate): re-read cold. `maxRows` is the same bound `/health` reports and th
 
 ### 0036
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:2135`
 - **Title:** Ack reports acknowledgements that did not happen, from an unchecked UPDATE
 - **Status:** DONE
@@ -557,7 +557,7 @@ AUDIT (gate): re-read cold. The three forms are textually parallel and every one
 
 ### 0037
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:2138`
 - **Title:** ack reports sqlite3_changes() even when the UPDATE failed, so a failed ack answers 'ok acked N'
 - **Status:** DONE
@@ -575,7 +575,7 @@ CORRECTION (Phase C, reproduced 2026-09-16): the claim in this entry that the fa
 
 ### 0038
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:2232`
 - **Title:** A credential's secret is returned even when the token INSERT did not store it
 - **Status:** DONE
@@ -591,7 +591,7 @@ CONFIDENCE: high
 
 ### 0039
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:2406`
 - **Title:** Request log records no time, peer, principal or route context; credential issue/revoke unaudited [also: Request target control bytes are echoed into logs and the 404 body (log injection)]
 - **Status:** DONE
@@ -609,7 +609,7 @@ PHASE-D NOTES: (a) an unauthenticated malformed request is now answered **400** 
 
 ### 0040
 
-- **Severity / category / module:** S1 / unsafe / M1
+- **Severity / category / module / tier:** S1 / unsafe / M1 / A
 - **Location:** `chatbox.swift:2431`
 - **Title:** Connections refused at the ceiling get no idle deadline and are not counted, so stalled TLS handshakes accumulate without bound
 - **Status:** DONE
@@ -626,7 +626,7 @@ AUDIT (gate): re-read cold. The refusal path now mirrors the served path clause 
 
 ### 0041
 
-- **Severity / category / module:** S1 / logic / M1
+- **Severity / category / module / tier:** S1 / logic / M1 / A
 - **Location:** `chatbox.swift:2810`
 - **Title:** `--port` and `--stale-after` silently fall back to their defaults on an unparseable value [also: --port and --stale-after silently substitute the default for an unusable value]
 - **Status:** DONE
@@ -644,7 +644,7 @@ AUDIT (gate): re-read cold. Both guards sit with the other bounded-flag guards a
 
 ### 0042
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:2939`
 - **Title:** `--prune`/`--prune-dry-run` on a mistyped `--db` creates a new board and reports success [also: --prune opens (and creates) a database before validating it, so a wrong --db path yields success on a brand-new board; Operator modes: Store is opened before --prune validation, a mistyped --db creates a board and reports 'pruned: 0', and conflicting modes silently win; --prune-dry-run can create or rewrite the database it promises not to touch]
 - **Status:** DONE
@@ -664,7 +664,7 @@ PHASE-D NOTE (a mutant that did not reintroduce the bug): the first `252` remove
 
 ### 0043
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:298`
 - **Title:** Agent ids may contain ',', but recipients are stored comma-joined and re-split, so a reply can be delivered to an unintended session
 - **Status:** DONE
@@ -681,7 +681,7 @@ PHASE-D NOTE (the same change closes #0031): the old loop read every message of 
 
 ### 0044
 
-- **Severity / category / module:** S1 / bug / M1
+- **Severity / category / module / tier:** S1 / bug / M1 / A
 - **Location:** `chatbox.swift:3232`
 - **Title:** No SIGTERM/SIGINT/SIGHUP handling: no drain, no WAL checkpoint, no log reopen
 - **Status:** DONE
@@ -699,7 +699,7 @@ AUDIT (gate): re-read cold. The signal sources are installed after the listener 
 
 ### 0045
 
-- **Severity / category / module:** S1 / incomplete / M1
+- **Severity / category / module / tier:** S1 / incomplete / M1 / A
 - **Location:** `chatbox.swift:484`
 - **Title:** Store.rows treats every non-ROW step result as end-of-data, returning partial results as complete
 - **Status:** DONE
@@ -717,7 +717,7 @@ AUDIT (gate): re-read cold. `readFailed` is queue-confined like the rest of `Sto
 
 ### 0046
 
-- **Severity / category / module:** S1 / perf / M1
+- **Severity / category / module / tier:** S1 / perf / M1 / A
 - **Location:** `chatbox.swift:827`
 - **Title:** Scoped visibility checks full-scan deliveries and messages; no index on deliveries(node) or messages(sender)
 - **Status:** DONE
@@ -734,7 +734,7 @@ AUDIT (gate): re-read cold. The three indexes follow the existing migration bloc
 
 ### 0047
 
-- **Severity / category / module:** S1 / test / M4
+- **Severity / category / module / tier:** S1 / test / M4 / C
 - **Location:** `tests/protocol.sh:1505`
 - **Title:** --port and --stale-after silently fall back to defaults on an unusable value; no check
 - **Status:** DONE
@@ -750,7 +750,7 @@ CONFIDENCE: high
 
 ### 0048
 
-- **Severity / category / module:** S1 / test / M4
+- **Severity / category / module / tier:** S1 / test / M4 / C
 - **Location:** `tests/protocol.sh:3442`
 - **Title:** No startup-boundary test for --idle-timeout, --max-connections or --max-rows
 - **Status:** DONE
@@ -767,7 +767,7 @@ AUDIT (gate): re-read cold. The three guards sit with the `--max-body` guard and
 
 ### 0006
 
-- **Severity / category / module:** S2 / deps / M5
+- **Severity / category / module / tier:** S2 / deps / M5 / B
 - **Location:** `.github/workflows/ci.yml:31,40 ; codeql.yml:44,47,60`
 - **Title:** CI actions are pinned to mutable tags, not commit SHAs
 - **Status:** DONE
@@ -780,7 +780,7 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 
 ### 0007
 
-- **Severity / category / module:** S2 / unsafe / M1/M2
+- **Severity / category / module / tier:** S2 / unsafe / M1/M2 / A
 - **Location:** `chatbox.swift (63 sites), chatbox-mcp.swift`
 - **Title:** 63 force-unwrapped String.data(using:.utf8)! conversions
 - **Status:** DONE
@@ -792,7 +792,7 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 
 ### 0008
 
-- **Severity / category / module:** S2 / bug / M3
+- **Severity / category / module / tier:** S2 / bug / M3 / A
 - **Location:** `chatbox-cli.sh:203`
 - **Title:** Variable interpolated into a printf format string (SC2059)
 - **Status:** DONE
@@ -804,7 +804,7 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 
 ### 0009
 
-- **Severity / category / module:** S2 / bug / M3
+- **Severity / category / module / tier:** S2 / bug / M3 / A
 - **Location:** `chatbox-cli.sh:456,463`
 - **Title:** A pipeline both reads and writes the same file (SC2094) - truncation/data-loss risk
 - **Status:** DONE
@@ -816,7 +816,7 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 
 ### 0010
 
-- **Severity / category / module:** S2 / test / M4
+- **Severity / category / module / tier:** S2 / test / M4 / C
 - **Location:** `tests/protocol.sh:1284,1679,1689,2054,2551,2676,3021,3299,3312,3459,3565,3941`
 - **Title:** Shellcheck findings in the suite (SC3057 x3 quoted substring, SC2143 x5, SC2059 x2, SC2034, SC2329)
 - **Status:** DONE
@@ -828,7 +828,7 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 
 ### 0014
 
-- **Severity / category / module:** S2 / unsafe / M1
+- **Severity / category / module / tier:** S2 / unsafe / M1 / A
 - **Location:** `chatbox.swift:2426`
 - **Title:** CodeQL swift/cleartext-transmission (high) on the HTTP listener - waiver or design change
 - **Status:** DONE
@@ -840,7 +840,7 @@ AUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with 
 
 ### 0049
 
-- **Severity / category / module:** S2 / test / repo
+- **Severity / category / module / tier:** S2 / test / repo / C
 - **Location:** `.github/workflows/codeql.yml:57`
 - **Title:** CodeQL extraction build never compiles chatbox-mcp.swift, so the MCP adapter is unscanned
 - **Status:** DONE
@@ -857,7 +857,7 @@ AUDIT (gate): re-read cold. The change is the documented build command for the s
 
 ### 0050
 
-- **Severity / category / module:** S2 / docs / repo
+- **Severity / category / module / tier:** S2 / docs / repo / C
 - **Location:** `aisessionserver-wiki/Deployment.md:92`
 - **Title:** Local test runbook starts the disposable server on the suite's own staleness port
 - **Status:** DONE
@@ -873,7 +873,7 @@ CONFIDENCE: high
 
 ### 0051
 
-- **Severity / category / module:** S2 / docs / repo
+- **Severity / category / module / tier:** S2 / docs / repo / C
 - **Location:** `aisessionserver-wiki/Quick-Start.md:255`
 - **Title:** Documented local test command silently skips checks and cannot print the promised result
 - **Status:** DONE
@@ -889,7 +889,7 @@ CONFIDENCE: high
 
 ### 0052
 
-- **Severity / category / module:** S2 / unsafe / M3
+- **Severity / category / module / tier:** S2 / unsafe / M3 / A
 - **Location:** `chatbox-cli.sh:150`
 - **Title:** Client puts the credential in curl argv, exposing it to every local user via ps
 - **Status:** DONE
@@ -905,7 +905,7 @@ CONFIDENCE: high
 
 ### 0053
 
-- **Severity / category / module:** S2 / logic / M3
+- **Severity / category / module / tier:** S2 / logic / M3 / A
 - **Location:** `chatbox-cli.sh:29`
 - **Title:** ~/.chatbox overrides the environment instead of defaulting to it
 - **Status:** DONE
@@ -921,7 +921,7 @@ CONFIDENCE: medium
 
 ### 0054
 
-- **Severity / category / module:** S2 / logic / M3
+- **Severity / category / module / tier:** S2 / logic / M3 / A
 - **Location:** `chatbox-cli.sh:355`
 - **Title:** canon_repo accepts Unicode Cf/C1 controls that chatbox.swift refuses [also: Repo-key rule duplicated in client and server diverges on Unicode format controls]
 - **Status:** DONE
@@ -937,7 +937,7 @@ CONFIDENCE: high
 
 ### 0055
 
-- **Severity / category / module:** S2 / bug / M3
+- **Severity / category / module / tier:** S2 / bug / M3 / A
 - **Location:** `chatbox-cli.sh:686`
 - **Title:** GET query strings are concatenated unencoded, so ids with a space or & break the request
 - **Status:** DONE
@@ -953,7 +953,7 @@ CONFIDENCE: high
 
 ### 0056
 
-- **Severity / category / module:** S2 / logic / M3
+- **Severity / category / module / tier:** S2 / logic / M3 / A
 - **Location:** `chatbox-cli.sh:703`
 - **Title:** ack silently drops --all, then the server error names the flag the caller passed
 - **Status:** DONE
@@ -969,7 +969,7 @@ CONFIDENCE: high
 
 ### 0057
 
-- **Severity / category / module:** S2 / incomplete / M3
+- **Severity / category / module / tier:** S2 / incomplete / M3 / A
 - **Location:** `chatbox-cli.sh:775`
 - **Title:** watch delivers the 1200-character inbox preview and then acks it
 - **Status:** TEST
@@ -984,7 +984,7 @@ CONFIDENCE: medium
 
 ### 0058
 
-- **Severity / category / module:** S2 / bug / M2
+- **Severity / category / module / tier:** S2 / bug / M2 / A
 - **Location:** `chatbox-mcp.swift:177`
 - **Title:** Well-formed non-object JSON is reported as -32700 parse error instead of -32600 Invalid Request
 - **Status:** DONE
@@ -1000,7 +1000,7 @@ CONFIDENCE: medium
 
 ### 0059
 
-- **Severity / category / module:** S2 / incomplete / M2
+- **Severity / category / module / tier:** S2 / incomplete / M2 / A
 - **Location:** `chatbox-mcp.swift:197`
 - **Title:** notifications/cancelled is a no-op that can never be observed while a call blocks the read loop
 - **Status:** TEST
@@ -1015,7 +1015,7 @@ CONFIDENCE: high
 
 ### 0060
 
-- **Severity / category / module:** S2 / bug / M2
+- **Severity / category / module / tier:** S2 / bug / M2 / A
 - **Location:** `chatbox-mcp.swift:91`
 - **Title:** Tool schema declares additionalProperties:false but undeclared arguments are forwarded to the server
 - **Status:** DONE
@@ -1031,7 +1031,7 @@ CONFIDENCE: high
 
 ### 0061
 
-- **Severity / category / module:** S2 / perf / M1
+- **Severity / category / module / tier:** S2 / perf / M1 / A
 - **Location:** `chatbox.swift:1553`
 - **Title:** Per-recipient N+1 queries on the send path; recipient count is bounded only by --max-body
 - **Status:** TEST
@@ -1046,7 +1046,7 @@ CONFIDENCE: high
 
 ### 0062
 
-- **Severity / category / module:** S2 / logic / M1
+- **Severity / category / module / tier:** S2 / logic / M1 / A
 - **Location:** `chatbox.swift:1654`
 - **Title:** Boolean parameters are true for any non-empty value: all=0 includes read mail and json=0 emits JSON
 - **Status:** DONE
@@ -1062,7 +1062,7 @@ CONFIDENCE: high
 
 ### 0063
 
-- **Severity / category / module:** S2 / perf / M1
+- **Severity / category / module / tier:** S2 / perf / M1 / A
 - **Location:** `chatbox.swift:1748`
 - **Title:** Serial forward queue plus a 12 s semaphore wait holds one connection per queued federation forward
 - **Status:** TEST
@@ -1077,7 +1077,7 @@ CONFIDENCE: medium
 
 ### 0064
 
-- **Severity / category / module:** S2 / unsafe / M1
+- **Severity / category / module / tier:** S2 / unsafe / M1 / A
 - **Location:** `chatbox.swift:1752`
 - **Title:** Federation forward buffers the peer's entire response body with no size cap
 - **Status:** TEST
@@ -1092,7 +1092,7 @@ CONFIDENCE: medium
 
 ### 0065
 
-- **Severity / category / module:** S2 / bug / M1
+- **Severity / category / module / tier:** S2 / bug / M1 / A
 - **Location:** `chatbox.swift:1773`
 - **Title:** Any 2xx from the peer is reported as a delivery without checking the peer is a chatbox board
 - **Status:** TEST
@@ -1107,7 +1107,7 @@ CONFIDENCE: medium
 
 ### 0066
 
-- **Severity / category / module:** S2 / perf / M1
+- **Severity / category / module / tier:** S2 / perf / M1 / A
 - **Location:** `chatbox.swift:1934`
 - **Title:** SSE ticks run three board-wide COUNT(*) queries on the shared serial queue every 0.5 s per stream
 - **Status:** TEST
@@ -1122,7 +1122,7 @@ CONFIDENCE: medium
 
 ### 0067
 
-- **Severity / category / module:** S2 / perf / M1
+- **Severity / category / module / tier:** S2 / perf / M1 / A
 - **Location:** `chatbox.swift:2017`
 - **Title:** Each long-poll waiter re-authorizes and re-queries every 0.25 s for up to 300 s
 - **Status:** TEST
@@ -1137,7 +1137,7 @@ CONFIDENCE: medium
 
 ### 0068
 
-- **Severity / category / module:** S2 / bug / M1
+- **Severity / category / module / tier:** S2 / bug / M1 / A
 - **Location:** `chatbox.swift:2179`
 - **Title:** Read paths echo peer-controlled harness/ip/session/agent/node unescaped while escaping repos in the same loop
 - **Status:** TEST
@@ -1152,7 +1152,7 @@ CONFIDENCE: medium
 
 ### 0069
 
-- **Severity / category / module:** S2 / incomplete / M1
+- **Severity / category / module / tier:** S2 / incomplete / M1 / A
 - **Location:** `chatbox.swift:2598`
 - **Title:** No --version, no --help and no build identifier: a rollback cannot be verified
 - **Status:** DONE
@@ -1170,7 +1170,7 @@ CELL (gate, measured): `ONLY=297-audit0069-noquestionflags sh AUDIT/mutate.sh` o
 
 ### 0070
 
-- **Severity / category / module:** S2 / logic / M1
+- **Severity / category / module / tier:** S2 / logic / M1 / A
 - **Location:** `chatbox.swift:2776`
 - **Title:** --verify-backup compares only row counts, so a stale copy can verify as current
 - **Status:** DONE
@@ -1186,7 +1186,7 @@ CONFIDENCE: medium
 
 ### 0071
 
-- **Severity / category / module:** S2 / unsafe / M1
+- **Severity / category / module / tier:** S2 / unsafe / M1 / A
 - **Location:** `chatbox.swift:3093`
 - **Title:** --peer-token exists only on the command line, so the federation credential is visible in ps
 - **Status:** DONE
@@ -1202,7 +1202,7 @@ CONFIDENCE: high
 
 ### 0072
 
-- **Severity / category / module:** S2 / unsafe / M1
+- **Severity / category / module / tier:** S2 / unsafe / M1 / A
 - **Location:** `chatbox.swift:387`
 - **Title:** Server-created database, WAL and backups are world-readable (0644)
 - **Status:** DONE
@@ -1218,7 +1218,7 @@ CONFIDENCE: high
 
 ### 0073
 
-- **Severity / category / module:** S2 / incomplete / M1
+- **Severity / category / module / tier:** S2 / incomplete / M1 / A
 - **Location:** `chatbox.swift:449`
 - **Title:** Store.exec ignores every SQLite error, and the db-open refusal drops the cause
 - **Status:** DONE
@@ -1234,7 +1234,7 @@ CONFIDENCE: high
 
 ### 0074
 
-- **Severity / category / module:** S2 / bug / M1
+- **Severity / category / module / tier:** S2 / bug / M1 / A
 - **Location:** `chatbox.swift:460`
 - **Title:** Stored text is silently truncated at an embedded NUL byte
 - **Status:** DONE
@@ -1250,7 +1250,7 @@ CONFIDENCE: medium
 
 ### 0075
 
-- **Severity / category / module:** S2 / logic / M1
+- **Severity / category / module / tier:** S2 / logic / M1 / A
 - **Location:** `chatbox.swift:499`
 - **Title:** Store.scalar returns an arbitrary column via Dictionary.values.first
 - **Status:** DONE
@@ -1266,7 +1266,7 @@ CONFIDENCE: high
 
 ### 0076
 
-- **Severity / category / module:** S2 / perf / M1
+- **Severity / category / module / tier:** S2 / perf / M1 / A
 - **Location:** `chatbox.swift:50`
 - **Title:** nowISO() allocates a fresh ISO8601DateFormatter on every call, including once per recipient
 - **Status:** DONE
@@ -1282,7 +1282,7 @@ CONFIDENCE: high
 
 ### 0077
 
-- **Severity / category / module:** S2 / bug / M1
+- **Severity / category / module / tier:** S2 / bug / M1 / A
 - **Location:** `chatbox.swift:610`
 - **Title:** Repo-key migration ignores BEGIN/COMMIT failures
 - **Status:** DONE
@@ -1298,7 +1298,7 @@ CONFIDENCE: high
 
 ### 0078
 
-- **Severity / category / module:** S2 / perf / M1
+- **Severity / category / module / tier:** S2 / perf / M1 / A
 - **Location:** `chatbox.swift:611`
 - **Title:** Startup key migration re-reads all four tables and rewrites every non-canonical row on every start
 - **Status:** TEST
@@ -1313,7 +1313,7 @@ CONFIDENCE: medium
 
 ### 0079
 
-- **Severity / category / module:** S2 / perf / M1
+- **Severity / category / module / tier:** S2 / perf / M1 / A
 - **Location:** `chatbox.swift:716`
 - **Title:** prune() clears reply_to with one full-table-scan UPDATE per pruned message (O(messages x pruned))
 - **Status:** TEST
@@ -1328,7 +1328,7 @@ CONFIDENCE: high
 
 ### 0080
 
-- **Severity / category / module:** S2 / perf / M1
+- **Severity / category / module / tier:** S2 / perf / M1 / A
 - **Location:** `chatbox.swift:799`
 - **Title:** Inbox listing sorts the whole matching backlog in a temp b-tree to return 200 rows
 - **Status:** TEST
@@ -1343,7 +1343,7 @@ CONFIDENCE: high
 
 ### 0081
 
-- **Severity / category / module:** S2 / test / M4
+- **Severity / category / module / tier:** S2 / test / M4 / C
 - **Location:** `tests/protocol.sh:1478`
 - **Title:** Aux-server readiness accepts any answering server, not the one just started
 - **Status:** DONE
@@ -1359,7 +1359,7 @@ CONFIDENCE: high
 
 ### 0082
 
-- **Severity / category / module:** S2 / test / M4
+- **Severity / category / module / tier:** S2 / test / M4 / C
 - **Location:** `tests/protocol.sh:3254`
 - **Title:** Fixed 'bulk' and 'exact' literals break the suite's per-run namespace on re-runs
 - **Status:** DONE
@@ -1375,7 +1375,7 @@ CONFIDENCE: high
 
 ### 0083
 
-- **Severity / category / module:** S2 / test / M4
+- **Severity / category / module / tier:** S2 / test / M4 / C
 - **Location:** `tests/protocol.sh:3576`
 - **Title:** Expiry issuance asserted with 'expires: 20' and no 1/36500 boundaries
 - **Status:** DONE
@@ -1391,7 +1391,7 @@ CONFIDENCE: high
 
 ### 0084
 
-- **Severity / category / module:** S2 / test / M4
+- **Severity / category / module / tier:** S2 / test / M4 / C
 - **Location:** `tests/protocol.sh:3748`
 - **Title:** The /events max= ceiling is never exercised
 - **Status:** DONE
@@ -1407,7 +1407,7 @@ CONFIDENCE: high
 
 ### 0085
 
-- **Severity / category / module:** S2 / test / M4
+- **Severity / category / module / tier:** S2 / test / M4 / C
 - **Location:** `tests/protocol.sh:395`
 - **Title:** /token?json=1 secret check is vacuous: the JSON form is never asserted
 - **Status:** DONE
@@ -1423,7 +1423,7 @@ CONFIDENCE: high
 
 ### 0086
 
-- **Severity / category / module:** S2 / test / M4
+- **Severity / category / module / tier:** S2 / test / M4 / C
 - **Location:** `tests/protocol.sh:3967`
 - **Title:** fed_refuse decides "refused" with a fixed sleep and never checks the exit status
 - **Status:** DONE
@@ -1439,7 +1439,7 @@ CONFIDENCE: high
 
 ### 0090
 
-- **Severity / category / module:** S2 / bug / M1
+- **Severity / category / module / tier:** S2 / bug / M1 / A
 - **Location:** `chatbox.swift:2279`
 - **Title:** GET /threads?json=1 answers the plain-text form when nothing matches, so json=1 does not mean JSON [also: GET /tokens?json=1]
 - **Status:** DONE
@@ -1455,7 +1455,7 @@ CONFIDENCE: high
 
 ### 0091
 
-- **Severity / category / module:** S2 / test / M1
+- **Severity / category / module / tier:** S2 / test / M1 / A
 - **Location:** `AUDIT/mutate.sh`
 - **Title:** The mutation matrix silently skips cells whose anchor no longer matches the code, and cannot be reproduced from a clone
 - **Status:** DONE
@@ -1473,7 +1473,7 @@ AUDIT (gate): re-read cold. The harness is the evidence generator for every othe
 
 ### 0092
 
-- **Severity / category / module:** S2 / test / M5
+- **Severity / category / module / tier:** S2 / test / M5 / B
 - **Location:** `.github/workflows/ci.yml:45`
 - **Title:** CI builds with -O only, so the audit build standard is not enforced and can regress silently
 - **Status:** DONE
@@ -1491,7 +1491,7 @@ AUDIT (gate): re-read cold. The new step compiles nothing twice into the artifac
 
 ### 0093
 
-- **Severity / category / module:** S2 / deps / M8
+- **Severity / category / module / tier:** S2 / deps / M8 / C
 - **Location:** `(repository state)`
 - **Title:** The audit branch was reconciled with nine commits that landed on main while it ran
 - **Status:** DONE
@@ -1503,7 +1503,7 @@ AUDIT (gate): re-read cold. The new step compiles nothing twice into the artifac
 
 ### 0094
 
-- **Severity / category / module:** S2 / test / M4
+- **Severity / category / module / tier:** S2 / test / M4 / C
 - **Location:** `tests/protocol.sh:1515,4471`
 - **Title:** Two refusal checks prove a refusal with a flat one-second sleep, so a loaded run reports a refused start as a live board
 - **Status:** DONE
@@ -1517,7 +1517,7 @@ WHY IT MATTERS: a check that can fail on a busy machine is a check whose red is 
 
 ### 0096
 
-- **Severity / category / module:** S2 / test / M7
+- **Severity / category / module / tier:** S2 / test / M7 / B
 - **Location:** `AUDIT/mutate.sh:1714 ; tests/protocol.sh:271`
 - **Title:** The mutation matrix could only run cells serially and probed the suite's literal fixture ports, so a full sweep could not fit one slot and a per-cell port override was invisible to the preflight
 - **Status:** DONE
@@ -1535,7 +1535,7 @@ CONFIDENCE: high (both halves are structural, not timing).
 
 ### 0097
 
-- **Severity / category / module:** S2 / bug / M1
+- **Severity / category / module / tier:** S2 / bug / M1 / A
 - **Location:** `chatbox.swift renderInbox/showThread/listThreads (subject, sender, recipients, repo)`
 - **Title:** A message's subject, sender, recipients and repo are echoed unescaped on the inbox/thread/threads read paths, so a subject containing a line break forges lines in a listing
 - **Status:** TEST
@@ -1550,7 +1550,7 @@ CONFIDENCE: high (static, and the fix is the same treatment `repos` already had 
 
 ### 0011
 
-- **Severity / category / module:** S3 / style / M1/M2/M4
+- **Severity / category / module / tier:** S3 / style / M1/M2/M4 / A
 - **Location:** `.swift-format ; .swiftlint.yml ; chatbox.swift ; chatbox-mcp.swift`
 - **Title:** Formatter/linter baseline: 3309 swift-format findings, 303 swiftlint findings
 - **Status:** DONE
@@ -1564,7 +1564,7 @@ WHY IT MATTERS: the brief's Swift standard names a committed formatter config an
 
 ### 0012
 
-- **Severity / category / module:** S3 / docs / M6/M1
+- **Severity / category / module / tier:** S3 / docs / M6/M1 / A
 - **Location:** `README.md:11, chatbox.swift:6`
 - **Title:** Documented toolchain (Swift 6.3.3) contradicts the audit standard (Swift 6.4 + strict concurrency)
 - **Status:** DONE
@@ -1576,7 +1576,7 @@ WHY IT MATTERS: the brief's Swift standard names a committed formatter config an
 
 ### 0013
 
-- **Severity / category / module:** S3 / style / M7
+- **Severity / category / module / tier:** S3 / style / M7 / B
 - **Location:** `tests/.scratch`
 - **Title:** Unbounded scratch growth: 1.8 GB / 120414 files from mutation runs and per-cell TLS fixtures
 - **Status:** DONE
@@ -1588,7 +1588,7 @@ WHY IT MATTERS: the brief's Swift standard names a committed formatter config an
 
 ### 0016
 
-- **Severity / category / module:** S3 / style / M3
+- **Severity / category / module / tier:** S3 / style / M3 / A
 - **Location:** `chatbox-cli.sh:30`
 - **Title:** SC1090: the client sources a non-constant path (~/.chatbox)
 - **Status:** DONE
@@ -1600,7 +1600,7 @@ WHY IT MATTERS: the brief's Swift standard names a committed formatter config an
 
 ### 0087
 
-- **Severity / category / module:** S3 / placeholder / repo
+- **Severity / category / module / tier:** S3 / placeholder / repo / C
 - **Location:** `.github/traffic.json:4`
 - **Title:** Canned view count served as the live 'Views (14d)' README badge
 - **Status:** DONE
@@ -1616,7 +1616,7 @@ CONFIDENCE: high
 
 ### 0088
 
-- **Severity / category / module:** S3 / style / M1
+- **Severity / category / module / tier:** S3 / style / M1 / A
 - **Location:** `chatbox.swift:1617`
 - **Title:** Local `who` shadows the Principal parameter in message()
 - **Status:** DONE
@@ -1632,7 +1632,7 @@ CONFIDENCE: high
 
 ### 0089
 
-- **Severity / category / module:** S3 / dead / M1
+- **Severity / category / module / tier:** S3 / dead / M1 / A
 - **Location:** `chatbox.swift:260`
 - **Title:** The '?' element of the repo-key character check is unreachable
 - **Status:** DONE
@@ -1648,7 +1648,7 @@ CONFIDENCE: high
 
 ### 0095
 
-- **Severity / category / module:** S3 / test / M4
+- **Severity / category / module / tier:** S3 / test / M4 / C
 - **Location:** `tests/protocol.sh (every fixture section)`
 - **Title:** A fixture server outlives a suite that exits mid-section, so the next run reports a missing answer instead of a held port
 - **Status:** DONE

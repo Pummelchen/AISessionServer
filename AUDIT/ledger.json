@@ -56,7 +56,8 @@
       "evidence_after": "TEST (gate): on the audit branch, `xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox.swift` exits 0 with no diagnostics, and the same command on `chatbox-mcp.swift` exits 0 with no diagnostics - the baseline's 10 primary errors and 10 primary warnings are gone (`AUDIT/baseline/strict-concurrency.txt` is the before). The documented build (`xcrun swiftc -O <file> -o <binary>`, no extra flags) also emits zero warnings for both binaries, which is the baseline's other yardstick. Nothing was silenced to get there: the only `@unchecked Sendable` annotations are the two that predate the audit, and their invariant is now enforced at runtime rather than asserted in a comment (#0015); there is no new `try!`, no `# type: ignore` and no lowered strictness setting anywhere in the diff. The quality gate is a runnable command, which is what makes the claim checkable rather than a promise.\nAUDIT (gate): re-read cold, and the one thing this closure does *not* claim is that CI would notice a regression. `ci.yml` still builds with `-O` alone, so the strict command above is run by the auditor and by nobody else - recorded as task #0092 rather than pretended away.",
       "commit": "6b9a55c",
       "notes": "This was the umbrella task for the standard itself; the sub-findings are the four resolved tasks it names, each with its own before/after check and mutation cell. Rejected alternative: keeping #0001 open until CI enforced the standard - that would make one task cover two different pieces of work (a code fix that is done and a workflow change that is not), so the workflow change is its own numbered finding.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0002",
@@ -73,7 +74,8 @@
       "evidence_after": "TEST (gate). For a compiler-strictness fix the failing-before/passing-after check IS the build, so it is the measurement: `xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox.swift` reports 10 primary errors / 10 primary warnings before, and 8 / 10 after — the two `static property 'iso'/'isoTiny' is not concurrency-safe` errors are gone (AUDIT/baseline/strict-concurrency.txt vs strict-concurrency-after-0002.txt). Formatting is byte-identical: a scratch comparison of `ISO8601DateFormatter(.withInternetDateTime)` against `Date.ISO8601FormatStyle(timeZone: GMT)` produced the same string for a fixed instant, and the new style parses everything the old pair did (plain, fractional and offset-bearing stamps) so one style replaces two. Runtime check added to the suite (section 39): health's `now:` and a stored message's `at:` must match `YYYY-MM-DDTHH:MM:SSZ` exactly — the shape the database's string comparisons depend on. Suite base cell green at 904 passed / 0 failed, relative-path cell green, 0 false passes; the documented build still compiles with 0 warnings.\nAUDIT (gate): re-read cold. No `@unchecked Sendable`, no `nonisolated(unsafe)`, no lowered strictness: the shared value is a `Sendable` value type on a nonisolated enum, the three write helpers delegate to it, and `parseISO` makes one attempt instead of two because the new style accepts both shapes. The three per-call formatter constructions (nowISO/isoDaysAgo/isoDaysAhead) are gone too, so the hot path allocates less. No check weakened: section 39 is additive.",
       "commit": "653f554",
       "notes": "Rejected alternatives: (a) a lock-guarded wrapper around ISO8601DateFormatter - it would need `@unchecked Sendable`, which the brief forbids as a fix; (b) `nonisolated(unsafe)` on the statics - the same escape hatch; (c) building a formatter per call and leaving the statics for parsing - keeps the error and the hot-path allocation. The shape is pinned by a runtime check because the storage contract is the string.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0003",
@@ -90,7 +92,8 @@
       "evidence_after": "TEST (gate): the strict-concurrency typecheck goes from 8 primary errors / 10 warnings to **7 / 10**, with `static property 'publicURL' is not concurrency-safe` gone (AUDIT/baseline/strict-concurrency-after-0003.txt); the documented build still compiles with 0 warnings. Runtime check added (section 40): the usage text served by `GET /` must name the port this board is actually serving — it used to start as the hardcoded 8787 default and was overwritten after the object was built, so any answer produced before that assignment advertised a port nobody was listening on. Suite base cell green at 905 passed / 0 failed, relative cell green, 0 false passes.\nPHASE-D NOTE (a defect in my own first attempt, caught by the base cell before any commit): the new check read `$PORT`, which the suite never defines; under `set -u` that aborted the whole run (base RED, 61 checks never reached). Fixed by deriving the port from `$URL` the way the suite already does elsewhere, and the cell was re-run green.\nAUDIT (gate): re-read cold. `publicURL` is now a `let` on the instance, passed through the initialiser from the startup configuration (scheme decided before the object is built); the two usage call sites read the instance; no static mutable state remains for this value and no `nonisolated(unsafe)`/`@unchecked Sendable` was added. No check weakened: section 40 is additive.",
       "commit": "2ff1916",
       "notes": "Rejected alternatives: (a) `nonisolated(unsafe) static var` or a `static let` assigned once - the first is the forbidden escape hatch and the second cannot be assigned after construction in Swift; (b) removing the URL from the usage text - it is the one place a caller learns where to connect.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0004",
@@ -107,7 +110,8 @@
       "evidence_after": "TEST (gate): the strict-concurrency typecheck goes from 7 primary errors / 10 warnings to **2 / 10** — the two `main actor-isolated var 'peerURL'`, both `'tlsIdentity'` and the `main actor-isolated let 'TRANSIENT'` errors are gone (AUDIT/baseline/strict-concurrency-after-0004.txt). The only errors left are #0005's `DispatchWorkItem` capture and the `@preconcurrency` hint that is attached to it — deliberately NOT silenced, since adding `@preconcurrency` would downgrade Sendable checking to warnings. The documented build keeps compiling with 0 warnings. Banner text is unchanged: the suite's existing checks on `auth:`, `bounds:`, `federation:`, `transport:` and the per-address URLs all still pass; base cell green at 905 passed / 0 failed, relative cell green, 0 false passes. No new runtime check was added because this task's property is a compiler property; the existing banner checks are the regression guard and they exercise the rewritten lines.\nAUDIT (gate): re-read cold. `TRANSIENT` became `transientDestructor()` (a C function pointer is not Sendable, so it cannot be a shared global) and both `sqlite3_bind_text` call sites use it — the SQLite bind semantics are unchanged (SQLITE_TRANSIENT still tells sqlite3 to copy). The `@Sendable` banner closure now reads the board's own stored configuration instead of top-level `var`s, which removes the second source of truth as well as the error; the values it prints are the same fields the listener was built from. No `@unchecked Sendable`, no `nonisolated(unsafe)`, no lowered strictness.",
       "commit": "32461dd",
       "notes": "Rejected alternatives: (a) `nonisolated(unsafe)` on TRANSIENT/tlsIdentity/peerURL - the forbidden escape hatch; (b) `@preconcurrency import Dispatch` - it would turn the remaining Sendable errors into warnings, i.e. lowering strictness, which is not a fix; (c) making the top-level `var`s `let`s by restructuring the startup into functions - a larger change than needed once the banner reads the instance, and it would move code without fixing anything else.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0005",
@@ -124,7 +128,8 @@
       "evidence_after": "TEST (gate): `xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck` is now **0 errors / 0 warnings** for BOTH Swift binaries — from 10/10 for chatbox.swift and 0/3 for chatbox-mcp.swift at the baseline (AUDIT/baseline/strict-concurrency-0005-*.txt; the baseline files are the before state). Behaviour is guarded by the whole suite: base cell green at 905 passed / 0 failed and the relative-path cell green, 0 false passes — including the paths this refactor touched: the accept-deadline checks (a silent peer is closed, `--max-connections` answers 503 while held, plaintext-to-TLS still 52), the long poll (\"a waiter that is still connected stays active\"), SSE (hello/activity/keep-alive/bye) and the federation forward (ok / 403 / dead peer / redirect).\nAUDIT (gate): re-read cold. No `@unchecked Sendable` was added, no `nonisolated(unsafe)`, no `@preconcurrency` and no lowered strictness: (a) `Waiter`, `Deadline` and `HTTPOutcome` are `final class ... Sendable` whose only stored property is a `Synchronization.Mutex` — a stdlib lock that is `Sendable` when its value is; (b) the accept deadline is a `DispatchWorkItem` that is only *executed* — the two sides agree through the `Deadline` flag, so nothing captures the non-Sendable work item; (c) the `URLSession` completions write their results through `HTTPOutcome` instead of mutating captured vars, in both binaries; (d) the SSE keep-alive time and the long-poll touch time are computed as immutable locals before the scheduled closure, and the deferred forward answer carries an immutable `finalReq`. The lock is not load-bearing for correctness (every access is already on the serial queue) — it is what lets the compiler verify that.\nREMAINING (deliberately separate, #0015): `Chatbox` and `Store` still carry `@unchecked Sendable`. The build is clean *because* of those two annotations, so #0015 is the reviewable decision about them — justify the serial-queue invariant in writing or replace them with a typed model — and it is the only place where the standard is currently met by an assertion rather than by the type system.",
       "commit": "a56ccc1",
       "notes": "Rejected alternatives: (a) `@preconcurrency import Dispatch` - the compiler's own suggestion, and it would downgrade Sendable checking to warnings (the brief forbids lowering strictness); (b) `@unchecked Sendable` on Waiter/HTTPOutcome - forbidden as a fix, and unnecessary once the state is behind a `Mutex`; (c) `actor` per waiter/outcome - an actor cannot be awaited from these synchronous callbacks without restructuring the whole request path, and would move work off the serial queue the rest of the server relies on; (d) making the callbacks `async` with `URLSession.data(for:)` - the cleanest end state, but it changes the forward path's answer timing and would need its own task, not a rider on this one.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0006",
@@ -141,7 +146,8 @@
       "evidence_after": "TEST (gate): `actionlint` (1.7.12, installed for this) reports the two workflows clean; every pinned SHA was resolved from the tag through the GitHub API and dereferenced when the tag object was annotated — actions/checkout v7 -> 3d3c42e5aac5ba805825da76410c181273ba90b1 (also tagged v7.0.1), github/codeql-action v4 -> b96794f015dfd88f77b49b1c93e0fa7110f94c63 (also tagged v4.38.0) — and both workflows were then DISPATCHED onto the audit branch to prove the pins resolve and run: CI run 34989797751 **success** on c12e615, CodeQL run 34989800698 **success** on the same commit — so all three pinned SHAs (checkout, init, analyze) resolve and run. Pushing to `audit/2026-09-15` does not trigger the push/PR filters, which is why the dispatch path is the verification rather than a normal run.\nAUDIT (gate): re-read cold. Both files carry the pinning rule as a comment with the exact update command (`gh api repos/<owner>/<repo>/git/ref/tags/<tag> --jq .object.sha`, dereference when it is a tag object). The release is named in the trailing comment (v7.0.1 / v4.38.0) so a reader can see how old the pin is. No check weakened: nothing else in either workflow changed.",
       "commit": "d3de0f6",
       "notes": "Rejected alternatives: (a) keep the moving major tag and add a Dependabot config - a bot updates on its own schedule and a repointed tag can be exploited before that; (b) pin to a fork or vendor the actions - unnecessary supply-chain surface for two well-known publishers; (c) do nothing because the workflow only reads the repository - the runner holds `GITHUB_TOKEN`, and `contents: read` limits but does not eliminate what a compromised action can do with the job's context.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "B"
     },
     {
       "id": "0007",
@@ -158,7 +164,8 @@
       "evidence_after": "TEST: 86 sites are rewritten - 84 in `chatbox.swift`, 2 in `chatbox-mcp.swift` - and the rewrite is provably message-preserving: reversing it (`Data(x.utf8)` back to `x.data(using: .utf8)!`) reproduces the committed sources **byte for byte**, and the strict standard typechecks both at 0/0. Section 53 counts the shape in the source *under test*; the harness now passes that source in `CHATBOX_SRC` for every cell (the mutated file, or the frozen server source for the base and relative cells), so the static check can see a mutant as well as the tree. On the pre-fix sources the count is 86 and the check fails. Mutant `288-audit0007-forceunwrap` puts the flag-value refusal back in the old shape and is red at 1084 passed / 1 failed. The two remaining `data(using: .utf8)` uses are `if let`/`guard let` bindings that handle the optional, not force-unwraps. Base cell GREEN at 1085 passed / 0 failed on 4cf2566 (chatbox.swift sha256 a0752d01a557ba1e); relative cell GREEN, 0 false passes; documented build 0 warnings.",
       "commit": "4cf2566",
       "notes": "The pin has to be textual and the ledger says why rather than pretending otherwise: UTF-8 cannot fail, so `Data(s.utf8)` and `s.data(using: .utf8)!` are the same program once compiled and no behaviour distinguishes them. What the messages *say* is pinned functionally elsewhere - section 42 asserts the startup refusals, section 44 the request log line, section 29 the /health errors, section 46 the shutdown lines - so a rewrite that dropped a message would be red there. The first pass of the rewrite mis-detected two string literals whose interpolations contain quotes (`\\(... ? \"-\" : ...)` and `joined(separator: \" and \")`), producing `\"-Data(\"`; the compiler rejected both immediately, they were repaired by hand, and the reverse-transform proof above covers every site including those two. The 24 matrix cells whose anchors contained the old shape were re-anchored and **each one compiled** to prove the new text is still valid Swift.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0008",
@@ -175,7 +182,8 @@
       "evidence_after": "TEST: the check is the standard's own shell checks, run on the client **under test** (`$CLI`, which in a mutation cell is the mutated client): `sh -n`, `dash -n`, and `shellcheck -s sh` with only the documented dynamic `source` (SC1090) filtered out. Before this batch the client had three findings - SC2059 here, SC2094 twice for #0009 - and after it has none, so the section fails on the pre-fix client and passes on the fixed one. Mutant `286-audit0008-printfvar` (`printf \"$_fc_seq\"`, the pre-fix shape) is red at 1082 / 2. Section 52 also asserts the two shapes are absent from the source, so the pin does not rest on the linter being installed. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.",
       "commit": "dfa7174",
       "notes": "Also appears twice in tests/protocol.sh, which is task #0010's scope, not this one's. Honest limit, recorded rather than implied away: this one has no behavioural discriminator. `$_fc_seq` is a fixed escape sequence such as `\\342\\200\\213` and contains no `%`, so the pre-fix and the fixed client strip exactly the same characters - the finding is that a stray `%` in a value would be read as a format directive, and the fix removes the class rather than a present-day symptom. The pin is therefore the linter plus the absence of the shape, and `printf '%b'` is the POSIX way to say 'interpret the escapes in this *value*'.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0009",
@@ -192,7 +200,8 @@
       "evidence_after": "TEST: `canon_repos` split the comma list into a temporary file and then read that same file in the loop below it, removing it on the error path - a path both written and read by one shell, and a cleanup that an interrupt skips (the file stayed behind). The list now reaches the loop as a here document, which is the same input and leaves nothing behind; the `rm -f` on the error path is gone with the file. Section 52 runs `shellcheck -s sh` on the client under test (SC2094 twice before, none after) and asserts the temp-file shape (`chatbox-canon.`) is absent from the source. Mutant `287-audit0009-tempfile` (the temp-file form put back, `rm -f` and all) is red at 1082 / 2. The registration path that uses this function is exercised by the existing client sections, so a broken split would be red there too. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.",
       "commit": "dfa7174",
       "notes": "The comment that said a temp file that could not be written also lands in the 'no repo key' error was removed with the file: there is no file to fail to write any more, and the remaining two ways to reach that error (a list of separators, a claim that vanishes in the split) are still refused with exit 2. A here document expands `$(...)` in the current shell, so the command substitution's failure is not swallowed: `tr` failing leaves the loop reading nothing and the 'contains no repo key' branch refuses it.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0010",
@@ -209,7 +218,8 @@
       "evidence_after": "TEST: `shellcheck -s sh tests/protocol.sh` goes from **13 findings to 0**, `sh -n` and `dash -n` are clean, and section 54 pins it - the three checks run on `$0`, the file that is running, so a finding introduced later fails the suite itself. The three `${@:2}` sites were reproduced as a real defect before the fix: `dash -c 'f() { echo \"${@:2}\"; }; f a b'` exits **2** with `Bad substitution`, so the suite's own claim to be POSIX `sh` was false at exactly those helpers. The full suite after the fix: **1088 passed / 0 failed** (1085 + section 54's three checks), with the `pb`/`bk`/`bo` sections (25-27), the `grep -q` sites (sections 19, 22, 24) and section 28's revoke all exercised in that run.",
       "commit": "f042c4c",
       "notes": "No mutant cell: the harness mutates the sources under test (server, client, adapter), not the suite, so there is nothing to mutate here - the pin is the linter run against the file that is executing, and it fires in every run including every matrix cell. The two `printf` fixes are behaviour-preserving for the current fixture text (`\\r\\n` is exactly what `%b` expands) and are what makes a `%` in the text safe. The `grep -q` changes stop the pipeline early on a match, which is fine for a `printf` producer.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0011",
@@ -226,7 +236,8 @@
       "evidence_after": "SWEPT (S3 gate). `swift-format lint --strict --configuration .swift-format chatbox.swift chatbox-mcp.swift` reports 0; `swiftlint lint --strict --config .swiftlint.yml chatbox.swift chatbox-mcp.swift` reports 0 and exits 0; both strict-concurrency typechecks are 0/0; the full protocol suite is **1162 passed / 0 failed** on the formatted revision; all 305 mutation anchors match. The violation proofs are in AUDIT/tool-coverage.md. Commit 6950542.",
       "commit": "6950542",
       "notes": "Disabled with reasons, not waived: file_length/type_body_length/function_body_length/cyclomatic_complexity/large_tuple/function_parameter_count (the single-file design), opening_brace/closure_parameter_position (swift-format formats these differently), and optional_data_string_conversion (it fires on String(decoding:) over a raw SQLite byte buffer, where the failable form would turn a row into \"\" on non-UTF-8 bytes). identifier_name is configured (min_length 1), not disabled. Rejected: a full swift-format default reformat without the token matcher - it invalidated 225 of 305 mutation anchors, which would have silently skipped them.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0012",
@@ -243,7 +254,8 @@
       "evidence_after": "TEST: the three places that stated the toolchain now state the enforced standard. `chatbox.swift`'s header says **Swift 6** and spells the typecheck command; `README.md`'s badge line no longer pins 6.3.3; and `AGENTS.md`'s identity paragraph no longer says the constraint is unenforced - it names the flags CI runs on both binaries. The enforcement itself is #0092's CI step (strict typecheck with the exit code as a gate), added by this audit; this task is the documentation catching up to it. A comment cannot be pinned behaviourally and the ledger says so: the verification is that the strict build is **0/0** for both files in the run that closed this batch, and that the suite is green at 1103 passed / 0 failed.",
       "commit": "eadca29",
       "notes": "Rejected: pinning a version number (e.g. 'Swift 6.4'). The old claim rotted because a *version* is not what is enforced - the workflow uses `runs-on: xcode-27` and pins nothing. The docs now name the **flags** (`-swift-version 6 -strict-concurrency=complete -warnings-as-errors`), which is the standard the audit actually applies; a future toolchain moves without making the documentation false.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0013",
@@ -260,7 +272,8 @@
       "evidence_after": "TEST (measured, before and after): `du -sh tests/.scratch` was **1.9 GB** with **123,531 files** (gitleaks had spent 71 s of a 1.34 GB worktree scan on it, 2098 hits that are all fixture key material). After the one-time prune, a **full suite run** on the changed tree leaves `tests/.scratch` at **596 KB / 7 files**, and all seven belong to the test runner's own `verify-b10/` directory - the suite itself left nothing (`find tests/.scratch -type f -not -path '*verify-b10*' | wc -l` is 0). The full suite is green at **1106 passed / 0 failed** in that run. The harness's per-cell prune was verified by a one-cell matrix run: base GREEN at 1106 passed / 0 failed and cell 292 red at 1105/1 in that run, with the harness printing `scratch: 53M` at the end - the frozen sources plus the mutated sources and the transcripts - and the per-cell binaries, databases, WAL/SHM files and logs no longer present, where before each cell left four or five files behind for the life of the directory. The run's own artefacts were then removed by hand, leaving tests/.scratch at **840 KB / 20 files** (the test runner's directory), which is where it now sits between runs.",
       "commit": "85b47ff",
       "notes": "The cleanup keys on `$RUN` because that is already the per-run namespace the suite's own header promises for concurrent runs on one board, and `-maxdepth 1` keeps it away from anything nested it does not own. The `.out` transcripts are deliberately kept: deleting them would delete what the matrix exists to produce. The TLS fixture's key material is regenerated per run, which is why it dominated the scan size; nothing about it is committed (`.gitignore` covers `tests/.scratch/`).",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "B"
     },
     {
       "id": "0014",
@@ -277,7 +290,8 @@
       "evidence_after": "DECISION (a) taken and recorded: **keep plaintext support and waive the alert in writing**, not silence it. `AUDIT/waivers.md` W-01 gives the rule, the alert ([#1](https://github.com/Pummelchen/AISessionServer/security/code-scanning/1)), why it is accurate (the listener really is plain unless `--tls-identity` is given, so the credential and the message cross in the clear), why it is accepted (TLS is available and documented, the default is plain because the documented deployment is two machines on one private tailnet, and mandating TLS changes every client URL scheme, every `~/.chatbox`, the peer URL and the runbook - a product decision), the residual risk accepted explicitly, and the review trigger. The alert itself is **dismissed** on GitHub (`state: dismissed`, `dismissed_reason: won't fix`) with a 280-character comment naming W-01. Gate: the repository's open code-scanning alert count went from **1 to 0** - `gh api repos/Pummelchen/AISessionServer/code-scanning/alerts?state=open --jq length` returns 0, and the alert still appears in the list as dismissed, so nothing is hidden and no query was excluded from the CodeQL configuration.",
       "commit": "319ecfa",
       "notes": "Rejected: (b) make TLS mandatory - it would close the alert by changing the product, breaking the loopback default that exists so a macOS host can reach its own board, every `~/.chatbox`, the peer federation URL and the published runbook; that is the owner's decision, not a defect fix, and the audit does not take it on their behalf. Also rejected: a `query-filters` exclusion in `.github/codeql-config.yml` - it hides the finding from the analysis itself, so a future reviewer sees a clean scan with nothing to read; a dismissal keeps the alert visible with a written reason attached, and `AUDIT/waivers.md` is the durable copy of that reason.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0015",
@@ -294,7 +308,8 @@
       "evidence_after": "DECISION: keep `@unchecked Sendable` on `Chatbox` and `Store`, with (a) the invariant written down where the\nqueue is declared and (b) the invariant ENFORCED at runtime rather than asserted.\nTEST (gate), three pieces of evidence: (1) the enforcement is real in an optimised build — a standalone program calling `dispatchPrecondition(condition: .onQueue(q))` from another queue dies with SIGTRAP under `swiftc -O`, so this is not a debug-only check; (2) with the preconditions live, the suite passes **905 passed / 0 failed** and the relative-path cell is green, 0 false passes — i.e. every store access and every Chatbox entry point across the whole API (HTTP routes, long poll, SSE, TLS, federation, the MCP adapter's calls, and the operator modes run through `chatboxQueue.sync`) really is on the one queue; a single missed call site would have crashed the run instead of passing it; (3) the strict-concurrency build stays at **0 errors / 0 warnings** for both binaries, so no strictness was traded for this.\nWHY THE ANNOTATIONS STAY (rejected alternatives recorded): (a) `actor Store` / `actor Chatbox` — the HTTP layer is Network.framework callbacks over a synchronous SQLite handle; an actor would push `await` through ~200 call sites, move work off the queue the rest of the design depends on, and would not make the SQLite handle safer (the C API is synchronous and non-Sendable whatever wraps it); (b) a `@globalActor` modelling the queue — `NWConnection` callbacks are not actor-isolated, so every entry point would need `assumeIsolated`/`await`, which is the same restructuring with more ceremony; (c) `nonisolated(unsafe)` on the stored properties — the forbidden escape hatch, and weaker than what is here; (d) splitting the file into modules so the state could be internal — violates the documented one-file constraint for no concurrency gain.\nNO MUTATION IS ADDED FOR THIS TASK, deliberately: removing a `dispatchPrecondition` changes no observable behaviour, so a mutation of it would be a false pass in the harness. The property is a guarantee, and the guarantee is evidenced by (1) and (2) above, which are reproducible commands recorded in AUDIT/baseline.",
       "commit": "6b9a55c",
       "notes": "This is the only place in the audit where the standard is met by an assertion rather than by the type system, so it is recorded as a decision with the invariant, the enforcement and the rejected alternatives. If a future change wants a typed model, the place to start is the forward path (the one caller that already runs off the request queue and touches no store).",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0016",
@@ -311,7 +326,8 @@
       "evidence_after": "TEST: `shellcheck -s sh chatbox-cli.sh` reports **0 findings** including SC1090 (it was 1), and section 52's check now runs shellcheck with **no filter at all** - a *stricter* check than the one it replaces, which excluded SC1090 by pattern; the suite is green at **1106 passed / 0 failed**. No mutant cell: the change is a linter directive plus a stricter assertion on the same file, and the client's behaviour is untouched.",
       "commit": "85b47ff",
       "notes": "The directive names `/dev/null` rather than the config file because the file legitimately does not exist on a machine with no `~/.chatbox` (the suite runs that way on purpose). The alternative fix - a constant path - would have removed the documented `CHATBOX_CONFIG` override to satisfy a linter, which is the wrong direction.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0017",
@@ -328,7 +344,8 @@
       "evidence_after": "TEST (gate), network-free so no live board is ever contacted: the pre-fix client run with CHATBOX_URL and CHATBOX_TOKEN unset and CHATBOX_CACERT set (its own guard fires before curl) answers `chatbox: CHATBOX_CACERT is set but CHATBOX_URL is not https:// (http://100.66.125.48:8787)` - exit 2, but the diagnostic names the built-in third-party default and never says the server is unconfigured, so the new checks FAIL. The fixed client answers `chatbox: no server configured — set CHATBOX_URL, or write it to /nonexistent` - the checks PASS. Full suite after the fix: protocol.sh 878 passed, 0 failed (872 + 6 new checks in section 35, which also prove `help` still works with no server and that the diagnostic never names the old address).\nAUDIT (gate): re-read cold. The guard sits in curl_tls, the single function every request path goes through, so a future subcommand cannot bypass it; `repo` (git remotes only) and `help` do not call it and still work unconfigured; the CACERT case now has an explicit empty-URL branch so a CACERT without a URL gets the true diagnostic instead of a confusing one. No check weakened: section 35 is new, and the only changed existing behaviour is that a misconfigured client refuses instead of guessing. Baseline comparison: suite 864 -> 878 passed, documented build and all scanner counts unchanged.\nMutation (gate, after correcting a first attempt whose replacement lost a newline and produced a syntax-error client - that red was discarded, not recorded): the mutant passes `sh -n`, and the harness reports it red with exactly the three section-35 checks failing (875 passed / 3 failed: exit code, 'no server configured', 'deliberately no default') while base stays green at 878.",
       "commit": "a5a658b",
       "notes": "Rejected alternatives: (a) defaulting to http://127.0.0.1:8787 like the MCP adapter does — a loopback board is a *different* board, so the token would still be sent somewhere the operator did not name; (b) keeping a default and warning — a warning on every invocation is noise and does not stop the leak; (c) reading the URL from a checkout-specific file — that is what ~/.chatbox already is. RECONCILED 2026-09-16: while the audit ran, `main` shipped its own fix for the same defect (`77afe19`, PR #6) as a **loopback default** (`http://127.0.0.1:8787`) rather than the refusal this task introduced. Merging main into the audit branch conflicted exactly there, and the owner chose the shipped design: the default is loopback and nothing else, the now-unreachable empty-URL refusal in `curl_tls` is deleted with it, and section 35's checks are re-pinned to the property that matters - an unset URL is *used* (the stub curl records `http://127.0.0.1:8787/...` and the client exits with curl's transport code), it is never a machine-specific address, and no such address is written into the client at all. The S0 is still fixed: a token can no longer reach a third party. README and the client comment were updated to match, and the reasoning is kept so a machine-specific default is not reintroduced.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0018",
@@ -345,7 +362,8 @@
       "evidence_after": "TEST (gate), the property measured directly on a live board (3 unread, the wake loop delivering with `--exec 'sleep 2'`, and a 4th message arriving during that delivery). BEFORE (client that acks `all=1`): unread after the wake = 0 and the late message is present-but-read — it was acknowledged without ever being delivered, so no later wake will show it and nothing re-queues it: lost. AFTER (client that acks the header's ids): unread after the wake = 1, i.e. the late message is still unread and the next wake delivers it; the three the page held are acknowledged. DEGRADATION: the new client against a server that sends no header leaves everything unread and says so on stderr (`the server did not say which messages it sent; leaving them unread`) — a repeat rather than a loss. Suite base cell green at 902 passed / 0 failed (3 new checks, section 38); mutations 238-audit0018-ackall (the client reverts to `all=1`) and 239-audit0018-noheader (the server stops sending the header) each red on exactly the pinned check; relative cell green; 0 false passes.\nAUDIT (gate): re-read cold. The ids come from a response header, which is structural — a peer's message body cannot add an id to it, which is why parsing ids out of the framed text was rejected (recorded above). The header is built from the same `rows` the body rendered, in the same order; the client accepts only all-digit ids; the long-poll answer path sends the same header; the empty-inbox, `json=1` and refusal paths are unchanged; the loop cleans up its header file on every exit path and its trap. No check weakened: the 3 new checks are additive and the existing wake-loop checks (output shape included) still pass untouched. Baseline: suite 899 -> 902; build and scanners unchanged.",
       "commit": "35bc4e3",
       "notes": "Rejected alternatives: (a) parsing the ids out of the framed text - the client prefixes every line uniformly, so a peer's body line is byte-identical to a real header and ids are guessable, which would let a sender hide another of the agent's messages (recorded in this task before the fix); (b) re-rendering the page from `/inbox?json=1` - correct in principle but it would change the printed shape every integration and test depends on; (c) acking `thread=` per thread - it cannot be exact, since a thread may hold messages the page did not show; (d) acking the header ids but falling back to `all=1` when it is missing - that reintroduces the loss against an older server, so the fallback leaves them unread instead.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0019",
@@ -362,7 +380,8 @@
       "evidence_after": "TEST (gate). BEFORE: the pre-fix adapter, asked to say `c++ plus+plus a+b`, stored `c   plus plus a b` (read back through the API) — every `+` in every argument became a space, silently. AFTER: the same call stores `c++ plus+plus a+b` byte-for-byte. Reproduced mechanism: `URLComponents.queryItems` renders the body `a+b c&d=e` as `a+b%20c%26d%3De` — `&` and `=` are escaped, `+` is not — and the server's percentDecode maps `+` to a space. Suite: base cell green at 883 passed / 0 failed (1 new check in section 31, which reads the stored body back through the API, not through the adapter); mutation 233-audit0019-mcpplus (queryEncode allows 0x2B through) red with exactly that check failing.\nAUDIT (gate): re-read cold. queryEncode escapes everything outside the RFC 3986 unreserved set, so the query is now built the way the server's own forward path builds its body; values are escaped, the key/value separators are added after escaping, and `URL(string:)` leaves the %XX sequences alone; an empty parameter set produces no '?' at all. No check weakened: the new check is additive. Baseline: suite 881 -> 883 passed; build and scanner counts unchanged.",
       "commit": "842e588",
       "notes": "Rejected alternatives: (a) sending the parameters as a form-encoded body — correct, but it would make every GET tool a GET-with-body for no gain here; (b) escaping only `+` before handing the value to URLQueryItem — the initializer re-encodes and the result is not controllable; (c) fixing the server to stop treating `+` as a space — that would break curl's --data-urlencode and the documented form encoding.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0020",
@@ -379,7 +398,8 @@
       "evidence_after": "TEST (gate), with the store forced to refuse by triggers on a live board. BEFORE: with a BEFORE INSERT trigger on deliveries, POST /message answered `ok posted` while `messages=1, deliveries=0` — the message was stored, the sender was told `delivered_to`, no delivery row existed, and `--prune` never removes a message with no deliveries, so it was unreachable mail announced as a delivery. A refused agent INSERT was answered 200 `ok registered` with 0 rows for that id. AFTER: the send answers 500 `error: the message could not be delivered to bob — nothing was written` with `messages=0` (whole send rolled back); the registration answers 500 and stores nothing; both work again once the trigger is dropped. Suite base cell green at 899 passed / 0 failed (8 new checks); mutation 236-audit0020-deliveryguard red on 2 checks, 237-audit0020-registerguard red on 1, relative cell green, 0 false passes.\nPHASE-D NOTE (a defect my own first attempt introduced, caught by the base cell before any commit): the first version opened BEGIN IMMEDIATE before the reply's validation, so a 400 (`thread=abc`) or a 403 (a join refusal) returned with the transaction still open. The very next send then failed with `cannot start a transaction within a transaction` — the base cell went RED, 61 checks failing. Fixed by resolving and authorising the reply target *before* BEGIN (every refusal in that block writes nothing, so it needs no rollback), and the whole cell was re-run: base GREEN, mutations red.\nAUDIT (gate): re-read cold. One write covers thread creation, the message row, the sender's liveness, every delivery row, the thread stamp and the commit; every statement in it is checked with runReporting and every failure rolls back and answers 500 (never 200); `delivered_to` is now built from the rows that exist (`recipientsWithDelivery`) rather than from the list the route intended, and the stale/warning set is computed over those same rows; the 404-when-the-thread-vanished path still rolls back and still answers 404; the register route checks its INSERT/UPDATE. No check weakened: all 8 are additive and the previous suite is unchanged. Baseline: suite 891 -> 899; build and scanners unchanged.",
       "commit": "b54abc9",
       "notes": "Rejected alternatives: (a) deleting the message and its deliveries by hand on a failure - a rollback is the same thing without a second way to leave partial state; (b) reporting only the recipients that were written and answering 200 - a half-delivered report the sender cannot tell from a whole one; (c) keeping the thread creation outside the transaction - a refused send would then leave an empty thread behind on every failure. The first attempt's regression is recorded above as required by Phase D.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0021",
@@ -396,7 +416,8 @@
       "evidence_after": "TEST (gate). BEFORE: the pre-fix build's /ui serves no withQuery and its code builds `path + window.location.search`; for '/threads?json=1' with '?token=tok' that URL answers 401 (measured: `curl '/threads?json=1?token=tok'` -> 401, the correct `&token=` form -> 200). AFTER: the shipped function returns '/threads?json=1&token=tok' and that URL answers 200; suite 881 passed / 0 failed (3 new checks, section 36, which extracts withQuery from the served page, runs it under node against five path/search pairs, then calls the live server with the URL it builds); mutation 232-audit0021-uiquery red with exactly that one check failing, base green.\nAUDIT (gate): re-read cold. withQuery is pure and total (empty search returns the path unchanged, a path with no query gains '?', a path with one gains '&', a leading '?' is stripped once); every path the page requests now goes through it, so a future call site cannot reintroduce the join. No check weakened: section 36 is new. Baseline: suite 878 -> 881 passed; build and scanners unchanged.",
       "commit": "47f414f",
       "notes": "Rejected alternatives: (a) stripping the existing query from the paths ('/threads' + '?json=1&token=…') - works but silently drops json=1 if the parameter order ever changes; (b) putting the token in a cookie or header - the page is credential-free by design and the server accepts ?token= only; (c) testing the JS by source inspection - the shipped function is executed under node instead, so the check fails for the real reason.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0022",
@@ -413,7 +434,8 @@
       "evidence_after": "TEST (gate), with the store forced to refuse by triggers on a live board (the same technique the backup section already uses). BEFORE: with a BEFORE INSERT trigger on tokens, `POST /token` answered 200 and printed `secret:` for a credential that was never stored; with a BEFORE UPDATE trigger, `POST /token/revoke` answered `ok revoked tk-...` while the row was still live (`revoked_at` NULL) — so the operator was told a live credential was dead. AFTER: the issuance is 500 `error: the credential was not stored — nothing was issued (blocked)` with no secret printed; the revocation is 500 `error: the revocation did not run — tk-... is still valid (blocked)`; both work again once the trigger is dropped. Suite base cell green at 891 passed / 0 failed (8 new checks); mutations 234-audit0022-issueguard (3 checks fail) and 235-audit0022-revokeguard (2 checks fail) red, relative cell green, 0 false passes.\nAUDIT (gate): re-read cold. Both store methods use runReporting and return (rc, changes); a DONE with changes == 0 on revoke is resolved by re-reading the row (a concurrent revoke is a success, not a false failure); the issuance route checks the write before printing the one and only copy of the secret; the existing 'already revoked' 200 path is unchanged; a prepare failure (rc != DONE) is still a 500 and now carries the store's own reason. No check weakened: all 8 are additive. Baseline: suite 883 -> 891; build and scanners unchanged.",
       "commit": "599a87d",
       "notes": "Rejected alternatives: (a) checking only `tokenExists` before the UPDATE (it cannot see a refused UPDATE); (b) printing the secret and warning if the insert failed - the operator would hold a credential that can never work, and the only copy of the secret would be in a response about a failure; (c) treating changes == 0 as 'already revoked' unconditionally - that hides a real refusal, so the row is re-read instead.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0023",
@@ -430,7 +452,8 @@
       "evidence_after": "TEST (gate): the same three cases against the pre-fix binary and the fixed one.\nBEFORE: `--token \"\"` STARTED, /health with no credential = 200, banner `auth: OPEN (no token)`; `--token-file \"\"` STARTED, same; empty token file refused (pre-existing guard).\nAFTER: `--token \"\"` refused — \"--token was given but is empty — refusing to start an open board (use --token open to ask for one by name)\"; `--token-file \"\"` refused — \"--token-file was given but names no file — refusing to start an open board\"; empty token file still refused.\nFull suite after the fix: protocol.sh 872 passed, 0 failed (864 + 8 new checks in section 34, which also proves `--token open` still starts a board and that its banner says so).\nMutation `230-audit0023-emptytoken` reintroduces the hole; the harness must report it red (see commit message).\nAUDIT (gate): change re-read cold against the finding; the two guards sit before the token file is read and before Store is opened, use argPresent (which counts `--flag=` as present), and exit 2 naming the flag exactly as the other startup refusals do. No check was weakened: section 34 is new and the pre-existing empty-file check is unchanged. Baseline comparison: documented build still 0 warnings; suite 864 -> 872 passed; no scanner metric regressed.",
       "commit": "06de884",
       "notes": "Rejected alternatives: (a) treating an empty value as \"absent\" (that is the bug); (b) silently falling back to the token file (hides the operator's mistake and can still end open); (c) requiring a non-empty token unconditionally (would remove the documented open mode). Commit note: the commit that carries the fix is 06de884. Its message was mangled by shell quoting and misstates the ledger sha ('mark DONE at 64c7e63'); the ledger is authoritative. The commit itself contains the two guards, suite section 34 and this ledger entry (status AUDIT).",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0024",
@@ -447,7 +470,8 @@
       "evidence_after": "TEST (gate): reproduced before the fix against a disposable board with one unread message and a consumer that appends one byte and exits 1. The pre-fix client (HEAD's `chatbox-cli.sh`) ran the consumer **246 times in 7 seconds** - a tight busy loop, re-running the failing command and re-polling the server as fast as the shell could go; the fixed client ran it **3 times in 7 seconds** (the 2s, 4s then 6s waits). Section 38 now pins it: the consumer writes one byte per invocation, the loop runs for a fixed 7s window, and 2..8 bytes is the passing range - the upper bound is what the fix pins and the lower bound keeps the check from passing when the fixture never fails (a consumer that succeeded would be acknowledged and never run again). A second check asserts the message it never delivered is still unread. Base cell GREEN at 942 passed / 0 failed; mutant `248-audit0024-nobackoff` (the pre-fix branch: print and fall straight through to the next poll) is red on the rate check; relative cell GREEN, 0 false passes; `sh -n`, `dash -n` and shellcheck on the client stay at the baseline's four findings (SC1090, SC2059, SC2094 x2).\nPHASE-D NOTE: the check backgrounds the client **directly** (`VAR=... sh \"$CLI\" ... &`), not in a subshell. `( ... ) &` makes `$!` the subshell and whether it execs the client is the shell's choice, so an orphaned wake loop could keep polling the board after the check had finished; the failed-consumer loop is continuous, unlike the `--once` runs elsewhere in this section that die on their own. After the change the process table was checked for stray `chatbox-cli.sh` processes.\nAUDIT (gate): re-read cold. The backoff reuses the loop's existing cap and sleep, so there is one delay policy rather than two; `--once` keeps its exit code (1) and its immediate exit, so the documented one-shot use is unchanged; the durable-delivery promise is untouched - the message is never acked on a failure, and a later success still acknowledges exactly the ids the header named.",
       "commit": "9198f3d",
       "notes": "Rejected alternatives: (a) reuse `_fails` - it is reset by any successful poll, and a failing consumer's poll always succeeds, so the shared counter would hold the wait at 2s and never escalate; (b) make `--exec` imply `--once` - it silently removes the documented continuous wake loop, and a transient consumer failure would then stop the session; (c) give up on the message after N failures - unread mail is never dropped by design, and the consumer failing says nothing about whether the message is wanted; (d) a fixed one-second sleep - no escalation for a consumer that is down for minutes, and a needless delay for one that fails once.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0025",
@@ -464,7 +488,8 @@
       "evidence_after": "TEST (gate): reproduced with the real adapter against a disposable board. A message whose body carries a line imitating the frame's own start banner and a line of instructions was read through the adapter: before the fix the instruction line reached **column zero** and no frame was present; after it the whole answer is inside the frame, the fake banner and the instruction line are prefixed, and neither reaches column zero. A right-to-left override (U+202E) in the same body survives the round trip to the server and is returned by the pre-fix adapter and stripped by the fixed one (`server stored the bidi? 1`, adapter output `1` before, `0` after), so the sanitizer check is not vacuous. Section 31 adds nine checks: the frame block (banner plus the line after it), the closing banner, that the message is still readable inside it, that neither the instruction line nor a forged banner reaches column zero, that both appear with the `| ` prefix, that the `peers` listing is framed too, and that a format control does not survive. Base cell GREEN at 956 passed / 0 failed; mutants `250-audit0025-unframed` (the pre-fix `let text = body`) is red on eight checks and `251-audit0025-nosanitize` (`sanitize` returns its input) on the format-control check; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTE (a check of mine that was too weak, found by the mutant): the registry check was first written as a substring match for the frame block anywhere in the `peers` answer, and it **passed against the unframed mutant** - the answer to a `peers` call about a board with 52 agents contains the needle somewhere other than the frame, which I could not reproduce on a small board and did not chase to the end. What matters is that a substring match over a whole answer is not evidence that the frame was applied, so the check is now anchored: the tool text inside the JSON envelope must *begin* with the frame banner (`\"content\":[{\"text\":\"================== UNTRUSTED PEER MESSAGE`). The re-run makes the mutant fail that check too (8 failures instead of 7), which is what a check about framing should do. This is the fourth wrong check the mutation matrix has caught this session.",
       "commit": "eef2712",
       "notes": "Rejected alternatives: (a) move the frame into the server's read responses - it would change the API for every client, including the JSON forms and the browser view, and framing is a presentation decision the caller should own; (b) add a `frame` argument or an environment switch - the README states there is no flag to switch the frame off, and an off switch is the hole with a name; (c) return the text as an MCP `resource` instead of a text block - a host may never fetch it, and the model would then see nothing rather than framed text; (d) frame only `inbox` - `thread` and `peers` carry the same peer text (bodies, subjects, ids, notes), which is why the shell client frames all its read paths.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0026",
@@ -481,7 +506,8 @@
       "evidence_after": "TEST (gate): reproduced with the real adapter. Four notifications (`ping`, `tools/list`, `initialize`, `tools/call`) followed by one request produced, on the pre-fix binary, **5 replies, 4 of them keyed `\"id\":null`**; the fixed binary produced **exactly 1** (the request's, `\"id\":13`). A `tools/call` notification carrying a real `say` was, pre-fix, executed as well as answered - the message landed on the board (measured `on-board=1`) - while the fixed adapter returns no reply and leaves the board unchanged (`on-board=0`). A line that is not JSON at all is still answered with a null id on both, which is the JSON-RPC parse-error case and the reason the gate cannot simply be `id == nil`. Section 31 adds five checks: four notifications plus one request yield exactly one reply; it is the request's; nothing is answered with a null id; a `tools/call` notification does not change the board; and an unparseable line is still answered. Base cell GREEN at 947 passed / 0 failed; mutant `249-audit0026-notifyreply` (`isNotification = false`, i.e. the pre-fix behaviour of treating every message as a request) is red on exactly the three checks that describe a reply; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nAUDIT (gate): re-read cold. `isNotification` was already computed and already used by two branches (the method guard and the default case); this makes the other four branches agree with the comment that has been above them since the adapter was written. The parse-error path is untouched and pinned by a new check, so a future 'simplification' to `if id != nil` inside `reply` breaks a check rather than shipping. No tool, schema, method or error code changed.",
       "commit": "ddaaa23",
       "notes": "Rejected alternatives: (a) gate `reply`/`fail` on `id == nil` internally - a parse error legitimately answers with a null id, so the two cases are not the same and the check that pins the difference would fail; (b) answer a notification with an error - JSON-RPC 2.0 forbids replying to a notification at all, and a strict host treats the frame as a protocol error; (c) execute an id-less `tools/call` silently - MCP defines `tools/call` as a request, so an id-less one is a client bug, and a board mutation the caller cannot be told about (no reply to fail, no id to correlate) is worse than a no-op; (d) drop the id from the reply so it 'looks like' a notification - a response without an id is not a thing JSON-RPC defines.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0027",
@@ -498,7 +524,8 @@
       "evidence_after": "Covered by #0019, which is this same defect found in an earlier pass: the MCP adapter now percent-encodes every parameter value (RFC 3986) in `queryEncode`, so a `+` travels as `%2B` and the server's form decoding no longer turns it into a space. The suite round-trips a body containing `c++ plus+plus a+b` through the adapter and reads it back intact, and matrix cell `233-audit0019-mcpplus` (which puts `0x2B` back into the unescaped set) is red. Nothing was changed for this entry beyond recording that the earlier task is the fix; closing a duplicate instead of fixing the same line twice is the point of deduplicating the ledger.",
       "commit": "842e588",
       "notes": "Duplicate of #0019 (`chatbox-mcp.swift:49`, DONE at 842e588). The two entries came from different passes over the same file and describe the same missing encoding; the fix, the check and the mutation all live under #0019.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0028",
@@ -515,7 +542,8 @@
       "evidence_after": "TEST (gate), measured against an endpoint that accepts and never answers, so the only thing that ends the call is the adapter's own deadline: `wait=1` takes **22s** after the fix (the wait plus the CLI's margin) and **61s** with the old flat deadline — the mutant cell reports exactly that (`wait=1 took 61s: the client is still using a flat deadline`). Suite base cell green at 908 passed / 0 failed, mutant 240-audit0028-flatdeadline red on that one check, relative cell green, 0 false passes. Both strict-concurrency builds stay 0/0.\nPHASE-D NOTE (a vacuity in my own first version of the check, caught by the mutation cell — NOT committed): the holding endpoint was `sleep 30 | nc -k -l`, i.e. it closed the connection at 30s, *before* the flat 60s deadline this check exists to rule out. The mutant therefore failed early and the check passed it — a FALSE PASS, measured at 29s. Fixed by holding for 90s and by proving the holder is alive before making the call (a port that was never bound now fails the check instead of passing it); the cell was re-run and is red for the right reason. The same pattern — prove the fixture, not just start it — is what audit B found in the federation section.\nAUDIT (gate): re-read cold. The deadline is `wait + 20` when a wait is given and 60s otherwise (non-poll calls unchanged), the semaphore waits `deadline + 10`, and the error text now names the deadline that expired instead of a hardcoded 70s. The advertised maximum (300) is therefore reachable: 320s client deadline. No check weakened: the new checks are additive; the suite gains ~22s of wall clock, which is noted here as the one deliberately slow check.",
       "commit": "24a81a4",
       "notes": "Rejected alternatives: (a) lowering the advertised maximum to 60s - it would make the tool honest by removing the feature the server already provides; (b) raising the flat timeout to 320s - a normal tool call would then hang for five minutes on a dead server; (c) firing the request in the background and polling - the adapter is deliberately stateless and synchronous, one request per call.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0029",
@@ -532,7 +560,8 @@
       "evidence_after": "TEST (gate): reproduced first. Against a running board, `sqlite3 $db \"DROP TABLE agents; DROP TABLE threads; DROP TABLE messages;\"` (the schema removed underneath the running process) produced, before the fix, `HTTP 200` with `ok chatbox up`, `agents: `, `messages: ` and the server log saying `sqlite error: no such table: agents` - a board that cannot answer a single route reported as healthy. After the fix the same sequence answers `HTTP 503` with `error: the store could not be read - the counters are unknown, not zero` and `sqlite: no such table: agents`. The suite now pins it in section 41 with five checks: a board with a readable store answers 200; after the schema is dropped the answer is 503, not 200; the body names the store's error; it does not claim `ok chatbox up`; and an unauthenticated probe is still 401, so the 503 is about the board and not about the request. Base cell GREEN at 922 passed / 0 failed; mutant `243-audit0029-healthzero` (`Int(scalar(sql)) ?? 0`, i.e. rounding \"unknown\" down to zero) is red on exactly those three checks; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTE: the finding as recorded said a board whose `--db` is not a SQLite file still answers 200. That is no longer reproducible: startup now refuses such a file (`cannot add messages.origin ... refusing to serve a half-migrated board`), which a later migration guard added. The honest fixture is therefore a store that becomes unreadable *under a running board*, which is the same failure mode from the health check's point of view (every count fails) and does not depend on the open path. This is a change in the route to the failure, not a weakening of the finding: the pre-fix 200-with-empty-counters was re-measured before writing the check.\nAUDIT (gate): re-read cold. The fix is additive at the route and subtractive nowhere: the healthy answer is byte-identical apart from the counts now being `Int`s. Every fixture in the suite and in `AUDIT/mutate.sh` waits for `/health` with `curl -fsS`, so a board that fails closed now fails those waits instead of silently passing them - which is the intended direction. `store.lastError()` is called on a path that `dispatch()` has already pinned to the serial queue.",
       "commit": "74cb7f5",
       "notes": "Rejected alternatives: (a) answer 200 with an `ok: false` field - a monitor that keys on the status code, which is every monitor and the documented probe, would still see a healthy board; (b) answer 500 - 503 is the code that says the service is temporarily unable to handle the request, which is exactly the state, and it leaves 500 for a bug in the route; (c) add uptime/db-path/WAL fields in the same change - useful, but they are new surface with their own checks, and the go-live bug is the status code; (d) probe the database with a fresh connection instead of the counts - a second connection would report on a different handle than the one serving requests and could disagree with it.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0030",
@@ -549,7 +578,8 @@
       "evidence_after": "Covered by two earlier passes over the same two writes. `register()` now runs its INSERT (and the follow-up UPDATE) through `runReporting` and answers **500** `the registration was not stored — <id> is not registered (<sqlite error>)` unless the row was written (#0020, b54abc9); `createToken()` answers **500** `the credential was not stored — nothing was issued` and prints no secret unless `stored.rc == SQLITE_DONE && stored.changes == 1` (#0022, 599a87d). The suite forces both refusals with `BEFORE INSERT` triggers on `agents` and `tokens` and asserts the 500, the absent row and the absent secret, and the matrix cells for both fixes are red. Nothing was changed for this entry: the two writes it names are the two writes those tasks fixed.",
       "commit": "b54abc9",
       "notes": "Duplicate of #0020 (registration, DONE at b54abc9) and #0022 (credential issuance, DONE at 599a87d). The \"also:\" half of the title - 'Registration reports success without checking its write' - is the same finding again from a different pass. One fix per defect: no code changed here.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0031",
@@ -566,7 +596,8 @@
       "evidence_after": "TEST (gate): a conversation of 4000 x 8 KB messages (~33 MB) is written straight into a fixture board and a reply is posted into it. Before the change the server's RSS grew by **36 MB** for that reply; after it, by **1 MB**. Section 43 pins the bound at 10 MB and also asserts the reply still lands (`ok posted`), so a reply that reached nobody cannot pass. The proof that nothing else on the path materialises the thread is structural as well: `Store.thread(_:)` no longer exists, and `grep` finds no caller of it. Base cell GREEN at 995/0; mutants `261-audit0043-splitrecipients` (which restores both the scan and the split, inlined) and the other #0043 cells are red; relative cell GREEN, 0 false passes. The final numbers for the cells that cover it: `261-audit0043-splitrecipients` red on four checks (three for the delimiter bug and the memory one), `262-audit0043-sendersonly` red on two, `14-noparticipants` red on six.",
       "commit": "a1649f2",
       "notes": "Same commit as #0043 - one change, two findings: the loop existed to find participants, and it was both the delimiter bug and the unbounded read. Keeping them as separate commits would have meant writing the participants query twice.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0032",
@@ -583,7 +614,8 @@
       "evidence_after": "Covered by #0020, which is this same defect found in an earlier pass: the send path is one `BEGIN IMMEDIATE`/`COMMIT` transaction, every write is checked with `runReporting`, a refused delivery rolls the whole message back and answers 500, and `delivered_to` is built from the delivery rows that exist (`recipientsWithDelivery(message:)`) rather than from the recipient list the route intended. The suite's blocked-writes section forces the refusal with a `BEFORE INSERT ON deliveries` trigger and asserts the 500, the rolled-back message and the absent delivery row; matrix cell `227-audit0020-txignored` is red. Closed as the duplicate it is - a second fix for the same line would be a second code path for one invariant.",
       "commit": "b54abc9",
       "notes": "Duplicate of #0020 (`chatbox.swift:1550`, DONE at b54abc9). `delivered_to` is the part this entry adds in its title; it is fixed in the same commit, because building the answer from the intended recipient list is what made a refused insert invisible.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0033",
@@ -600,7 +632,8 @@
       "evidence_after": "TEST (gate): the existing check was `contains ... \"event: bye\"`, which the malformed frame passes because the text is on the wire either way - proved by the mutant, which keeps that check green. Two checks replace the weight: the whole frame, extracted from `^event: bye$` to the end of the body, must equal `event: bye` + a real newline + `data: {\"reason\":\"deadline\"}` (on the broken build the sed finds no such line and the value is empty), and the last two bytes must be `0a0a` (on the broken build they are `5c6e`, a backslash and an `n`). Suite base cell green at 915 passed / 0 failed; mutant `242-audit0033-doubledbye` restores the doubled-backslash literal and is red on exactly those two checks while the old substring check stays green; 0 false passes. Strict typecheck 0/0.\nPHASE-D NOTE: my first version of the frame check compared the *whole* body with `equals`, which failed on the correct build because the body opens with the `hello` event - and my first byte check used `od -An -c`, whose field padding left a trailing space the expected string did not have. Both were caught by the base cell (RED with 2 failures); the check now extracts the last frame and compares hex bytes. Third time this session that the base cell was the only thing standing between me and a wrong check.\nAUDIT (gate): re-read cold. `sendEvent` is now the single definition of the frame format, so the two cannot diverge again; the completion parameter is `@escaping @Sendable () -> Void` and captures only the `Sendable` connection, so the strict-concurrency build stays at 0/0. The keep-alive comment frame remains hand-written on purpose - it is a comment line, not an event, and `sendEvent` does not build comments.",
       "commit": "989752c",
       "notes": "Rejected alternatives: (a) fix only the escapes in the literal - it would work today and leave a second place that hand-writes the frame format, which is how the two drifted; (b) `sendEvent(...)` followed by an immediate `conn.cancel()` - the cancel can race the send and drop the frame, which is exactly why the original used a completion; (c) a separate `sendBye` helper - a second frame builder is the same problem in a new place.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0034",
@@ -617,7 +650,8 @@
       "evidence_after": "TEST (gate): section 29 now issues a machine of its own (`node-scope-d`), registers two sessions on it, and writes two conversations in `example.test/<run>/scoped-count`: one between those two sessions (C is not in it) and one from that machine to C (C is in it). Checks: the bootstrap's repo-wide count is 2 (the fixture is real), C's repo-filtered `matching` is 1 (it used to be 2), and C's unfiltered `matching` equals its `shown` (it used to be the board total), with a final check that the bootstrap's count is strictly larger than C's so the fixture cannot go vacuous. Suite base cell green at 910 passed / 0 failed; mutant `241-audit0034-boardwidecount` restores the pre-fix expression (`repo.isEmpty ? COUNT(*) FROM threads : ... WHERE repo = ?`) and is red on exactly the three scope checks; 0 false passes. Both strict-concurrency typechecks stay 0/0.\nPHASE-D NOTE: my first version of the fixture reused A and B for the private conversation and had C send to A. It was green on the new checks but turned two *existing* peers checks red (`not a machine it has never spoken to`, `but a stranger is not`) because the fixture gave C a correspondent A's and C's registry checks had assumed away - caught by the base cell, which was RED with 2 failures. The fixture now uses its own machine and its own repo. This is the second time a new check has been wrong in a way only the harness showed; the base cell is not optional.\nAUDIT (gate): re-read cold. The change removes an unscoped counter instead of adding a second code path, and the remaining listing SQL is unchanged apart from where the predicate is built. Every other `matching` in the file was re-checked: inbox counts per agent, messages counts one already-authorized thread, agents uses `agentCount(visibleTo:)` and tokens is bootstrap-only, so `/threads` was the only leaked count.",
       "commit": "88aa09f",
       "notes": "Rejected alternatives: (a) add a `scope` parameter to `Store.threadCount` - it would leave two ways to build the same predicate, which is how the two drifted in the first place; (b) count the already-scoped rows in Swift - the listing is capped at 100, so a count from it would be a lie for a machine in more than 100 conversations; (c) drop `matching` from a scoped answer entirely - the field is what tells a reader the listing was truncated, and removing it for scoped callers would hide truncation from exactly the readers who cannot see the rest.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0035",
@@ -634,7 +668,8 @@
       "evidence_after": "TEST (gate): with `--max-rows 3` and five conversations on the bounds fixture, `GET /threads` prints `threads — 3 of 5`, the note naming `--max-rows`, and exactly three `[id]` rows, where before it printed `threads — 5` (the hard-coded 100 meant every row) and no count at all; `GET /threads?json=1` reports `shown: 3` and `matching: 5`. The query plans are checked with `EXPLAIN QUERY PLAN` for both forms - `SCAN t USING INDEX idx_threads_last_at` and `SEARCH t USING INDEX idx_threads_repo_last (repo=?)`, neither with a `TEMP B-TREE` - because the property is 'this listing does not sort the table on every tick', and a plan is deterministic where a stopwatch is not. Base cell GREEN at 976 passed / 0 failed; mutants `255-audit0035-hardcap` (the literal 100 restored), `256-audit0035-hidenote` (the pre-fix `threads — N` text) and `257-audit0035-noindex` (both index statements removed) are red; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nAUDIT (gate): re-read cold. `maxRows` is the same bound `/health` reports and the other three listings obey, so one number now governs every listing; the healthy text form is otherwise unchanged, and the `repo` filter, the scoped `WHERE` clause and the `matching` count that #0034 unified are untouched. The indexes are `IF NOT EXISTS` and created in the same migration the server already runs at startup, so an existing board gains them on the next start and nothing else changes. A tie in `last_at` picks an arbitrary subset of equally-new conversations - true before this change too, and not made worse by the index; it is noted here rather than silently relied on.",
       "commit": "550c74b",
       "notes": "Rejected alternatives: (a) keep 100 and only fix the text - the operator's bound would still be ignored by the one route the served page hits hardest; (b) a cursor (`before=<last_at>,<id>`) instead of a bound - a genuinely better API for a board with thousands of threads, but it is a new parameter with its own tests and the documented contract everywhere else is `--max-rows`; recorded as the follow-up if pagination is ever wanted; (c) an index on `threads(repo)` alone - the filter would be served and the sort would come straight back, which is the cost the page pays every five seconds; (d) assert the index by name in the suite - the plan is what matters, and a renamed or replaced index that still serves the query should pass.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0036",
@@ -651,7 +686,8 @@
       "evidence_after": "TEST (gate): reproduced before writing the check. With `CREATE TRIGGER block_ack_update BEFORE UPDATE ON deliveries ... RAISE(ABORT,...)`, the pre-audit build (HEAD) answered **HTTP 200 `ok acked 0 for it-bk-ack`** with the delivery still unread; the fixed build answers **HTTP 500 `error: the acknowledgement could not be stored — nothing was acknowledged`**, and the delivery is still unread. The blocked-writes section of the suite now carries seven checks: the message form is a 500; the answer never says `ok acked`; it says nothing was acknowledged; the mail it could not stamp is still unread; the `all=1` and `thread=` forms are refused the same way (so a guard applied to one branch alone cannot pass); none of the three stamped anything; and once the trigger is dropped the ack lands with `ok acked 1` and a second ack reports `ok acked 0` - the fix is neither `always 500` nor `always report 1`. Base cell GREEN at 931 passed / 0 failed; mutant `244-audit0036-ackunchecked` (the message branch reverted to the pre-fix `run` + `changedRows()`) and mutant `245-audit0036-noguard` (the guard removed for all three forms) are both red, as are the repaired count mutants `140-ackcountconst` and `141-ackthreadcount`; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTE: writing the check corrected the finding's own evidence. #0037 recorded that a failed statement leaves `sqlite3_changes()` at the previous statement's count, so the pre-fix report was `ok acked 1`. Measured directly on this machine (`update t set x=5 where x=1; select changes()` -> 1, then an UPDATE aborted by a trigger -> 0) and end to end (the pre-fix answer was `ok acked 0`), SQLite *resets* the counter on an aborted statement. The defect is unchanged in the form that matters - a store that refused the write was answered `ok acked 0` under HTTP 200, a false success indistinguishable from a legitimate no-op, and the count describes a statement that did not run - but the specific number in #0037's entry was wrong and is corrected there rather than deleted.\nAUDIT (gate): re-read cold. The three forms are textually parallel and every one now reports only its own statement's result; the healthy answers are byte-identical to before (`ok acked N for <id>`, including the deliberate `ok acked 0` when there was nothing left to stamp). Reverting any single branch is red, and removing the shared guard is red, so the check pins the behaviour rather than one spelling of it. `runReporting` and `lastError`-free messaging mean no schema text is handed to a scoped caller.",
       "commit": "77edbf8",
       "notes": "Rejected alternatives: (a) answer 200 with the failure named in the body - the CLI's ack path and any caller that reads the status would treat the mail as read, and it would then never be delivered again; (b) answer `ok acked 0` with a warning line - 0 is exactly what a legitimate second ack returns, so the caller cannot tell the two apart and the wake loop would retry forever; (c) keep `changedRows()` and only test `run`'s return value - the value of `sqlite3_changes()` after a failed statement is not part of SQLite's documented contract, which is precisely why it must not be read; (d) validate the message id with a SELECT before the UPDATE - it would not detect a refusal caused by a trigger, a locked database or a read-only file, which are the failures that actually happen.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0037",
@@ -668,7 +704,8 @@
       "evidence_after": "TEST (gate): the same cells as #0036. The pre-fix behaviour was re-measured as `ok acked 0` under HTTP 200 (not the `ok acked 1` this entry first recorded - see the correction above), which is the false success this task is about: a failed statement's count reached the caller and the caller was told the acknowledgement was done. After the fix the count is only read when the statement returned `SQLITE_DONE`, and a failure is a 500. Mutants `244` and `245` are red; base GREEN at 931/0; 0 false passes.",
       "commit": "77edbf8",
       "notes": "Closed by the same commit as #0036, which is one change: `runReporting` plus the result-code guard. There is no separate fix for this half, and the check that pins it (`the all=1 form is refused too`, `and none of the three stamped anything`) is the one #0036 added.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0038",
@@ -685,7 +722,8 @@
       "evidence_after": "Covered by #0022: `createToken()` builds the response only after `guard stored.rc == SQLITE_DONE, stored.changes == 1`, and on failure writes the SQLite error to the server log and answers **500** without a secret. The suite asserts exactly this with a `BEFORE INSERT ON tokens` trigger (`an issuance the store refuses is a 500`, `and it says nothing was issued`, `and no secret is printed for a credential that was not stored`) and then that issuance works once the trigger is dropped, and matrix cell `234-audit0022-issueguard` is red.",
       "commit": "599a87d",
       "notes": "Duplicate of #0022 (`chatbox.swift:2418`, DONE at 599a87d). Its suggested retry-on-PRIMARY-KEY-collision was NOT adopted, deliberately: the id is 48 random bits, a collision is now a 500 that says the row was not stored rather than a printed unusable secret, and a retry loop would be a new failure path that no deterministic test can exercise (the suite can force a refusal, not a collision). If a collision ever happened, the operator sees the 500 and issues again - which is the same action the retry would have taken, with one fewer code path.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0039",
@@ -702,7 +740,8 @@
       "evidence_after": "TEST (gate): reproduced with the built binary. Before: the log was `chatbox: GET /health -> 200` with no time, peer, principal or ids, and a target carrying a bare LF wrote a line of its own - `printf 'GET /x\\nFORGEDBYCLIENT HTTP/1.1...' | nc` produced a real `FORGEDBYCLIENT -> 401` line at column zero. After: the same probe is answered **400** `principal=malformed`, its echo is flattened (`GET /x FORGEDBYCLIENT -> 400`), and the log has **no** line starting with the marker. Real requests log `2026-09-16T00:24:44Z 127.0.0.1 GET /health -> 200 principal=bootstrap`, an unauthenticated one `principal=denied`, a scoped one `principal=node=node-logprobe token=tk-…`, and the four actions write `audit credential issued id=… node=…`, `audit registered id=… node=… repos=…`, `audit message id=… thread=… repo=… from=… recipients=…`, `audit credential revoked id=…`. Section 44 pins twelve checks. Base cell GREEN at 1009 passed / 0 failed; mutants `263-audit0039-nocontrolcheck` (the control-byte refusal removed - one check, the 400, because the flattening still stops the injection), `264-audit0039-nocontext` (the old bare log line restored - six), `265-audit0039-noaudit` (audit writes nothing - five) and `266-audit0039-noflatten` (`oneLine(req.path)` removed from the log - the two injection checks) are red, as are the re-anchored `39-anontoken` and `188-trk16-plaintype` cells whose code moved with this change; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTE (the two layers are separately pinned): removing the parse-time refusal alone leaves the injection stopped by the log's `oneLine`, so `263` fails only the 400 check; removing the flattening alone leaves it stopped by the refusal, so `266` fails only the two log checks. Neither layer is load-bearing on its own, which is the point of having both, and each is pinned by its own cell rather than by a claim in a comment.\nPHASE-D NOTES: (a) an unauthenticated malformed request is now answered **400** where it used to be 401 - the request line is refused before authorization rather than after, which is the honest order and does not tell a peer whether its credential would have been accepted; (b) the 404 body is flattened with `oneLine` as defence in depth, but with the parse-time refusal in place that path is no longer reachable through HTTP, so it is not pinned by a check - the check that matters is the 400; (c) the `/ui` route used to log its own line and bypass `finish`; it now goes through `finish`, so it is recorded like every other request, and matrix cell `188-trk16-plaintype` was re-anchored to the call that moved.",
       "commit": "36f703f",
       "notes": "Rejected alternatives: (a) log the token secret's hash - a hash of a live secret is still a handle to correlate, and the id is the thing an operator revokes; (b) log the message *body* - the log is world-readable on a shared board and bodies are peer text, so the record names ids and the operator reads the message through the API; (c) reject control bytes by dropping the connection - a client that gets nothing back cannot tell a refusal from a stall, and the request line is malformed rather than dangerous once refused; (d) sanitise in the log only - the same bytes reached the 404 body, so the refusal is at the source and the flattening is the second layer; (e) a JSON log format - it would break every existing reader of `chatbox.log` (the suite, the deployment notes) for a machine-readable record nobody asked for.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0040",
@@ -719,7 +758,8 @@
       "evidence_after": "TEST (gate): a TLS board with `--idle-timeout 2 --max-connections 1` is filled by one held long poll, and then two peers open TCP and never speak TLS - the case `.ready` never reaches. Reproduced against the pre-fix binary: the refusal was held and **neither** the deadline nor any ceiling touched it (no `refused connection closed`, no `refused without an answer` in its log; the same probe against the fixed binary logs both). Section 14 adds two checks on that fixture, using the server's own log as the evidence, the same way the existing check for a *served* connection that never finishes a handshake does. Base cell GREEN at 1027 passed / 0 failed; mutants `272-audit0040-nodeadline` (the refusal deadline removed) and `273-audit0040-nocap` (the in-flight ceiling removed) are red; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nAUDIT (gate): re-read cold. The refusal path now mirrors the served path clause for clause - a `Deadline`, a `DispatchWorkItem` that double-checks cancellation and the connection's continued existence, and removal from its set on every terminal transition (`ready`, `failed`, `cancelled`, and the deadline itself) - so a refusal cannot leak a slot in the set any more than a served connection can. The cap uses `maxConnections` as its bound rather than a new flag: the number is already what an operator sizes, and one more knob for the same concept would be one more thing to get wrong.",
       "commit": "daf71c3",
       "notes": "Rejected alternatives: (a) shorter handshake deadline by default - it would be a second, invisible timeout to explain, and the idle deadline is already the documented bound on a connection that has not asked for anything; (b) count refusals in `liveConnections` - then a refused socket keeps the server at its limit, and a peer that opens one and stalls locks out every real client; (c) drop refused connections immediately and never answer - a peer cannot tell a busy board from a broken one, which is the reason the refusal answers at all; (d) an unbounded refusal count with only the deadline - that is the finding: a peer can open sockets faster than a two-second deadline closes them; (e) `SO_LINGER`/socket-level tricks - the deadline is the mechanism the served path already uses, and two mechanisms for one bound is one too many.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0041",
@@ -736,7 +776,8 @@
       "evidence_after": "TEST (gate): after the fix, `--port 9000o`, `--port 70000`, `--port 0`, `--port abc` and `--port ''` each exit 2 with `chatbox: --port must be between 1 and 65535 — got '<value>'`; `--stale-after abc`, `--stale-after 7d` and `--stale-after -1` each exit 2 with `chatbox: --stale-after must be 0 (off) or a positive number of seconds — got '<value>'`; and `--stale-after 6` still starts a board whose `/health` answers 200. Section 42 of the suite pins nine checks: four refusals for the port, three for the window, the existing negative-window refusal, and the usable-window board (so the section cannot pass by refusing everything). Base cell GREEN at 940 passed / 0 failed; mutant `246-audit0041-portfallback` (the pre-fix one-liner restored) is red on exactly the four port checks, mutant `247-audit0041-windowfallback` (`?? 604800`) is red on the two window checks a default would swallow (`-1` is still caught by the negative guard), and the repaired `57-negallowed` cell (the guard removed) is red on four; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTE (deliberate non-reproduction): the pre-fix behaviour was **not** re-measured live in Phase C, and that is a decision rather than an omission. The failure mode of the pre-fix binary is to fall back to **8787**, the documented default and the port the production board serves on this host, so running `--port 9000o` against the old build would have tried to bind a live service's port. The pre-fix expression is captured in `AUDIT/baseline/` and in the mutation cell, and the suite's port checks run in `--prune-dry-run` mode for the same reason: the flag is parsed before the mode branch, so the refusal is the same code path, but operator mode exits without listening and the check can never be the thing that binds 8787.\nAUDIT (gate): re-read cold. Both guards sit with the other bounded-flag guards and run before the store is opened, so an operator mode invocation refuses a bad value too. The healthy path is unchanged (the default `--port 8787` and `--stale-after 604800` still parse), and no other flag's behaviour moved. The new section is skipped cleanly when `CHATBOX_BIN` is absent, so a checkout without a built binary still runs the rest of the suite.",
       "commit": "edab77f",
       "notes": "Rejected alternatives: (a) clamp an out-of-range port to 65535 - a typo would silently become a different port, which is the same defect with a tighter story; (b) allow `--port 0` because the kernel picks a free port - nobody can name the port afterwards, so every client the operator configured is pointed at nothing; (c) keep defaulting `--stale-after` and only warn - a warning on stderr does not stop a monit unit from running with a presence window nobody asked for, and it contradicts the other six bounded flags; (d) accept `7d` and other suffixes - inventing a duration syntax for one flag, when the file's rule is seconds everywhere, would be a second thing to get wrong.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0042",
@@ -753,7 +794,8 @@
       "evidence_after": "TEST (gate): reproduced before the fix with the built binary. `--prune 1 --db <missing path>` exited **0**, created a full five-table board and printed `pruned: 0 message(s)`; the same with `--prune-dry-run` exited 0 and left a new 4 KB file behind in a mode whose whole promise is that it changes nothing. A file that is not a board was answered `pruned: 0` under exit 0. `--backup x --prune 30` copied the board, exited 0 and silently never pruned. `--prune 30 --stale-after abc` pruned and exited 0, the bad window never read. After the fix: a missing path is exit 1 `does not exist - refusing to create a board to prune` with nothing created (both modes); a non-board is exit 1 `is not a usable board` and byte-identical afterwards; two operator modes are exit 2 `one operator mode` with neither having run; a bad `--stale-after` is exit 2 naming it before any prune. On a rollback-journal board the dry run leaves the journal mode `delete`, the bytes identical and no sidecar file - the read-write open it used to make ran `PRAGMA journal_mode=WAL` and converted it. Section 18 adds twelve checks. Base cell GREEN at 968 passed / 0 failed; mutants `252-audit0042-nofilecheck` (both validation guards removed, i.e. the pre-fix path), `253-audit0042-readwrite` (`readOnly: dryRun` -> false) and `254-audit0042-noconflict` (the mode-conflict refusal removed) are red (4, 3 and 2 checks respectively); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTE (the base cell caught a behaviour change I did not intend): my first restructure gave the *real* prune `migrating: false` as well, and the existing check `while a real prune migrates the board it is about to change` went red (expected 1, got 0). The real prune is supposed to migrate - a board written by an older version gets its columns before it is changed - so it keeps `migrating: !dryRun`; only the dry run is non-migrating, and the read-only connection is what makes *that* structural rather than a flag. Without the base cell this would have shipped as a silent regression in a mode the patch was not about.\nAUDIT (gate): re-read cold. The prune path no longer touches the shared `store` at all, so there is no window in which a refused invocation has already opened the default `~/chatbox.sqlite` - the case the operator cannot undo. `readBoard` is the same predicate the backup and verify modes use, so 'is this a board' has one answer. `prune()` is unchanged: it already opened no transaction and wrote nothing in dry-run mode, which is why a read-only connection can serve it.\nPHASE-D NOTE (a pre-existing check that was passing for the wrong reason): the base cell then failed the *existing* check `while a real prune migrates the board it is about to change` (expected 1, got 0). Chasing it found that its fixture builds the legacy board with `cp \"$pdb\" \"$legacy_pdb\"` while `$pdb` is a **live WAL database**, so the main file can be empty - the schema lives in the `-wal`. The copy therefore had no `tokens` table at all, the guard only asked `is expires_at absent?` (true of a file with no `tokens` table too), and the check passed because the *prune itself* created the schema it was supposed to be migrating - the very bug this task fixed. The fixture now takes a consistent copy with SQLite's own `.backup`, and the guard additionally requires the `tokens` table to exist, so it cannot silently degrade back. The assertions are unchanged and now exercise what they claim: a dry run leaves the schema and rows alone, a real prune migrates. This is the fifth wrong or vacuous check the audit has found in its own suite, and the third found by the base cell.\nPHASE-D NOTE (a mutant that did not reintroduce the bug): the first `252` removed only the `fileExists` guard and came back **green**. That is not a weak check: without that guard, `readBoard` still refuses a missing file (it opens read-only, so nothing is created) and refuses a non-board - the property is enforced twice, and the check cannot tell the two refusals apart because both messages contain `does not exist`. The mutant was rewritten to remove the whole validation (the pre-fix path), which is red on four checks. A green mutant means the mutant or the check is wrong; deciding which is the work, and the answer here was the mutant.",
       "commit": "c0fe76d",
       "notes": "Rejected alternatives: (a) rely on the read-only open to refuse a missing file - true for the dry run, but the real prune needs a read-write connection and `sqlite3_open` creates what is missing, so the check has to be made before either opens; (b) only test `FileManager.fileExists` without `readBoard` - a directory or a text file would still be accepted and \"pruned\"; (c) let the first operator mode win and warn - the operator gave two instructions and the exit status said both had happened, which is the bug; (d) leave the server's store where it was and validate the prune flags around it - the store would still be opened (and migrated) before `--prune` without `--db` or a bad `--stale-after` was refused, so \"refused\" would keep meaning \"already touched the database\"; (e) make the dry run read the file through a temporary copy - it would still have to open the original to copy it, and the point is not to touch it at all. RETIRED with this commit: matrix cell `178-trk30-migratealways` restored `migrating: true` for a dry run, which the read-only connection now makes impossible to observe - the property is enforced structurally and pinned by `253-audit0042-readwrite` instead; the retirement is noted in `AUDIT/mutate.sh` itself.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0043",
@@ -770,7 +812,8 @@
       "evidence_after": "TEST (gate): reproduced with the built binary. An owner whose id contains a comma (`c,victim`) claims a repo; a message is routed to that repo and then answered with a reply. Before: `delivered_to` was `c (unregistered), c,victim, victim` - three recipients, including a **stranger** that shares the tail of the id and a fragment naming no session at all - and that stranger's inbox held the reply (`victim-has-reply=1`), giving its machine read access to a conversation it never took part in. After: `delivered_to` is exactly `c,victim`, `victim`'s inbox is empty, and no delivery row exists for the fragment `c`. The suite's section 43 pins five checks (the repo-routed message, the reply, the fragment, the stranger, and that the participant really does hold it, so absence of the strangers cannot be absence of everybody), plus the memory property below. Base cell GREEN at 995 passed / 0 failed; mutants `261-audit0043-splitrecipients` (the pre-fix scan and split, inlined now that the helper it used is gone), `262-audit0043-sendersonly` (the deliveries half of the union removed) and the re-anchored `14-noparticipants` are red; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTE (the same change closes #0031): the old loop read every message of the thread, bodies included and with no bound, purely to collect those names. Measured on a 33 MB conversation (4000 x 8 KB): a reply grew the server's RSS by **36 MB** before and **1 MB** after, and the suite now pins that with a bound of 10 MB - an order of magnitude either side of the two measurements - while also asserting that the reply still lands, so it cannot pass by doing nothing. `Store.thread(_:)` is deleted with its last caller; three matrix cells that used it as a shortcut (`141`, `161`, `261`) are rewritten inline and still reproduce their own defects.",
       "commit": "a1649f2",
       "notes": "Rejected alternatives: (a) reject `,` in `validId` as `validBoardID` does - it narrows a name rule for every existing board, does not repair rows already stored, and leaves the read path parsing a column it should not; (b) store recipients as JSON - a migration of a denormalised column for the same effect the delivery rows already provide; (c) join with a character an id cannot contain - an id may contain any non-control byte, so there is no such character; (d) ignore a fragment that does not name a registered session - the attack uses a fragment that *does* name one; (e) a `thread_participants` table - more state to keep correct, and `deliveries` already is that table.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0044",
@@ -787,7 +830,8 @@
       "evidence_after": "TEST (gate): reproduced with the built binary, then with the pre-fix binary. Before: `kill -TERM` exited **143** (killed by the signal), a held long poll's socket was cut with **no status at all** (curl reported 000), the write-ahead log stayed at **193,672 bytes**, there was no shutdown line, and `kill -HUP` killed the process outright (`Hangup: 1`) - the logrotate outage. After: exit **0**, the log carries `shutdown: stopped accepting, held answers ended, WAL checkpointed - exiting`, the held long poll gets **503** `the server is shutting down`, the event stream gets `event: bye` with `\"reason\":\"shutdown\"`, the write-ahead log is **0 bytes**, and a restart on the same database still has the message - so the checkpoint folded a committed write rather than losing it. SIGHUP leaves the board alive and answering `/health` 200, with `SIGHUP ignored` in the log. Section 46 adds eleven checks. Base cell GREEN at 1025 passed / 0 failed; mutants `269-audit0044-nosignal` (no signal handling at all - the pre-fix state), `270-audit0044-nohupignore` (SIGTERM handled, SIGHUP left to its default) and `271-audit0044-nocheckpoint` (the stop path without the checkpoint) are red; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTE (the grace is a judgement, recorded): the handler runs on the serial queue, so every request already accepted has finished by the time it runs, and the held answers end on their own 0.25-0.5s timers; the exit is delayed by half a second to let their answers leave. A configurable `--drain-seconds` was considered and rejected (see the notes) - if a future deployment needs a longer drain, this is the number to make configurable, and it is one line.\nAUDIT (gate): re-read cold. The signal sources are installed after the listener starts and before `dispatchMain()`, with `signal(..., SIG_IGN)` first so the default disposition cannot fire in the window before the source takes over. The shutdown flag is read only on the queue, like every other piece of server state. `exit(0)` is deliberate rather than `sqlite3_close` plus return: the checkpoint has already run, and a graceful-exit path that depends on unwinding `dispatchMain()` is a path that can hang.",
       "commit": "02cfa38",
       "notes": "Rejected alternatives: (a) do nothing and document `copytruncate` only - that leaves the mid-request kill, the unanswerable long poll and the unfolded log in place; (b) treat SIGHUP as a graceful stop - logrotate would then stop the board on every rotation, which is the outage with extra steps; (c) reopen the log on SIGHUP - the board writes to the stderr its operator redirected, so there is no path for it to reopen; (d) a `--drain-seconds` flag - new surface whose only caller would be the signal handler, and the queue already guarantees that nothing is mid-write when it runs; (e) `atexit`/`sqlite3_close` - it runs only if the process exits through the language runtime, and the pre-fix failure was exactly that it never got the chance.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0045",
@@ -804,7 +848,8 @@
       "evidence_after": "TEST (gate): the failure is injected with a SQLite **view** over `messages` whose `body` column is `abs(-9223372036854775808)`, which overflows and fails the statement mid-read. Before: `GET /thread?id=N` answered **404 `no thread N`** and `GET /inbox` answered **200 `inbox for X: empty`** — the thread and the mail both existed — and `--prune 0` with an unreadable `id` answered **`pruned: 0` under exit 0**. After: the two reads answer **500** naming the store, the prune answers **exit 1** and `the prune failed and was rolled back — nothing was changed`, and each recovers to its normal answer once the view is dropped and the table restored (the message is still there, so nothing was lost). Section 47 pins ten checks, including a control that the fixture has a conversation to read and one that a send works again afterwards. Base cell GREEN at 1037 passed / 0 failed; mutants `274-audit0045-noreadcheck` (the GET guard removed), `275-audit0045-nosendguard` and `276-audit0045-nopruneguard` are red, as are the re-anchored `19-ackonwait`, `50-nomarker` and `206-trk17-syncforward` cells whose code moved with this change; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nPHASE-D NOTES (a limit of the injection, and the scope of the guard): (a) the view tricks SQLite into materialising the whole view, so the failing expression is evaluated for every row and a *partial* list cannot be produced — only a total failure. The send guard is therefore pinned by its attribution (`recipients could not be resolved`) and by nothing being stored; the pre-fix binary also stores nothing for that fixture, because an empty recipient list is refused a few lines later, so that half of the check is a guard against a future regression rather than a discriminator, and the ledger says so instead of implying otherwise. (b) The 500 is applied at the dispatch boundary for **GET** answers only: a GET's answer *is* the data, so a failed read means there is no answer to give; a write's answer is the effect, and a blanket 500 there would leave the caller unable to tell whether the write happened — which is why the two write paths that can be misled (send, prune) handle it themselves.\nAUDIT (gate): re-read cold. `readFailed` is queue-confined like the rest of `Store`'s state, cleared at exactly one place (`dispatch`, before the route runs) and set at exactly one place (`rows`, which every read goes through); `scalar` inherits it because it calls `rows`. The three consumers are the three shapes of answer this server gives: a page, a held page, and a deletion's count.",
       "commit": "df44c5f",
       "notes": "Rejected alternatives: (a) make `rows` return `nil` and change every caller - honest but a refactor of ~40 call sites for one property, and most callers genuinely want the rows; (b) throw from `rows` - this is a single-file server whose callers are not written for exceptions, and an uncaught throw would take the board down where a 500 is the right answer; (c) answer 500 for every route on a failed read - see the phase-D note: it would make a stored message look unstored; (d) re-read on failure - a failed read is usually a structural problem (a missing table, a corrupt page) that a second attempt hits again, and a retry loop hides it; (e) log only - the log is not the answer.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0046",
@@ -821,7 +866,8 @@
       "evidence_after": "TEST (gate): measured on a 50,000-message / 50,000-delivery board. The participation check's plan went from `SCAN agents` + `SCAN d` to `SEARCH agents USING INDEX idx_agents_node (node=?)` + `SEARCH d USING COVERING INDEX idx_del_node (node=?)`; the `visibleAgentsWhere` listing the scoped `/peers` runs went from four `SCAN m`/`SCAN d` steps to zero - every step a `SEARCH` on `idx_msg_sender`, `idx_del_node`, `idx_agents_node` or `idx_msg_thread`. Three runs of the peers query took 0.073s before and 0.043s after, and the participation check 0.023s before and 0.016s after; the pre-fix cost is linear in the board's history (Phase A measured 94ms and 127ms on a 500k board), which is why the plans rather than the stopwatch are what the suite pins. Section 45 adds five checks on a 2,000-row fixture: no `SCAN m` and no `SCAN d` in the participation plan, `idx_del_node` named in it, no `SCAN m`/`SCAN d` in the registry listing's plan, and `idx_msg_sender` named there. Base cell GREEN at 1014 passed / 0 failed; mutants `267-audit0046-noindex` (all three indexes removed - the pre-fix schema) and `268-audit0046-nodelindex` (only the deliveries index removed, the table that grows without bound) are red; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.\nAUDIT (gate): re-read cold. The three indexes follow the existing migration block and its style, and they serve the rules as written - the node is the leading column of `idx_del_node` because that is what the rule filters on, and `messages(sender)` is exactly the `m.sender IN (SELECT id FROM agents WHERE node = ?)` predicate. `EXPLAIN QUERY PLAN` was checked at the fixture's size as well as at 50k, because a tiny table can make a planner prefer a scan and a check that only passes on a big board is a check that will flake. The remaining `USE TEMP B-TREE FOR ORDER BY` in the registry listing is the `ORDER BY a.id` over the *agents* table, which is bounded by the registry and not by history; it is left alone deliberately, and the check asserts only the two tables that grow.",
       "commit": "0fb51ed",
       "notes": "Rejected alternatives: (a) a `thread_participants` table maintained on every send - it would answer the question in one lookup, but it is new state to keep correct on delete, prune and migration, and the indexes make the existing rules cheap enough (measured); (b) a CTE/temp table deriving the node's threads once per request - the same win for the biggest query, but it rewrites five call sites rather than adding three indexes, and the planner already shares the subqueries it can; (c) indexing `deliveries(message_id)` instead - the primary key `(message_id, agent)` already gives that lookup a covering index; (d) `ANALYZE` on startup - statistics help the planner choose, but the choice here is an equality on an indexed column, and running `ANALYZE` on a live board is a write on every start.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0047",
@@ -838,7 +884,8 @@
       "evidence_after": "TEST (gate): the nine checks above. The four port checks run in `--prune-dry-run` mode so that a build with the default restored cannot bind 8787 during the check (see #0041's Phase-D note); the window checks start a real server and are bounded by a liveness wait, so a build that wrongly accepted the value fails rather than hanging. Mutants `246`, `247` and the repaired `57-negallowed` are red; base GREEN at 940/0; relative cell GREEN; 0 false passes.",
       "commit": "edab77f",
       "notes": "The code half is #0041. This task existed because the suite had no check for the fallbacks at all, which is why the defect shipped; keeping them as one commit keeps the check with the behaviour it pins.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0048",
@@ -855,7 +902,8 @@
       "evidence_after": "TEST (gate): each of the nine values is refused with exit 2 and a message naming the flag (verified against the built binary before the checks were written). The fixture watches the process for three seconds instead of awaiting it, because a build without the guard starts a board rather than exiting - so a missing guard is reported as \"it started a server\", not as a hang - and it truncates its log per call, so a previous refusal cannot be read as this one's. Base cell GREEN at 985 passed / 0 failed; mutants `258-audit0048-idleguard`, `259-audit0048-connsguard` and `260-audit0048-rowsguard` (`if false` in place of each guard) are each red on their own three checks; relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0. This is a test-only task: the guards already existed and were already correct, and nothing in the source changed.\nAUDIT (gate): re-read cold. The three guards sit with the `--max-body` guard and share its shape, so the fixture mirrors the existing one rather than inventing a second style. The values cover both routes into a guard: a number out of range (the comparison) and a value that is not a number at all (the `?? -1`/`?? 0` fallback), because those are different mistakes and an operator can make either.",
       "commit": "873ef61",
       "notes": "Rejected alternatives: (a) assert the exit code alone - an unrelated exit-2 path (a misspelt flag elsewhere on the line) would pass as a refusal, which is why the flag name is grepped as well; (b) await the process with a timeout - a server that wrongly accepted the value would hold the port and stall the suite for the whole section; (c) test one value per flag - \"not a number\" and \"out of range\" take different paths to the same guard, and `--max-rows abc` is the one an operator actually types; (d) add a shared validation helper to the server - a refactor of four guards that are already right, with no behaviour change, is not what this task is.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0049",
@@ -872,7 +920,8 @@
       "evidence_after": "VERIFIED: CodeQL run 34992397530 on `ee242de` — **success**, and the run log's extraction step shows both builds ran (`xcrun swiftc -O chatbox.swift -o chatbox` and `xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp`), so the adapter is in the analysis database. The open-alert set is unchanged at 1 (`swift/cleartext-transmission`, the server listener, task #0014): the newly-scanned file adds no finding, and no previously reported alert disappeared. `actionlint` clean. The first dispatch, made before committing, analysed the old workflow and is not counted.\nTEST (gate): the extraction step now compiles both binaries (`xcrun swiftc -O chatbox.swift -o chatbox` and `xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp`), which is what the Swift extractor observes, so the adapter is in the analysis database. Verification is a dispatched CodeQL run on the audit branch with this commit checked out; the first dispatch was made with the fix still uncommitted and therefore analysed the old workflow — discarded, not counted (a reminder that a dispatched workflow runs the branch, not the working tree).\nAUDIT (gate): re-read cold. The change is the documented build command for the second binary, identical to what ci.yml runs (so the analysed binary is the shipped one), `actionlint` is clean, and the pin from #0006 is untouched. After the run: the alert count is compared against the baseline to confirm the newly-scanned file introduces no new finding and that no previously-reported alert disappeared.",
       "commit": "",
       "notes": "Rejected alternatives: (a) a second CodeQL job per binary - two databases to merge, two runners, same coverage; (b) analysing only the adapter and not the server - the server is the larger surface; (c) relying on autobuild - there is no Package.swift, which is why build-mode is manual.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0050",
@@ -889,7 +938,8 @@
       "evidence_after": "TEST (gate): the before-state was reproduced directly. With a board already holding 8790 - the port both runbooks used - the suite's own fixture started on 8790 exits **1** with `chatbox: listener failed: POSIXErrorCode(rawValue: 48): Address already in use`, while the suite's readiness probe to 8790 answers `ok chatbox up` from the *operator's* board; section 46 then proceeds believing its own server started, and its first check (`a stop exits cleanly`, expecting 0) reads the failed fixture's exit 1, with the WAL and restart checks reading the wrong board's files. The runbook now uses **8800** (the matrix starts at 8801) in `README.md`, wiki `Deployment.md` and wiki `Quick-Start.md`, names the whole range the suite binds (`8776`-`8799`, `9381`, `9395`-`9410`) and states the failure mode, so the next operator does not rediscover it. The documented invocation was then run verbatim from the repository root: **1085 passed / 0 failed, 0 `skip` lines**. `.gitignore` also gained `chatbox-mcp`, the second build output the corrected runbook builds.",
       "commit": "10c9fa2 (README.md, .gitignore); wiki f511561",
       "notes": "The finding (phase B) named 8791, the suite's staleness server; by the time it was fixed the audit's own section 46 had added a second collision at 8790, so the fix states the rule and the range rather than one port. Both collisions have the same shape and the same consequence, which is why the fix is on the page rather than on a single port.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0051",
@@ -906,7 +956,8 @@
       "evidence_after": "TEST: wiki `Quick-Start.md` and `Deployment.md` now carry the README's invocation verbatim - both documented build commands, the four variables (`CHATBOX_DB`, `CHATBOX_SERVER_LOG`, `CHATBOX_BIN`, `CHATBOX_MCP`) and port 8800 - and the output the page prints is the one that invocation really produces. Running it from the repository root: **1085 passed / 0 failed with 0 `skip` lines**. The old two-variable invocation leaves the database, server-log, binary and MCP blocks skipped; a skip is not counted in the summary and is not a pass, so the page's 'cheapest way to know a build is good' proved materially less than it claimed and its stated `864 passed` was unreachable at this revision. Both pages now say why the variables exist rather than leaving them as decoration.",
       "commit": "10c9fa2 (README.md); wiki f511561",
       "notes": "The wiki pages state the count as `1085 passed, 0 failed` with the note that it grows with the suite, so the number is attainable at this revision without pretending it is fixed for ever. The README already had the right invocation; the wiki pages were the drifted copies, which is why the fix is 'copy the README' rather than a third spelling.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0052",
@@ -923,7 +974,8 @@
       "evidence_after": "TEST (gate): a stub `curl` on PATH records every ARGV line it is given, and looks at any config file it is handed with `-K` (its mode and its body). Before: the token was an argument twice over - `token=<secret>` in the URL of every read and `--data-urlencode token=<secret>` in the body of every write - so `ps` showed it to every other user on the machine, which is exactly what chatbox.swift's own documentation warns about for `--token`. After: no ARGV line contains the secret; the request carries `ARGV -K <path>` and the config file is mode **600** with `Authorization: Bearer <secret>` in it; the file is gone once the client exits. The stub also fails like an unreachable server (exit 7) so the check never contacts whatever the URL names. Section 51 pins seven checks on this, including that the stub was reached at all (a `lacks` on an empty recording would pass vacuously). Mutant `282-audit0052-argvtoken` - the credential back on the command line as `-H \"Authorization: Bearer $TOKEN\"` - is red at 1079 passed / 5 failed. The live checks in the same section (an inbox for an id with a space and an `&`, and `ack --all`) authenticate through the same config file, so a file that curl could not use would be visible there too. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.",
       "commit": "dfa7174",
       "notes": "If the config file cannot be created the client refuses with exit 2 instead of falling back to the command line: a silent fallback would restore the exposure on exactly the machine where something is wrong, and the operator can set TMPDIR. A token containing a newline is refused for the same reason it could never have worked - it is sent as an HTTP header. The file path comes from `mktemp`, so two clients on one machine do not share it, and the three traps remove it on INT/TERM/HUP as well as on the normal path.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0053",
@@ -940,7 +992,8 @@
       "evidence_after": "TEST (gate), with the stub transport above: the environment names `http://wanted.invalid:2` and the config file names `http://from-file.invalid:1`; the recorded request is `http://wanted.invalid:2/inbox` and `from-file.invalid` appears nowhere in the recording - before the fix the file was sourced last and won, so `CHATBOX_URL=http://staging chatbox say` posted a real message to the board in ~/.chatbox. The three variables the file may set (URL, TOKEN, CACERT) are each restored from a snapshot taken *before* the source, so a variable the environment did not set still comes from the file. Section 51 pins the URL case; mutant `283-audit0053-filewins` (the restore removed) is red at 1081 / 3. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.",
       "commit": "dfa7174",
       "notes": "The snapshot uses `${VAR+yes}` rather than `${VAR:-}`, so 'unset' and 'set to empty' stay distinguishable: an environment that sets CHATBOX_URL to the empty string is still an explicit choice, and it is applied rather than replaced by the file. CHATBOX_CONFIG itself is read before the source, because it is what names the file.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0054",
@@ -957,7 +1010,8 @@
       "evidence_after": "TEST (gate): four checks in the fixture section feed `canon_repo` a key carrying an invisible control - U+0085 and U+009F (C1) and U+202E and U+FEFF (format controls) - and require `is not a usable repo key`, with the offending bytes printed in the check's own name so a failure is readable. Probed by hand before the checks were written: the bidi key was refused by the old client while the C1 key was **accepted** and travelled to the ownership check (the pre-fix divergence), and after the fix all four are refused while `github.com/acme/ok` still proceeds to the network. Mutant `296-audit0054-nocontrolcheck` (the pre-fix client) is red at **1116 passed / 4 failed** - exactly those four checks; the base cell of that run is GREEN at **1121 passed / 0 failed** (1117 + 4) on 58f3e73 (chatbox.swift sha256 34733be520386334); relative cell GREEN, 0 false passes; `shellcheck -s sh chatbox-cli.sh` is 0 findings.",
       "commit": "58f3e73",
       "notes": "Where the shared rule lives is still duplicated - the client has to canonicalise locally to refuse before the request - but the *content* of the rule is now identical, and the check that they agree is behavioural: the same four keys that the server refuses are refused here. The alternative (letting the server do all the refusing) would send a key with an invisible control over the network and answer with a message about a value the caller cannot see, which is what the finding is about.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0055",
@@ -974,7 +1028,8 @@
       "evidence_after": "TEST (gate): with the stub transport, `inbox --id \"a b&c\"` records `id=a%20b%26c` in the URL where the pre-fix client pasted the value raw (curl exits 3, `URL rejected: Malformed input`, or the `&` starts a different parameter). Against a live fixture board the same id - `it cli <run> a&b`, which the server accepts because `validId` refuses only control bytes - is registered, receives two messages, and `chatbox inbox --id \"it cli <run> a&b\"` exits **0** with both bodies inside the frame. Section 51 pins the encoding at the stub and the end-to-end case at the board. Mutant `284-audit0055-rawurl` (an identity `urlenc`, i.e. the pre-fix pasting) is red at 1080 / 4. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.",
       "commit": "dfa7174",
       "notes": "`LC_ALL=C` (already set at the top for the case fold) is what makes the byte-wise loop exact: `?` is one byte, so a multi-byte character is encoded byte by byte, which is what the server's percent-decode expects. The four call sites are inbox, thread, threads and the watch loop; the token is no longer one of the values encoded here, because it is not in the query at all. `+` is encoded as `%2B` rather than left alone, which the server's decoder also accepts.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0056",
@@ -991,7 +1046,8 @@
       "evidence_after": "TEST (gate): two unread messages are sent to a fixture session, then `chatbox ack --id <that session> --all` exits **0** and answers `ok acked 2 for ...`, and the next inbox answers `empty`. Before the fix the same command exited **2** with the server's `error: pass message=<id>, thread=<id> or all=1` - a refusal naming the flag the caller had passed, because the client parsed `--all` for every command and then posted only id/message/thread. The control in the same section is the ack with none of the three: it still exits 2 and still carries that line, so the fix did not turn every ack into a global one. Section 51 pins three checks plus the control; mutant `285-audit0056-noall` (the pre-fix one-liner) is red at 1081 / 3. Base cell GREEN at 1084 passed / 0 failed on dfa7174 (chatbox.swift sha256 58439e0f7810dab9, chatbox-cli.sh sha256 a84d8f95b9850963); relative cell GREEN, 0 false passes.",
       "commit": "dfa7174",
       "notes": "`all=1` is sent only when the flag was given, so the server's own precedence (message, then all, then thread) is unchanged and `--message` with `--all` still means the message. The help text already documented `ack --id <you> (--message <id> | --thread <id>)`; it now also names `--all`, which is the third form the server has always accepted. Follow-up 60b430e: the usage line now names `--all` as the third ack form (it listed only --message and --thread); the cells were frozen at dfa7174, whose client is identical but for that help line.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0057",
@@ -1008,7 +1064,8 @@
       "evidence_after": "TEST. Three checks in section 12: the plain inbox still shows `[truncated]` (the preview is deliberate), `watch --exec cat` hands over the 1411-character body's tail marker, and the delivered text does not contain the truncation marker. `full=1` is documented in the usage text, README and AGENTS.md. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "Rejected: fetching each truncated body from /thread and splicing it into the listing - the text listing is not reliably parseable because a body may itself contain newlines, so the split would be guesswork. Also rejected: refusing to ack a truncated page - the message would come back for ever. `full=1` is bounded by the same `inboxLimit x --max-body` envelope `/thread` already serves.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0058",
@@ -1025,7 +1082,8 @@
       "evidence_after": "TEST (gate): the adapter under test driven over stdio. Before: every line whose root was not an object answered `-32700 parse error` with a null id, so a host could not tell a malformed envelope from broken JSON, and a top-level array (a JSON-RPC batch) was called unparseable. After: `not json` still answers -32700, while a top-level array, a JSON string root, a number and `null` answer **-32600 Invalid Request**; the JSON-RPC error text says a message is an object. Six checks in the MCP section pin it, mutant `289-audit0058-parseerror` (the single pre-fix branch) is red at 1091 passed / 3 failed, and the hand probe before the cell showed -32700 once and -32600 four times. Base cell GREEN at 1094 passed / 0 failed on e1f7e19 (chatbox.swift sha256 a0752d01a557ba1e); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0 for the adapter.",
       "commit": "e1f7e19",
       "notes": "`.fragmentsAllowed` is what makes a bare string, number or `null` root reach the type check at all: without it JSONSerialization refuses the fragment and a *well-formed* value would still be answered -32700 - the same defect in a smaller corner. Batching is deliberately **not** implemented: this adapter's documented transport is newline-delimited, one message per line (Architecture), and a JSON-RPC batch needs the replies collected into a single array, a shape this reply path does not have; the refusal is explicit and names the message as Invalid Request rather than pretending the batch was unparseable. Rejected alternative: emitting one response object per batch element on its own line - it would answer a batch with a stream the host did not ask for, which is the class of bug the notification checks already pin.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0059",
@@ -1042,7 +1100,8 @@
       "evidence_after": "TEST. Section 31 adds: a ping is answered while an `inbox wait=3` call is in flight (first reply id 41), the slow call still answers (id 40), and a call cancelled by `notifications/cancelled` emits no `id:42` at all. The wait release is ordered after the stdout write - the first cut released it before, and every tool call answered with nothing. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "The completion rebuilds the JSON-RPC id from its key (`rpcID(fromKey:)`) instead of capturing `Any?`, which is not `Sendable`; no `@unchecked` was added. A cancellation for an unknown id is a no-op, as MCP specifies.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0060",
@@ -1059,7 +1118,8 @@
       "evidence_after": "TEST (gate): `tools/call` for `say` with `arguments {\"from\":\"it-x\",\"hop\":\"board-a\"}` answers `-32602 ``unknown argument 'hop' for say``` before any request is made, where the pre-fix adapter forwarded it as `POST /message?...&hop=board-a` - a server parameter no tool advertises, and one that suppresses federation forwarding. A call using only declared keys still reaches the board and answers `\"isError\":false` in the same run, so the guard did not break the tools. Six checks in the MCP section; mutant `290-audit0060-extraargs` (the guard removed) is red at 1092 passed / 2 failed. Base cell GREEN at 1094 passed / 0 failed on e1f7e19; relative cell GREEN, 0 false passes.",
       "commit": "e1f7e19",
       "notes": "Refused rather than silently dropped: a host that sends a key the schema forbids has a bug, and dropping the key would hide both the bug and the capability (`hop=` would look accepted and be ignored). The six tools' declared properties were checked tool by tool when the guard was added, so every argument the adapter legitimately builds - including `thread`, `reply_to`, `wait`, `all`, `json` - is declared; `json` is declared on `thread` and `peers`, which is where the adapter passes it through.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0061",
@@ -1076,7 +1136,8 @@
       "evidence_after": "TEST. Section 59 pins the ceiling (500 accepted, 501 refused with 'too many recipients') and /health reports `recipients per message: 500`; the existing unseen-recipient and delivered_to checks exercise the batched values unchanged. A failed facts read rolls the transaction back. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "The batching itself is behaviour-preserving, so no new check can see it; the ceiling is the behavioural half and is pinned. 500 matches `--max-rows`. Rejected: a new `--max-recipients` flag - the brief asks for a stated cap, and adding a tunable for a fan-out this product never has is more surface than the defect warrants.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0062",
@@ -1093,7 +1154,8 @@
       "evidence_after": "TEST (gate): a fixture with two unread messages in two conversations on one scoped board. Before: `POST /ack?id=B&all=0&thread=T1` answered `ok acked 2 for B` and left the unread inbox empty - a caller asking about one conversation had its whole inbox marked read - `GET /inbox?id=B&all=0` matched 2 where the default matched 1, and `GET /inbox?id=B&json=0` answered the JSON object. After: the ack answers `ok acked 1 for B`, the second conversation is still unread (1), `all=0` matches 1 and `all=1` matches 2, and `json=0` answers `inbox for it-...-fl-b` with no `matching` key. Section 48 pins eight checks, including a fixture proof that both deliveries exist and that they are two separate conversations. Mutant `278-audit0062-anyvalue` (the old reading, put back in one place) is red at 1058 passed / 5 failed - the ack count, the still-unread count, the all=0 and all=1 counts and the json=0 form; the cells whose fragments contained the old spellings (`19-ackonwait`, `175-trk30-jsonflat`, `190-trk16-flatthreads`) were re-anchored, because a stale fragment aborts the matrix. Base cell GREEN at 1063 passed / 0 failed on 656f78e (chatbox.swift sha256 58439e0f7810dab9); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.",
       "commit": "e94b940",
       "notes": "Considered and rejected: reject an unrecognised value with 400 (what this task's START proposed). The documented flags are presence and `1`, and the dangerous direction is the one fixed here - `0`/`false`/`no`/`off` now mean off - while a 400 would turn a caller that spells it `all=yes` or `all=true` into a failure where it used to work. `Request.flag(_:)` is the single reading for all nine call sites, so a future site cannot pick the old one up by accident.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0063",
@@ -1110,7 +1172,8 @@
       "evidence_after": "TEST. Section 33 starts a threaded Python peer that records the peak simultaneous requests: three forwards report a peak of 3. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "Behaviour change, recorded: the serial queue guaranteed two forwards for one repo reached the peer in send order; concurrent forwards do not. Forwards open a new thread at the peer anyway, and the peer assigns its own ids, so ordering was never load-bearing. `maxConnections` still bounds held sender connections.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0064",
@@ -1127,7 +1190,8 @@
       "evidence_after": "TEST. Section 33's streaming peer advertises 10 MB and sends 200 KB; the forward is reported as 'longer than 65536 bytes' and never as delivered. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "The first cut used both a completion handler and a data delegate: the completion's data was nil and the delegate accumulated nothing, so every forward in the suite looked like an empty answer. The fix is the documented one - with a data delegate, the delegate receives the data.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0065",
@@ -1144,7 +1208,8 @@
       "evidence_after": "TEST. Section 33's non-board peer answers 200 with `hello from a proxy`: the forward is a failure, names what the host said, and never says `forwarded_to:`. The real-peer checks still pass. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "The success line is the server's own first line from `POST /message`; requiring it is what distinguishes a board from a proxy that answers 2xx to anything.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0066",
@@ -1161,7 +1226,8 @@
       "evidence_after": "TEST. Section 1 posts a message and requires /health's count to move; section 41's unreadable-store fixture still answers 503 and now names the store's own error (`no such table`), which the first cut broke by answering the second request from a cache of the pre-failure counts. The existing SSE activity checks still see changes. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "`PRAGMA data_version` is what notices a write by another process (an operator's `--prune`); MAX(id) is what notices this connection's inserts. Counts after a delete by a second process are refreshed on the next change. `countOrNil` was removed as it became unused.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0067",
@@ -1178,7 +1244,8 @@
       "evidence_after": "TEST. The existing 'revoking a credential ends a wait that is already held' check (401 and no message posted after revocation) still passes, and the shutdown path's grace is now `longPollBackoffCap + 0.5` so a backed-off waiter still sends its 503 rather than being cut. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "Rejected: caching the principal for a fixed interval - that would delay revocation. The id re-check keeps revocation at one tick. Rejected: an event-driven wake registry - it needs a stored `DispatchWorkItem` per waiter on a `Sendable` type, and the codebase's established idiom avoids that.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0068",
@@ -1195,7 +1262,8 @@
       "evidence_after": "TEST. Section 57 registers a session whose node/agent/harness/session/ip contain interior newlines, and whose id contains U+2028; it asserts the flattened form in the register answer and in /peers, and that a U+2028 recipient id is flattened in `delivered_to`. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "Expanded, not narrowed: the task named the peers/register loop, and extending `oneLine` closed the same hole for the separators and for the other read paths (recorded as #0097).",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0069",
@@ -1212,7 +1280,8 @@
       "evidence_after": "TEST so far, and the one step outstanding is named: the **base cell is GREEN at 1127 passed / 0 failed** with section 56's six checks, measured before the check's invocation was bounded (the bound changes only how the check calls the binary, and a working binary behaves identically - verified by hand: the bounded helper gives `rc=0` and the build line for the fixed binary, `rc=99` for a stub that ignores its flags). The **mutant cell is not measured**: the first cut ran the binary unbounded, and mutant `297` ignores the flags and starts a board - it hung the suite and left a mutant process listening on 8787, killed by hand (its `--db` was the mutant's own scratch database; the production board's data was never opened by it, and the incident is recorded in the ledger's destructive-operations table). The check is now bounded at two seconds with `99` meaning 'it did not answer', so the cell can be measured with `ONLY=297-audit0069-noquestionflags sh AUDIT/mutate.sh` (~5 minutes); until that run exists this task is TEST, not DONE.\n\nCELL (gate, measured): `ONLY=297-audit0069-noquestionflags sh AUDIT/mutate.sh` on the frozen revision (task #0096's harness, which the run also validated): the base cell is GREEN at **1127 passed / 0 failed**, the mutant cell is **red at 1123 passed / 4 failed** with exactly the four flag checks failing (`--version answers with exit 0`, `--help answers with exit 0`, `and prints the flags`, `and neither opens (or creates) the database they were pointed at`), and the relative-path cell is GREEN. Transcript: `tests/.scratch/mut/297-audit0069-noquestionflags.out`. That is the cell the task was waiting on, so it is DONE rather than TEST.",
       "commit": "780e295",
       "notes": "The first cut's failure mode is worth keeping in the ledger: an unbounded readiness-style check turns a mutant into a *running board* rather than a red check - mutant 297 ignores the flags and starts a board, which hung the suite and left a mutant process listening on 8787, killed by hand (its `--db` was the mutant's own scratch database; the production board's data was never opened by it, and the incident is recorded in the ledger's destructive-operations table). The check is now bounded at two seconds with `99` meaning 'it did not answer', which is the version the red cell above was measured against.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0070",
@@ -1229,7 +1298,8 @@
       "evidence_after": "TEST (gate, before and after on one tampered copy): a fresh copy of the board is edited so it holds the **same number of messages** but not the same ones (the newest is deleted and a replacement inserted). The pre-fix binary verifies it - `compared with: <board>`, exit **0** - while the fixed one answers `messages: 3:4:7.0 in the copy, 3:3:6.0 in <board>` and exits **1**. The suite's section 25 now takes that fresh backup, performs the swap, proves the fixture is meaningful (both sides' `COUNT(*)` are equal), and requires the refusal and the fingerprint in it - three new assertions. Mutant `295-audit0070-countsonly` (the comparison reduced to the count part of each fingerprint, i.e. the pre-fix behaviour) is red at **1115 passed / 2 failed**; the base cell of that run is GREEN at **1117 passed / 0 failed** on 14efd06 (chatbox.swift sha256 34733be520386334); relative cell GREEN, 0 false passes; strict build 0/0. The existing refusal-text check was updated to the new fingerprint format, and the base cell caught the first fixture, which reused a backup taken before the section's later messages and so no longer had a matching count.",
       "commit": "14efd06",
       "notes": "The fingerprint is content-sensitive for *sets of rows* (ids and their arithmetic) but not for an edited value inside a row - `--verify-backup` is the 'is this copy current?' question, and a copy whose rows are the same ids is current for its purpose. A full byte comparison is not available here: the point of comparing against the live board is that the board keeps writing, so the two files are never byte-identical by design. `--backup`'s own check (`verifyCopy`) is unchanged: it asks the different question 'did the copy lose anything committed before it started?' and must not require equality with a board that has moved on.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0071",
@@ -1246,7 +1316,8 @@
       "evidence_after": "TEST (gate): two boards started by hand, the forwarding one with `--peer http://127.0.0.1:9542 --peer-token-file <0600 file>`, and a message for a repo the peer owns answers **`forwarded_to: http://127.0.0.1:9542 (ok)`** - the bearer credential read from the file was accepted by the peer. Four `fed_refuse` checks (eight assertions) pin the refusals, each exit 2 with its phrase: `--peer-token-file=` (`names no file`), a missing file (`cannot read --peer-token-file`), an empty file (`is empty`), and both flags together (`not both`). Mutant `294-audit0071-notokenfile` (the file read, checked, and then ignored) is red at **1106 passed / 8 failed** - the eight federation forwarding checks - and the base cell of that run is GREEN at **1114 passed / 0 failed** (1106 + the eight new assertions) on a47fe0c (chatbox.swift sha256 74ec238b71caac82); relative cell GREEN, 0 false passes; strict build 0/0.",
       "commit": "a47fe0c",
       "notes": "The refusal messages stay in the peer-flag family (`exit 2`, `--peer-token-file` named), so a misconfiguration is refused where the operator can see it rather than surfacing later as a 401 from the peer. The file is read once at startup like `--token-file`, and an empty file is refused rather than read as 'no credential': a forward with no credential is refused by the peer anyway, and failing at startup names the actual problem.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0072",
@@ -1263,7 +1334,8 @@
       "evidence_after": "TEST (gate): a board started on a fresh path has `chatbox-... .sqlite` and its `-wal` at 600 (before: 644, and the WAL is the same history until it is folded back); a database chmodded to 644 - proved at 644 first - is served at 600 after a restart and the start says `chatbox: tightened <path> from mode 644 to 600`; and `--backup` writes its copy at 600 (VACUUM INTO does not go through SQLite's file creation). Section 50 pins six checks. Mutants `279-audit0072-umask` (the umask back to 022 - the database is chmodded, so the WAL and the backup are what go red: 1060 passed / 3 failed) and `280-audit0072-nochmod` (the already-existing database is inherited rather than tightened: 1061 / 2) are red; base cell GREEN at 1063 passed / 0 failed on 656f78e (chatbox.swift sha256 58439e0f7810dab9); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.",
       "commit": "1a46021",
       "notes": "The umask is set before `checkArguments`, i.e. before any file this process creates - a rejected command line also creates nothing world-readable. `Store.init` skips the chmod for a read-only open (`--prune-dry-run`), which is the one mode that must not touch the file; the destination of `--backup` is covered by the umask, and `--verify-backup` only reads. A group-readable board is not refused, deliberately: the process cannot know whether the deployment means to share it, and changing the mode of every start is the larger surprise; the log line makes the tightening visible instead.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0073",
@@ -1280,7 +1352,8 @@
       "evidence_after": "TEST (gate): a board started against a database whose write lock is held by another process (`BEGIN IMMEDIATE` + a 14 s hold, past the 5 s busy timeout) exits **1**, and its log carries both `chatbox: sql error: database is locked — in UPDATE deliveries SET node = COALESCE(...)` - the backfill, which failed silently before - and `chatbox: cannot start the key migration transaction (database is locked) — refusing to migrate without one`. The fix was also probed by hand: `--db` on a non-database file exits 1, and an unopenable path now reports `cannot open db at /nonexistent-dir/x.sqlite: unable to open database file` where it used to print only the path. Section 55 pins the held-lock case with three checks; mutant `292-audit0073-silentexec` (the pre-fix body, which returns SQLITE_OK and logs nothing) is red at 1105 passed / 1 failed, because the log line naming the failing statement disappears. Base cell GREEN at 1106 passed / 0 failed on 1434f4c (chatbox.swift sha256 fd04fb02ad71192d); relative cell GREEN, 0 false passes; strict build 0/0. The fixture interaction was found by the base cell, not by reasoning: the first cut of the schema check required `type='table'`, and section 47's read-failure fixture puts a *view* named `messages` in place of the table, so the base cell went red with the board refusing to start. The check is existence-based instead, and the same fixture was then re-run by hand: `--prune 0` on that board reaches the prune and answers `the prune failed and was rolled back — nothing was changed`, with `views may not be indexed` logged from the failed CREATE INDEX.",
       "commit": "1434f4c",
       "notes": "The schema verification is a positive check (five tables present, `journal_mode` = wal) rather than an `exit` after each of the ~18 statements: the statements are `IF NOT EXISTS` creations whose effect is exactly what is verified, and `addColumn` already verifies its own column and refuses, which is the shape this follows. Refusing on a non-WAL journal mode is the behaviour change the finding asks for - a filesystem that cannot do WAL is a deployment that cannot use the documented backup story, and the refusal says so rather than serving quietly.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0074",
@@ -1297,7 +1370,8 @@
       "evidence_after": "TEST (gate, before and after with the two binaries): `POST /message?…&body=one%00two` on the pre-fix build stores `select hex(body)` = **6F6E65** ('one' - the `\\0two` silently gone) while the answer still says `ok posted`; on the fixed build the stored value is **6F6E650074776F** ('one\\0two', all seven bytes). SQLite's own `length()` reports 3 for that value, which is its documented 'characters before the first NUL', so the hex is the check that matters. The suite's message round-trips (sections 7-13, `&json=1`, the thread view) are green at 1106 passed / 0 failed.",
       "commit": "1434f4c",
       "notes": "Preserving the byte rather than refusing it: the alternative fix (reject control bytes in body/subject) would have been a new refusal on the write path late in a pre-production audit, and the board's contract is that a message is bytes of text it stores exactly - `percentDecode` already turns `%00` into a NUL deliberately. The read side had to change with the write side, or the value would be stored whole and handed back truncated.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0075",
@@ -1314,7 +1388,8 @@
       "evidence_after": "TEST: the fix is structural - every one of the ~18 call sites selects exactly one column, and the helper now checks `row.count == 1` before reading it, so a two-column query fails loudly (a log line) rather than answering with an arbitrary field. The suite that exercises those call sites (health, counts, lookups, the scoped listings) is green at 1106 passed / 0 failed and the strict build is 0/0. Honest limit, recorded: **no behavioural check can distinguish the two versions today**, because with one column the old `values.first` and the new guard return the same value and no cell can turn them apart; the pin is the guard itself plus the log, not a test.",
       "commit": "1434f4c",
       "notes": "Read by name rather than by position was the other option, but `rows` returns `[String: String]` and the call sites do not name a column, so the smallest honest change is to require the shape they all have. The diagnostic is on stderr like the store's other failures, so a future two-column call is visible in the board's log rather than silent.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0076",
@@ -1331,7 +1406,8 @@
       "evidence_after": "CLOSED AS ALREADY FIXED, with the check re-run against the current tree. `nowISO()` no longer builds a formatter per call: it is `ISOStamp.now()`, and `ISOStamp.style` is a `static let Date.ISO8601FormatStyle(timeZone: TimeZone(secondsFromGMT: 0)!)` - a `Sendable` value type built once - with `daysAgo`/`daysAhead` sharing it. `grep -c ISO8601DateFormatter chatbox.swift` is **1**, and that one occurrence is the comment explaining why the class was replaced (mutable state, so Swift 6 refuses it as a shared `static`, and a fresh instance per call was the alternative). The per-call construction this finding names was removed by the strict-concurrency work it belongs to: #0002 (shared formatter state), #0004 (main-actor-isolated top-level `let`s) and #0015 (`@unchecked Sendable`), whose evidence is already the 0/0 strict build. Nothing in the current source allocates a date formatter per call, so there is nothing left to fix and no cell to write - a mutant that restored the allocation would change no observable behaviour (the finding's own point is cost, not output), and the ledger records that rather than implying a test exists.",
       "commit": "closed-by 0002/0004/0015, recorded here",
       "notes": "Kept as a distinct entry rather than deleted: the finding was real when filed and the reason it is closed (a later task in the same audit removed the code) is what a reader needs. Same treatment as #0030/#0038, which were closed as duplicates of #0020/#0022 for the same reason.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0077",
@@ -1348,7 +1424,8 @@
       "evidence_after": "TEST (gate): the same held-write-lock fixture as #0073 asserts the board does not start (exit 1) and the log names the lock; mutant `293-audit0077-nobegin` (the BEGIN result ignored) is red at 1105 passed / 1 failed, because the UPDATEs then auto-commit one at a time, the COMMIT fails, the migration reports nothing done, and the board **starts and serves** - which is exactly the half-migrated state the function exists to prevent. Base cell GREEN at 1106 passed / 0 failed on 1434f4c (chatbox.swift sha256 fd04fb02ad71192d); relative cell GREEN, 0 false passes.",
       "commit": "1434f4c",
       "notes": "The failed-COMMIT branch returns `changed = 0` deliberately: the transaction did not land, so a banner claiming N keys were normalised would be a report of work that was rolled back. The next start retries, and the migration is idempotent by construction (that is what the fixed-point comment in `canonicalRepoKey` is about).",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0078",
@@ -1365,7 +1442,8 @@
       "evidence_after": "TEST. Section 17 adds: the completion is recorded as `user_version=1`, and a non-canonical key written *after* the migration is left alone on the next start (proving the scan did not run). The existing write-lock check in section 55 still exits 1 naming `UPDATE deliveries`. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "The fixture resets `user_version=0` when it writes the old shape, because that is what a board predating the marker looks like; a change to the canonical rule must bump the recorded version.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0079",
@@ -1382,7 +1460,8 @@
       "evidence_after": "TEST. Section 58 reads `EXPLAIN QUERY PLAN` from the populated board: no `SCAN messages` and the plan names `idx_msg_reply`. Measured before the index: `SCAN messages`. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "The index is created by `CREATE INDEX IF NOT EXISTS`, so existing boards gain it on their next start.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0080",
@@ -1399,7 +1478,8 @@
       "evidence_after": "TEST. Section 58's plan for the unread listing has no `TEMP B-TREE` and names `idx_del_inbox`; the count uses `idx_del_unread` as a covering index. Measured before: `idx_del_unread` plus `USE TEMP B-TREE FOR ORDER BY`. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "commit": "",
       "notes": "Dropping the join from the count relies on the invariant the writer already keeps: a delivery row is written in the message's transaction and pruned before its message, so there are no orphans.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0081",
@@ -1416,7 +1496,8 @@
       "evidence_after": "TEST: both readiness loops now require `kill -0` on the pid the section started **and** that board's own `chatbox listening on port <port>` banner in its own log before the `/health` probe counts - the idiom `fed_wait`, `mig_start`, sections 18/21/27 and the migration fixture already use. The positive case is exercised by the run that closed this batch: section 13b's staleness checks and section 16's raised-cap checks both ran against the boards they started, and the suite is green at 1100 passed / 0 failed. The negative case - a foreign board holding 8791 and answering `/health` on the shared token - is now caught twice: the suite's own preflight (#0095) stops the run before section 13b, and with `CHATBOX_ALLOW_HELD_PORTS=1` the readiness loop refuses to accept a board whose banner is not in the log it started, so section 13b reports 'the staleness fixture started' instead of running its presence checks against the wrong server. Before, the first successful `/health` set `sready=1` whatever answered it, and the three presence mutants that section alone pins (`53-touchinterval`, `54-stilltouchdead`, `58-offactive`) could pass against an unrelated build.",
       "commit": "aec0635",
       "notes": "The same shape was in section 16's raised-`--max-body` fixture, whose port (8793) is equally fixed; both loops were treated together because the finding is one pattern in two places. The banner is the only signal that distinguishes 'a chatbox board' from 'some listener holding the shared token', so it is required in addition to the pid - `kill -0` alone would also accept a process that has not yet bound the port.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0082",
@@ -1433,7 +1514,8 @@
       "evidence_after": "TEST (gate, reproduced): the pre-fix literals were replayed on a scratch SQLite database - two runs of the bulk fixture stamp **410** deliveries for the second run's agent where the check demands 205, because `INSERT INTO deliveries ... FROM messages WHERE sender='bulk'` matches the first run's 205 messages as well. With the run-tagged sender (`bulk-<run>`) the second run counts **205**. The raw Content-Length fixture is the same defect in one row: it builds `from=exact-<run>&body=ok`, computes the declared length from that string (`${#ex24_body}`) instead of the literal 18, and its `count(*)` is scoped to `sender='exact-<run>'`. Both sections ran green in the suite that closed this batch (1100 passed / 0 failed), and the header's promise that several runs can share one database now holds for these two fixtures as well.",
       "commit": "aec0635",
       "notes": "The literal 18 bytes was itself a check - the surplus `&to=phantom` must not be read as a parameter - so the length is still exact, just computed from the tagged body rather than written down; the `lacks phantom` and `delivered_to: (nobody)` assertions are unchanged. The backup-race fixture's `sender='bulk'` is intentionally left alone: it writes to its own per-run scratch database (`backup-<run>/board.sqlite`), where a second run cannot see the first run's rows.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0083",
@@ -1450,7 +1532,8 @@
       "evidence_after": "TEST: the 30-day check asserts the **date** the board reports (`expires: <today+30d>`, computed with `date -u -v+30d` and a GNU `date -d` fallback), so a credential issued for one day or with a wrong offset no longer satisfies it - the old needle was the two characters `20`, which any 20xx date matches. Both ends of the documented range are now pinned: `expires=1` is accepted (and the credential revoked again in the same breath), and `expires=36501` is refused with `expires must be a number of days between 1 and 36500`. Section 28 ran green in the suite that closed this batch (1100 passed / 0 failed).",
       "commit": "aec0635",
       "notes": "The date rather than the count because the wire form is a date: `expires: 20` was asserting a prefix of the year. The one residual race is the UTC midnight between the board computing the date and the check computing it, which would make the needle one day out; the boundary checks (1 and 36501) do not depend on the clock and are what pin the guard itself. The 1-day credential is revoked rather than left live on the board, the same hygiene section 28 already applied to the no-expiry credential.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0084",
@@ -1467,7 +1550,8 @@
       "evidence_after": "TEST (gate): with `CHATBOX_SERVER_LOG` set, `GET /events?max=99999` is opened under a two-second timeout and the board's own log must contain `GET /events -> 200 (stream, up to 3600s)` - the capped value, not the requested one. New mutant `291-audit0084-nceiling` (`cappedSeconds` returning the raw value instead of `min(raw, ceiling)`) is red at 1099 passed / 1 failed, and the base cell of that run is green at 1100 passed / 0 failed on aec0635 (chatbox.swift sha256 a0752d01a557ba1e) with the relative cell green and 0 false passes. The mutant anchors on the whole function rather than the expression, because `waitSeconds` uses the same `min(raw, …)` shape two lines above and the expression alone is not unique.",
       "commit": "aec0635",
       "notes": "Two seconds cannot show a one-hour deadline, so the observable is the log line the board writes when it accepts the stream - the same technique the suite already uses for the inbox wait cap (sections 8/9). The check is skipped when `CHATBOX_SERVER_LOG` is unset, like the other log-pinned checks; CI and the documented runbook both set it.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0085",
@@ -1484,7 +1568,8 @@
       "evidence_after": "TEST: `GET /token?json=1` is now asserted as the JSON object it is - `\"tokens\"`, `\"shown\"` and `\"matching\"` - beside the `lacks` for the secret. Before, that route's JSON form had no check at all: the only assertion was `lacks \"the json listing never repeats a secret\"`, which the *text* listing (also secret-free) satisfies, so dropping the json branch or returning the wrong shape kept it green. The three checks ran against the live board in the suite that closed this batch (1100 passed / 0 failed).",
       "commit": "aec0635",
       "notes": "`\"shown\"` and `\"matching\"` as well as `\"tokens\"` because the listing is the one route whose JSON object states how much of itself it is showing; a shape that lost those keys would still be parseable JSON. The secret itself stays absent from both forms and is still asserted absent.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0086",
@@ -1501,7 +1586,8 @@
       "evidence_after": "TEST: `fed_refuse` now captures the process's exit status and counts the refusal only when it is **2**; a process that printed the refusal phrase and exited 1 was accepted before, and the status was discarded by a `wait` whose result was thrown away. All fifteen federation-refusal checks (`--peer-token` without `--peer`, a non-URL `--peer`, a `--peer` with a query, an empty `--peer`, `--max-hops` 0/65, `--server-id` with a comma/control byte/leading space/Unicode line separator/format character, an unknown flag, `--peer` with credentials, an impossible port, a `--peer-token` with a line break, a `--peer` naming this board) go through it and passed in the suite that closed this batch (1100 passed / 0 failed).",
       "commit": "aec0635",
       "notes": "The other half of this finding - the flat one-second sleep that reported a correct refusal as 'it started anyway' - was fixed in #0094, whose cells were measured against the previous revision; this commit adds the exit-status assertion, which was the remaining half. The refusal code itself is checked by the same `exit(2)` path the other startup-refusal helpers (sections 34/42) already assert.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0087",
@@ -1518,7 +1604,8 @@
       "evidence_after": "TEST: `README.md` no longer embeds the endpoint badge and `.github/traffic.json` is deleted (`git rm`); the only remaining references to the name are the ledger's own record of this finding. The suite is unaffected - no check read the file - and is green at **1106 passed / 0 failed**. Honest limit, recorded: the finding's other option is to generate the file from real traffic data in CI, which needs the traffic API plus a commit-back workflow; removing a fabricated metric is the smaller honest change, and this entry says which was taken rather than leaving it implicit.",
       "commit": "85b47ff",
       "notes": "The badges that remain (stars, last commit, contact) are served live by shields.io from GitHub's own data, so they are measurements rather than constants. Nothing else consumed `.github/traffic.json`.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0088",
@@ -1535,7 +1622,8 @@
       "evidence_after": "TEST: the local is renamed `unseenList`, so `who` keeps one meaning - the credential's `Principal` - through the whole of `message()`. The two reads of the shadowed value are the warning lines (`warning: \\(unseenList)`, `warning: no sign of \\(unseenList) inside the … window`); nothing else used it. Behaviour is unchanged by construction: the strict typecheck is **0/0** for the change, and the suite that exercises the send path (sections 7-13, including the unseen-recipient warnings this line builds) is green at 1103 passed / 0 failed in the run that closed this batch. Honest limit: a shadow that changes no behaviour cannot be pinned by a behavioural check and there is no cell for it; the verification is that the rename is total (`who` in that scope is only the parameter) and the build is clean.",
       "commit": "eadca29",
       "notes": "The name follows the neighbours it is built from (`unseen`, `unseenReason`). The finding's point was readability, not a defect: the compiler accepted it and the behaviour was correct, which is exactly why the change is small and unpinned.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0089",
@@ -1552,7 +1640,8 @@
       "evidence_after": "TEST: two new checks pin the behaviour the strip exists for - `POST /register` with `repo=https://github.com/acme/fixture?tab=readme` and with `repo=github.com/acme/fixture#readme` both answer `github.com/acme/fixture`, and the client's spelling loop gained `https://github.com/acme/fixture?tab=readme` as a fifth spelling of the same repo. The dead half is gone: `?` was removed from the character list in `canonicalRepoKey` **and** in the client's `canon_repo` (the strip two lines above each makes the check unreachable), and the server's refusal text no longer claims `?` is invalid - it names `*`, `[`, `]` and a space and says a `?` or `#` ends the key. Suite green at 1103 passed / 0 failed; shellcheck on the suite still 0; strict build 0/0.",
       "commit": "eadca29",
       "notes": "Rejected: refusing `?` before the strip, which would have made the old error text true. It changes shipped behaviour for a caller that pastes a URL with a query (today it resolves to the repo) late in a pre-production audit, and the client already strips, so the two sides would then disagree about the same input. The server code, the client code and the client's own comment already agreed with each other; only the server's message text was wrong, so the text was fixed rather than the behaviour.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0090",
@@ -1569,7 +1658,8 @@
       "evidence_after": "TEST (gate): on a board with nothing on it, `GET /threads?json=1` and `GET /token?json=1` answered `no threads yet` / `no credentials issued` before and answer `{\"shown\": 0, \"matching\": 0, \"threads\": []}` / `{\"shown\": 0, \"matching\": 0, \"tokens\": []}` after; the text forms still answer the sentence. A second fixture holds one conversation and a credential scoped to a machine that is in none: the bootstrap listing matches 1, proving the conversation exists, while the scoped `GET /threads?json=1` answers the empty JSON object instead of prose - the case the finding is about. Section 49 pins twelve checks. Mutants `277-audit0090-jsonprose` (red at 1057 passed / 6 failed: both empty object checks, the prose check, the matching count and the two scoped checks) and `281-audit0090-tokenprose` (red at 1061 / 2: the empty credential listing and its prose check) put each branch back and are both red; base cell GREEN at 1063 passed / 0 failed on 656f78e (chatbox.swift sha256 58439e0f7810dab9); relative cell GREEN, 0 false passes; strict-concurrency typecheck 0/0.",
       "commit": "0699fa0",
       "notes": "The two routes were fixed together because they are the same bug in the same shape; the mutant list keeps them separable, one cell per route. `json=1` on a *non-empty* listing was already correct, so the check that the text form is unchanged is there to prove the fix moved the emptiness branch rather than the format switch. Follow-up `656f78e`: the first cut of the section-49 check asserted on `\"$js49 send\"` where the variable it assigned is `js49_sent`, so under `set -u` the suite exited at that line and the three scoped-listing checks - the ones this task exists for - never ran; the matrix run's base cell caught it before any mutant was measured, and the orphaned fixture it left behind is recorded as #0095.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0091",
@@ -1586,7 +1676,8 @@
       "evidence_after": "TEST (gate): the fatal anchor check was demonstrated in a disposable copy of the tree with one fragment deliberately broken (`usage(publicURL)` -> `usage(THIS-FRAGMENT-IS-GONE)`): the run printed `ANCHOR PROBLEMS (the run is aborted; no cell was tested)`, listed the cell, printed no results table, and exited 1. All 239 fragments now match (\"prepared 239 mutations\"). The eleven repaired cells were then run: base GREEN at 917 passed / 0 failed (the two new section-38 checks included), `02-slash404` red (2 failures), `19-ackonwait` red (11), `178-trk30-migratealways` red (18), `215-trk17-nofedbanner` red (9), `34-plaintextnote` red (5), `54-stilltouchdead` red (2), `55-nofrac` red (6), `78-noidcheck` red (3), `43-watchrepeats` red (5), `93-cacertoverhttp` red (1); `29-revokenoop` was BUILDFAIL on the first sweep because my new mutant literal inferred `(Int32, Int)` instead of `(Int32, Int32)` - which is the point of counting build failures - and was corrected to `changes: Int32(1)` (typechecked before spending the cell) and re-run red. The relative-path cell was GREEN. The harness passes `sh -n`, `dash -n` and `shellcheck -S warning`.\nPHASE-D NOTE: the repair itself was done wrong once and caught: my first pass edited by absolute line numbers top-down, so each insertion shifted the lines after it and several fragments landed in the wrong definitions - the file still parsed as shell but the embedded Python was broken. Rewritten as a sorted bottom-up edit, then verified by running the anchor check in isolation (extract the embedded Python, freeze a copy, run it) rather than trusting `sh -n` on a shell script that embeds Python.\nAUDIT (gate): re-read cold. The harness is the evidence generator for every other task, so its own honesty is a prerequisite: the four ways it could lie quietly (a stale fragment, a mutant that does not compile, a red base, an uncommitted matrix) are each now loud and non-zero. The frozen-revision mechanism is unchanged, the port range and lock behaviour are unchanged, and no cell was deleted to make the sweep clean.",
       "commit": "7d28987",
       "notes": "Rejected alternatives: (a) delete the eleven stale cells - the properties they test still exist, and deleting them would have removed exactly the coverage the audit had just spent effort adding; (b) leave the anchor check advisory and print a warning - that is the bug, not the fix; (c) keep the harness in `tests/.scratch` and copy it into `AUDIT/` at the end of the audit - the matrix has to be runnable and reviewable while the audit is being reviewed, and a copy taken \"at the end\" is one more thing that can drift; (d) point the harness at a fresh `git clone` per run instead of freezing files - the freeze is what makes a multi-hour run measure a fixed revision, and a clone would not stop an edit to the working tree mid-run.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     },
     {
       "id": "0092",
@@ -1603,7 +1694,8 @@
       "evidence_after": "TEST (gate): `actionlint .github/workflows/ci.yml` passes. The step's negative control was run locally with the exact command: a copy of `chatbox.swift` with a non-Sendable capture in a `@Sendable` closure (`final class AuditNonSendableBox` captured by `{ b.n += 1 }`) makes it exit 1 with `error: capture of 'b' with non-Sendable type 'AuditNonSendableBox' in a '@Sendable' closure`, while both real files exit 0 with no diagnostics. The step was then verified in CI by dispatching `ci.yml` onto this branch (run **35017564533**, `workflow_dispatch`): the log shows step 5, `Strict concurrency, warnings as errors`, running exactly the two `-typecheck` commands, and the whole run is **success** - the strict step, the documented build, the 940-check protocol suite and the backup checks all pass on the same revision.\nPHASE-D NOTE (a limit of the standard, measured while building this control): `-warnings-as-errors` does not escalate every concurrency diagnostic. A non-Sendable capture is a hard error, but a diagnostic Swift downgrades because the API it crosses is `@preconcurrency` stays a warning and the command exits 0 - measured with `DispatchQueue.async { captured += 1 }`: exit 0, one `[#SendableClosureCaptures]` warning. So this step enforces the brief's flag set, which is not a complete data-race checker; the caveat and the compensating rule (read the diagnostic count, not only the exit code) are written down in `AUDIT/environment.md` rather than left implicit.\nAUDIT (gate): re-read cold. The new step compiles nothing twice into the artifacts - it is `-typecheck`, so the binaries the suite drives are still the documented build's, and a strict-only failure cannot change the tested binary. It runs before the server starts, so a violating commit fails fast. No existing step, flag or action pin was touched.",
       "commit": "2dd1465",
       "notes": "Rejected alternatives: (a) add the strict flags to the existing Build step - then a strict failure and a documented-build failure look the same in the log and nobody can tell which contract broke; (b) replace the `-O` build with the strict one - the README documents `-O` and the audit standard is an additional contract, not a replacement; (c) enforce it in a git hook or a local script - nothing on a contributor's machine is a gate, which is the whole finding; (d) also run the mutation matrix in CI - hours of runner time per pull request, and `AUDIT/mutate.sh` is the deliberate, auditable place for it. Bookkeeping note: the `AUDIT/environment.md` section this task added landed in the previous commit (`72634da`, the #0041/#0047 ledger commit) because that commit's `git add AUDIT` swept it up. It is on the audit branch, it is not rewritten, and it is referenced here so the provenance is not a surprise to a reader of either commit.",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "B"
     },
     {
       "id": "0093",
@@ -1620,7 +1712,8 @@
       "evidence_after": "The base cell and the relative-path cell were re-run on the merged tree and are GREEN (base 1027 passed / 0 failed, 0 false passes), both binaries still typecheck 0/0 under the audit flags, and `sh -n`/`dash -n`/shellcheck are unchanged. Matrix cell 231 (`231-audit0017-nourl`, which restores the tailnet fallback) was re-pointed at the loopback default and is red on four checks. CI (`35131154108`) and CodeQL (`35131157602`) were dispatched from the merged revision and both **succeeded** after a 35-minute queue wait; the run ids and conclusions are recorded in `AUDIT/environment.md`.",
       "notes": "Merging main *into* the audit branch is not the merge the brief gates (that one is the PR into main after Phase E), and it is what makes Phase E meaningful: a fresh clone of a branch based on a stale `971faae` would verify a tree that can no longer be merged.",
       "commit": "816c5d2",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0094",
@@ -1637,7 +1730,8 @@
       "evidence_after": "TEST: the two refusals were reproduced 25 times in isolation and 30 times under six concurrent CPU burners - exit 2 every time, no `started anyway`. The full suite on the frozen revision 656f78e (chatbox.swift sha256 58439e0f7810dab9) is GREEN at 1063 passed / 0 failed (the base cell of the mutation run for the audit/0062 batch), and both hardened checks run in it. Not weakened: the liveness assertion, the log-phrase assertion and the pass/fail boundary are identical, only the wait for the process to leave is longer and adaptive.",
       "notes": "Why not a longer flat sleep: the property is that the process *ended*, and no sleep length is evidence of that - only waiting for the exit is. Why not `wait`: it blocks for ever when the refusal did not happen, which is exactly the case the check exists to catch. The two checks were the only flat-sleep refusals in the suite; the other `kill -0` uses are positive liveness probes whose fixture is proved again by the work that follows them.",
       "commit": "93518cb",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "C"
     },
     {
       "id": "0095",
@@ -1654,7 +1748,8 @@
       "evidence_after": "TEST (gate, manual and recorded as such): a board answering on a fixture port (8788) makes `sh tests/protocol.sh` exit **2** before any check with `FATAL: the suite binds these ports itself and they are already answering: 8788` plus the three-line explanation; with every fixture port free the same invocation prints its header and proceeds to section 1; `CHATBOX_ALLOW_HELD_PORTS=1` runs anyway (verified). The full suite after the change is green at **1088 passed / 0 failed**; the fix's own port probes are the only added work, and they cost nothing when the ports are free (a refused connection returns immediately). This check cannot live inside the suite it guards - a self-test of the guard is the guard - and the mutation harness mutates the sources under test rather than the suite, so there is no cell for it.",
       "notes": "What this does **not** do is kill the orphans. That was the finding's other half and it was considered and rejected: the fixture pids are per-section local variables, and a trap that guessed at them would kill processes it does not own - a cleanup that misfires is worse than the state it cleans. Detecting the state is the half that cannot misfire, and the wiki/README runbook now uses a port the suite does not bind (#0050), so the operator case does not arise by following the docs. The failure mode this replaces cost a full suite run: an orphaned fixture from the aborted section-49 run held 8777, and the next run reported `the json fixture started - no answer on http://127.0.0.1:8777`, which reads as a product failure rather than a held port.",
       "blocked_reason": "",
-      "commit": "9eaf18a"
+      "commit": "9eaf18a",
+      "tier": "C"
     },
     {
       "id": "0096",
@@ -1670,7 +1765,8 @@
       "fix_summary": "`AUDIT/mutate.sh` splits the wanted cells across `JOBS` workers; worker w runs main ports `8801+w*120+k` in its own `CHATBOX_SCRATCH`, and shifts every `CHATBOX_*PORT` default the frozen suite declares by `w*2000`. `JOBS` defaults to 1 - the audit brief allows at most one heavy job per 8 GB host, and each worker is a suite that starts several servers - so parallelism is opt-in on a host with headroom. `tests/protocol.sh` resolves the *effective* value of each fixture port (environment override else default) before probing it.",
       "evidence_after": "TEST (gate, bounded probes, not a full sweep): with a Python `http.server` answering on 8777 - the default `CHATBOX_JSON_PORT` - `sh tests/protocol.sh` exits **2** naming `8777`; with `CHATBOX_JSON_PORT=9877` and the server on 9877 it exits **2** naming `9877`, so it is the override that is probed; with every fixture port free the same invocation proceeds past the preflight to section 1 (observed). The harness itself was exercised end to end by the #0069 run: base cell GREEN at 1127/0, one mutant cell red at 1123/4, relative-path cell GREEN, all through this code. `sh -n`, `dash -n` and `shellcheck -s sh` are clean on both files (mutate.sh 0, protocol.sh 0).",
       "commit": "29ce901",
-      "notes": "This was inherited as an uncommitted working-tree change from the session that produced the #0069 cell; it is recorded and committed here rather than left unrecorded. Honest limit: the multi-worker path is not itself exercised by the default run (JOBS=1), and only one cell has been run through a worker; the port-band arithmetic was checked against every `CHATBOX_*PORT` default in the frozen suite (max fixture default 9410 + 3*2000 = 15410, main bands 8801-9280, no overlap) but a multi-worker full sweep would still be the first run to exercise four bands at once."
+      "notes": "This was inherited as an uncommitted working-tree change from the session that produced the #0069 cell; it is recorded and committed here rather than left unrecorded. Honest limit: the multi-worker path is not itself exercised by the default run (JOBS=1), and only one cell has been run through a worker; the port-band arithmetic was checked against every `CHATBOX_*PORT` default in the frozen suite (max fixture default 9410 + 3*2000 = 15410, main bands 8801-9280, no overlap) but a multi-worker full sweep would still be the first run to exercise four bands at once.",
+      "tier": "B"
     },
     {
       "id": "0097",
@@ -1687,7 +1783,8 @@
       "evidence_after": "TEST. Section 57 sends a message whose subject contains a newline and one whose subject contains U+2028, then asserts the flattened `subject: s<RUN> FORGED<RUN>` in the inbox, the thread and the threads listing, and the flattened U+2028 form in the inbox. Full suite green at **1162 passed / 0 failed** on the tree carrying all of these fixes (`sh tests/protocol.sh`, CI-equivalent env).",
       "notes": "Same remedy as #0068 by design: a new field-level validator would be a second rule to keep in sync, while the echo sites already funnel through `oneLine`. The message body is deliberately left raw - it is the content, and both clients frame it.",
       "commit": "",
-      "blocked_reason": ""
+      "blocked_reason": "",
+      "tier": "A"
     }
   ]
 }

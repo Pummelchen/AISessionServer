@@ -33,7 +33,7 @@ def cell(value: str) -> str:
 def detail(task: dict) -> str:
     out = [f"### {task['id']}", ""]
     lines = [
-        f"- **Severity / category / module:** {task['severity']} / {task['category']} / {task['project']}",
+        f"- **Severity / category / module / tier:** {task['severity']} / {task['category']} / {task['project']} / {task.get('tier', '?')}",
         f"- **Location:** `{task['file_line']}`",
         f"- **Title:** {task['title']}",
         f"- **Status:** {task['status']}",
@@ -86,12 +86,12 @@ def render(data: dict) -> str:
         "",
         GATES,
         "",
-        "| id | sev | module | file:line | title | category | status | host | discovered by |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| id | sev | tier | module | file:line | title | category | status | host | discovered by |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for t in ordered:
         head.append(
-            f"| [{t['id']}](#{t['id']}) | {t['severity']} | {cell(t['project'])} | "
+            f"| [{t['id']}](#{t['id']}) | {t['severity']} | {t.get('tier', '?')} | {cell(t['project'])} | "
             f"`{t['file_line']}` | {cell(t['title'])} | {t['category']} | "
             f"**{t['status']}** | {t['host_used']} | {cell(t['discovered_by'])} |"
         )

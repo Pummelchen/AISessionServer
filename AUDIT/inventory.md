@@ -92,3 +92,26 @@ already pins cross-checks for it, which is the mitigation to preserve.
 | M7 `mutate.sh` | the audit/release evidence | medium — a broken harness turns "verified" into "unverified" |
 | M8 wiki | humans | low code risk, high documentation risk (it is the tracker of record) |
 | M6 README | operators | medium — wrong commands are an outage |
+
+## 2.5 Tier assignment (the table the final report discloses)
+
+Every module is classified once, before any Phase B finding, and every ledger task carries the tier
+of the module it belongs to. Where a task spans modules, the highest tier among them is used (so a
+formatting task that touches M1 is Tier A for the purpose of the sweep, even though the change is
+mechanical).
+
+| Module | Tier | Basis |
+|---|---|---|
+| M1 `chatbox.swift` | **A** | authn/authz, credential storage, untrusted request parsing, network-facing endpoints, persistent-data and irreversible operations (`--prune`, the key migration), SQLite/native-interop lifetimes |
+| M2 `chatbox-mcp.swift` | **A** | holds the board credential; parses untrusted JSON-RPC; its output is handed to a model that can act |
+| M3 `chatbox-cli.sh` | **A** | holds the credential; frames untrusted peer text for a model; parses git remotes and `~/.chatbox` |
+| M4 `tests/protocol.sh` | **C** (reviewed deeper, see below) | tests are Tier C by the brief; but a vacuous check silently authorises a regression, so the audit reviewed it manually and every finding on it is fixed and recorded |
+| M5 `.github/workflows/*` | **B** | the merge gate; tool-first review plus the manual findings in the ledger |
+| M6 `README.md` / `AGENTS.md` | **C** | documentation; no production path |
+| M7 `AUDIT/mutate.sh` | **B** | the audit's evidence gate; tool-first review plus the manual findings in the ledger |
+| M8 wiki (separate repo) | **C** | documentation only; not part of this tree |
+
+The reduced-inspection disclosure: Tier C modules were not human-read line by line. M4 is the one
+place where that classification is deliberately exceeded, because it is the gate the rest of the
+evidence rests on; the audit read it and fixed its findings (see #0081-#0086, #0091, #0095).
+
