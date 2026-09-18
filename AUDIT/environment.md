@@ -142,6 +142,7 @@ moved here.
 ```sh
 sh AUDIT/mutate.sh                    # every cell, plus the base and relative-path cells
 ONLY=name,name sh AUDIT/mutate.sh      # those cells (base and relative always run)
+JOBS=4 sh AUDIT/mutate.sh              # opt-in: run cells across 4 workers, each in its own port band
 ```
 
 How it works and the rules it enforces:
@@ -160,6 +161,13 @@ How it works and the rules it enforces:
 - One run at a time: the harness refuses to start if another is live, because two runs share the
   scratch directory and the port range.
 - Scratch state stays under `tests/.scratch/` (gitignored); the harness writes nothing else.
-- Cost: each cell runs the whole suite, so a full matrix is hours. `ONLY=` is what makes re-checking
-  one fix affordable.
+- `JOBS` defaults to **1** because each worker is a suite that starts several servers and the brief's
+  rule is at most one heavy job per 8 GB host; parallelism is opted into on a host with the headroom.
+  A worker takes every `CHATBOX_*PORT` default out of the frozen suite, shifts its fixtures by
+  `w*2000` and runs its cells on main ports `8801+w*120+k`; scratch is per worker and per cell. The
+  suite's own held-port preflight therefore probes the **effective** port value (env override or
+  default), not the literal in the file, which is what lets two bands coexist.
+- Cost: each cell runs the whole suite — about 10 minutes on node1 — so a serial full matrix is tens
+  of hours. `ONLY=` makes re-checking one fix affordable; `JOBS=` is what makes a full sweep fit a
+  single slot on a host that can afford it.
 

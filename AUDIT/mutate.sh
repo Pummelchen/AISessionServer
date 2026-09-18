@@ -1711,79 +1711,147 @@ report() { # name, rc, summary
   fi
 }
 
+# ---------------------------------------------------------------------------
+# The run: one base cell, then every wanted mutant cell, then the relative-path cell.
+# A full sweep is a suite run per cell, so the harness can split the cell list across JOBS
+# workers, each in its own *port band*, so two cells never reach for the same fixture port.
+# The bands: worker w uses main ports 8801+w*120+k and adds w*2000 to every
+# `CHATBOX_*_PORT` default the suite declares (8776-8799, 9381, 9395-9410 -> 10776-11410, ...), which
+# is why the suite's own fixture-port preflight resolves the *effective* value of each port rather
+# than the file's default. Scratch is per worker (`CHATBOX_SCRATCH`) and per cell (`mut/<name>.*`).
+# The results are collected per worker and printed in cell order at the end, so the table reads the
+# same as a serial run.
+#
+# JOBS defaults to 1: each worker is a suite that starts several servers, and the audit brief's rule
+# is at most one heavy job per 8 GB host. Parallelism is opt-in (`JOBS=4 sh AUDIT/mutate.sh`) on a
+# host with the headroom, and the serial run is the default because it is the one every host can
+# afford.
+# ---------------------------------------------------------------------------
+JOBS="${JOBS:-1}"
+case "$JOBS" in ''|*[!0-9]*) JOBS=1 ;; esac
+[ "$JOBS" -ge 1 ] || JOBS=1
+
+# Every fixture port the frozen suite declares, as NAME:default, so a worker can offset them all.
+FIXTURE_PORTS="$(grep -o 'CHATBOX_[A-Z_]*PORT:-[0-9][0-9]*' "$FROZEN/tests/protocol.sh" | sort -u)"
+
 port=8801
 base_bin="$SC/mut/base"
 xcrun swiftc -O "$FROZEN/chatbox.swift" -o "$base_bin" 2>/dev/null
 xcrun swiftc -O "$FROZEN/chatbox-mcp.swift" -o "$SC/mut/base-mcp" 2>/dev/null
 CLI_FOR_RUN="$FROZEN/chatbox-cli.sh"
 BIN_FOR_RUN="$base_bin"
+MCP_FOR_RUN="$SC/mut/base-mcp"
 SRC_FOR_RUN="$FROZEN/chatbox.swift"
 last=$(run_one base "$base_bin" "$port"); brc=$?
 printf '%-20s %-8s %s\n' "base (must be green)" "$([ $brc -eq 0 ] && echo GREEN || echo RED)" "$last"
 # The base cell must be green before anything is measured against it: a red base makes every "red"
 # below meaningless, so it is counted with the false passes and the run exits non-zero.
 [ $brc -eq 0 ] || falses=$((falses + 1))
-port=$((port + 1))
 
+# The cell list, in the order the results table should read.
+TASKS="$SC/mut/tasks.txt"
+: > "$TASKS"
 for f in "$SC"/mut/*.swift; do
   [ -e "$f" ] || continue
   name=$(basename "$f" .swift)
   wanted "$name" || continue
-  bin="$SC/mut/$name"
-  if ! xcrun swiftc -O "$f" -o "$bin" > "$SC/mut/$name.build.log" 2>&1; then
-    # A mutant that does not compile proves nothing about the suite, so it is not a result: count
-    # it with the false passes rather than letting it disappear between the ones that did compile.
-    printf '%-20s %-8s %s\n' "$name" "BUILDFAIL" "$(tail -2 "$SC/mut/$name.build.log" | tr '\n' ' ')"
-    falses=$((falses + 1))
-    continue
-  fi
-  CLI_FOR_RUN="$FROZEN/chatbox-cli.sh"
-  BIN_FOR_RUN="$bin"
-  MCP_FOR_RUN="$SC/mut/base-mcp"
-  SRC_FOR_RUN="$f"
-  last=$(run_one "$name" "$bin" "$port"); rc=$?
-  report "$name" "$rc" "$last"
-  prune_cell "$name"
-  port=$((port + 1))
+  printf 'swift %s\n' "$name" >> "$TASKS"
 done
-
-# Client mutations run against the unmutated server with CHATBOX_CLI pointed at the
-# mutated client, so a change in chatbox-cli.sh is pinned by the suite too.
 for f in "$SC"/mut/*.sh; do
   [ -e "$f" ] || continue
   name=$(basename "$f" .sh)
   wanted "$name" || continue
-  CLI_FOR_RUN="$f"
-  BIN_FOR_RUN="$base_bin"
-  MCP_FOR_RUN="$SC/mut/base-mcp"
-  SRC_FOR_RUN="$f"
-  last=$(run_one "$name" "$base_bin" "$port"); rc=$?
-  report "$name" "$rc" "$last"
-  prune_cell "$name"
-  port=$((port + 1))
+  printf 'cli %s\n' "$name" >> "$TASKS"
 done
-
-# The MCP adapter is a separate binary: its mutants are built from the frozen source and the suite
-# is pointed at the mutant with CHATBOX_MCP, so a change to the adapter is pinned the same way.
 for f in "$SC"/mut-mcp/*.swift; do
   [ -e "$f" ] || continue
   name=$(basename "$f" .swift)
   wanted "$name" || continue
-  bin="$SC/mut/mcp-$name"
-  if ! xcrun swiftc -O "$f" -o "$bin" > "$SC/mut/$name.build.log" 2>&1; then
-    printf '%-20s %-8s %s\n' "$name" "BUILDFAIL" "$(tail -2 "$SC/mut/$name.build.log" | tr '\n' ' ')"
-    falses=$((falses + 1))
-    continue
-  fi
-  CLI_FOR_RUN="$FROZEN/chatbox-cli.sh"
-  BIN_FOR_RUN="$base_bin"
-  MCP_FOR_RUN="$bin"
-  SRC_FOR_RUN="$f"
-  last=$(run_one "$name" "$base_bin" "$port"); rc=$?
-  report "$name" "$rc" "$last"
-  prune_cell "$name"
-  port=$((port + 1))
+  printf 'mcp %s\n' "$name" >> "$TASKS"
 done
+
+# Round-robin the list into one file per worker.
+_w=0
+while [ "$_w" -lt "$JOBS" ]; do : > "$SC/mut/tasks-$_w.txt"; _w=$((_w + 1)); done
+_n=0
+while IFS=' ' read -r kind name; do
+  [ -n "$name" ] || continue
+  w=$((_n % JOBS))
+  printf '%s %s\n' "$kind" "$name" >> "$SC/mut/tasks-$w.txt"
+  _n=$((_n + 1))
+done < "$TASKS"
+
+# One worker: its slice of the list, its own port band and scratch, results appended for the parent.
+worker() { # worker index
+  _w="$1"
+  _fix=$((_w * 2000))
+  for _spec in $FIXTURE_PORTS; do
+    _pn="${_spec%%:*}"
+    _pd="${_spec#*:-}"
+    eval "export $_pn=$((_pd + _fix))"
+  done
+  export CHATBOX_SCRATCH="$SC/scratch-$_w"
+  mkdir -p "$CHATBOX_SCRATCH"
+  _p=$((8801 + _w * 120))
+  : > "$SC/mut/results-$_w.txt"
+  while IFS=' ' read -r _kind _name; do
+    [ -n "$_name" ] || continue
+    case "$_kind" in
+      swift)
+        _bin="$SC/mut/$_name"
+        if ! xcrun swiftc -O "$SC/mut/$_name.swift" -o "$_bin" > "$SC/mut/$_name.build.log" 2>&1; then
+          printf '%s|BUILDFAIL|%s\n' "$_name" "$(tail -2 "$SC/mut/$_name.build.log" | tr '\n' ' ')" >> "$SC/mut/results-$_w.txt"
+          continue
+        fi
+        CLI_FOR_RUN="$FROZEN/chatbox-cli.sh"
+        BIN_FOR_RUN="$_bin"
+        MCP_FOR_RUN="$SC/mut/base-mcp"
+        SRC_FOR_RUN="$SC/mut/$_name.swift"
+        ;;
+      cli)
+        CLI_FOR_RUN="$SC/mut/$_name.sh"
+        BIN_FOR_RUN="$base_bin"
+        MCP_FOR_RUN="$SC/mut/base-mcp"
+        SRC_FOR_RUN="$SC/mut/$_name.sh"
+        ;;
+      mcp)
+        _mcpbin="$SC/mut/mcp-$_name"
+        if ! xcrun swiftc -O "$SC/mut-mcp/$_name.swift" -o "$_mcpbin" > "$SC/mut/$_name.build.log" 2>&1; then
+          printf '%s|BUILDFAIL|%s\n' "$_name" "$(tail -2 "$SC/mut/$_name.build.log" | tr '\n' ' ')" >> "$SC/mut/results-$_w.txt"
+          continue
+        fi
+        CLI_FOR_RUN="$FROZEN/chatbox-cli.sh"
+        BIN_FOR_RUN="$base_bin"
+        MCP_FOR_RUN="$_mcpbin"
+        SRC_FOR_RUN="$SC/mut-mcp/$_name.swift"
+        ;;
+    esac
+    _last=$(run_one "$_name" "$BIN_FOR_RUN" "$_p"); _rc=$?
+    printf '%s|%s|%s\n' "$_name" "$([ $_rc -eq 0 ] && echo GREEN || echo red)" "$_last" >> "$SC/mut/results-$_w.txt"
+    prune_cell "$_name"
+    _p=$((_p + 1))
+  done < "$SC/mut/tasks-$_w.txt"
+}
+
+_w=0
+while [ "$_w" -lt "$JOBS" ]; do
+  worker "$_w" &
+  _w=$((_w + 1))
+done
+wait
+
+# The merged table, in cell order, with the same columns a serial run printed.
+while IFS=' ' read -r kind name; do
+  [ -n "$name" ] || continue
+  line="$(grep "^$name|" "$SC"/mut/results-*.txt 2>/dev/null | head -1)"
+  res="${line#*|}"; res="${res%%|*}"
+  suite="${line##*|}"
+  case "$res" in
+    red)    printf '%-20s %-8s %s\n' "$name" "red" "$suite" ;;
+    GREEN)  printf '%-20s %-8s %s   <-- FALSE PASS\n' "$name" "GREEN" "$suite"; falses=$((falses + 1)) ;;
+    *)      printf '%-20s %-8s %s\n' "$name" "BUILDFAIL" "$suite"; falses=$((falses + 1)) ;;
+  esac
+done < "$TASKS"
 
 # The suite must also pass when it is invoked the way CI invokes it: as `sh tests/protocol.sh`
 # from the repository root, with no CHATBOX_CLI, no CHATBOX_SCRATCH and relative DB and log
@@ -1792,6 +1860,14 @@ done
 # while every matrix cell (which passes an absolute CHATBOX_CLI) stayed green.
 relative_cell() {
   _rc="$1"
+  # Its own port band as well, past the workers' (JOBS*120 main slots, JOBS*2000 for fixtures).
+  _rfix=$((JOBS * 2000))
+  for _spec in $FIXTURE_PORTS; do
+    _pn="${_spec%%:*}"
+    _pd="${_spec#*:-}"
+    eval "export $_pn=$((_pd + _rfix))"
+  done
+  export CHATBOX_SCRATCH="$SC/scratch-relative"
   _db="$FROZEN/tests/.scratch/relative.sqlite"
   mkdir -p "$FROZEN/tests/.scratch"
   rm -f "$_db" "$_db-wal" "$_db-shm"
@@ -1811,7 +1887,7 @@ relative_cell() {
   kill "$_rp" 2>/dev/null; wait "$_rp" 2>/dev/null
   return $rc
 }
-last=$(relative_cell "$port"); rc=$?
+last=$(relative_cell "$((8801 + JOBS * 120))"); rc=$?
 printf '%-20s %-8s %s\n' "relative paths" "$([ $rc -eq 0 ] && echo GREEN || echo RED)" "$last"
 [ $rc -eq 0 ] || falses=$((falses + 1))
 port=$((port + 1))

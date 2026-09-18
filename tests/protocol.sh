@@ -270,12 +270,19 @@ printf 'chatbox protocol tests\n  server: %s\n  run:    %s\n\n' "$URL" "$RUN"
 # runbook did not warn about. Fail here, before the first check, naming the port.
 # ---------------------------------------------------------------------------
 if [ -z "${CHATBOX_ALLOW_HELD_PORTS:-}" ]; then
+  # The *effective* port for each fixture, so an override is what gets probed: the matrix runs
+  # several cells at once, each in its own port band, and probing the file's defaults would trip on
+  # the other cells' fixtures.
   held=""
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$p/" 2>/dev/null; then held="$held $p"; fi
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    _pname="${spec%%:*}"
+    _pdef="${spec#*:-}"
+    _ptest=""
+    eval "_ptest=\${$_pname:-$_pdef}"
+    if curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:$_ptest/" 2>/dev/null; then held="$held $_ptest"; fi
   done <<EOF
-$(grep -o 'CHATBOX_[A-Z_]*PORT:-[0-9][0-9]*' "$0" | sed 's/.*:-//' | sort -u)
+$(grep -o 'CHATBOX_[A-Z_]*PORT:-[0-9][0-9]*' "$0" | sort -u)
 EOF
   if [ -n "$held" ]; then
     printf 'FATAL: the suite binds these ports itself and they are already answering:%s\n' "$held" >&2
