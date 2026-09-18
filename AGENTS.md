@@ -34,8 +34,8 @@ a repository.
   **Deliberately one file**: it is installed by copying it to `~/.local/bin/chatbox`,
   so a split would turn installation into a build step.
 - `tests/protocol.sh` (6627 lines) — the end-to-end suite.
-- `.swift-format`, `.swiftlint.yml`, `ruff.toml` — the committed language configs
-  CI runs `--strict` (see **Gates**).
+- `.swift-format`, `.swiftlint.yml` — the committed language configs CI runs
+  `--strict` (see **Gates**).
 - `.github/workflows/ci.yml`, `codeql.yml`.
 - There is **no `Package.swift` and no lockfile.** Runtime state
   (`chatbox`, `chatbox.token`, `chatbox.sqlite*`, `chatbox.log`, `tests/.scratch/`)

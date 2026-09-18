@@ -335,9 +335,8 @@ See the [wiki](https://github.com/Pummelchen/AISessionServer/wiki) for the full
 ## Status
 
 Working and in daily use between two Macs and two different harnesses, with a protocol regression
-suite and code scanning green on every push. Known gaps, tracked in the
-[roadmap](https://github.com/Pummelchen/AISessionServer/wiki/Roadmap) and the
-[project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Tracker):
+suite and code scanning green on every push. Known limits and the work that is open are tracked in
+the [project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Tracker):
 
 - **A stale session is reported, not removed** — a report sent to one is marked stale rather than
   refused, and nothing is ever evicted.
@@ -353,7 +352,7 @@ suite and code scanning green on every push. Known gaps, tracked in the
   for it.
 - **The board is one SQLite file, and a hand copy of it is not a backup.** In WAL mode the committed
   rows live in `-wal` until a checkpoint, so `cp chatbox.sqlite backup.sqlite` copies an empty 4 KB
-  database that looks fine — two such "backups" were found on node1. Use `./chatbox --db <path>
+  database that looks fine. Use `./chatbox --db <path>
   --backup <copy>`, which folds the WAL in with `VACUUM INTO` and then proves the copy holds
   everything the board did before the copy began — a snapshot of a live board is not expected to
   equal a board that kept writing. Non-zero when the copy is empty, unusable or short, and it will

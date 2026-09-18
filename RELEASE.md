@@ -190,12 +190,12 @@ Leave previous releases' notes and performance tables alone.
   no tag, so §1.3 applies in full the moment the first release is cut; the MCP
   adapter's `protocolVersion`/`serverInfo.version` are a protocol draft, a separate
   axis (§1.3), and are not the product version.
-- **The lint and standard gates are committed, not improvised.** `.swift-format`,
-  `.swiftlint.yml` and `ruff.toml` are in the tree, and `ci.yml` runs each as a gate:
-  `xcrun swift-format lint --strict`, `swiftlint lint --strict`, the strict
+- **The lint and standard gates are committed, not improvised.** `.swift-format` and
+  `.swiftlint.yml` are in the tree, and `ci.yml` runs each as a gate:
+  `xcrun swift-format lint --strict`, `swiftlint lint --strict`, and the strict
   concurrency typecheck (`-swift-version 6 -strict-concurrency=complete
-  -warnings-as-errors`), and `ruff check`/`ruff format --check` for the audit
-  helpers. A release runs the same commands locally before the clean build (§1.5).
+  -warnings-as-errors`). A release runs the same commands locally before the clean
+  build (§1.5). The repository carries no Python, so there is no Python gate.
 - **Two Swift binaries are compiled, but neither is committed.** `xcrun swiftc -O
   chatbox.swift -o chatbox`, and the same for `chatbox-mcp.swift`; both outputs are
   gitignored. A release would therefore carry either the built binaries (native

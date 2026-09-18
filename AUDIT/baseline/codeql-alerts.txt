@@ -1,5 +1,0 @@
-open code-scanning alerts: 1
-  #1 swift/cleartext-transmission (warning/high) chatbox.swift:2426
-      Cleartext transmission of sensitive information
-      https://github.com/Pummelchen/AISessionServer/security/code-scanning/1
-dismissed alerts: 0
