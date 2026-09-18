@@ -14,5 +14,8 @@
 # Test scratch — throwaway server state written by tests/protocol.sh
 tests/.scratch/
 
+# Release output — release.sh's scratch build, stage and archives.
+/dist/
+
 # macOS
 .DS_Store
