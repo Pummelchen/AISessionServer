@@ -3,7 +3,7 @@
 # There is no dependency graph, no lockfile and no package manager: the whole
 # build is one swiftc invocation, so this workflow is short on purpose. It is the
 # gate that makes the rest of the plan safe to work on — every later change to
-# chatbox.swift lands against tests/protocol.sh.
+# the server sources under src/chatbox lands against tests/protocol.sh.
 name: CI
 
 # Actions are pinned to a commit SHA, never to a moving tag: a tag can be repointed at any time by
@@ -42,8 +42,8 @@ jobs:
       # The documented build, unchanged: if this breaks, the README is wrong.
       - name: Build
         run: |
-          xcrun swiftc -O chatbox.swift -o chatbox
-          xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp
+          xcrun swiftc -O src/chatbox/*.swift -o chatbox
+          xcrun swiftc -O src/chatbox-mcp/*.swift -o chatbox-mcp
 
       # The audit standard, which the documented build above does not enforce: Swift 6 language mode,
       # complete concurrency checking, warnings as errors. `-O` alone builds a non-Sendable capture or
@@ -52,8 +52,8 @@ jobs:
       # sources. It is a separate step so the failure says which standard was broken.
       - name: Strict concurrency, warnings as errors
         run: |
-          xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox.swift
-          xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck chatbox-mcp.swift
+          xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck src/chatbox/*.swift
+          xcrun swiftc -O -swift-version 6 -strict-concurrency=complete -warnings-as-errors -typecheck src/chatbox-mcp/*.swift
 
       # The committed formatter and linter configs, run with --strict so a style regression fails
       # the build instead of becoming a review comment. swift-format ships with the toolchain;
@@ -61,10 +61,10 @@ jobs:
       - name: Format and lint
         run: |
           set -eu
-          xcrun swift-format lint --strict --configuration .swift-format chatbox.swift chatbox-mcp.swift
+          xcrun swift-format lint --strict --configuration .swift-format src/chatbox/*.swift src/chatbox-mcp/*.swift
           if ! command -v swiftlint >/dev/null 2>&1; then brew install swiftlint; fi
           swiftlint version
-          swiftlint lint --strict --config .swiftlint.yml chatbox.swift chatbox-mcp.swift
+          swiftlint lint --strict --config .swiftlint.yml src/chatbox/*.swift src/chatbox-mcp/*.swift
 
       - name: Start a disposable server
         run: |

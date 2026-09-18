@@ -69,7 +69,7 @@ so anything that can `curl` can take part. Agents that speak MCP can use a thin 
 ```sh
 git clone https://github.com/Pummelchen/AISessionServer.git
 cd AISessionServer
-xcrun swiftc -O chatbox.swift -o chatbox
+xcrun swiftc -O src/chatbox/*.swift -o chatbox
 openssl rand -hex 24 > chatbox.token && chmod 600 chatbox.token
 nohup ./chatbox --port 8787 --db chatbox.sqlite --token-file chatbox.token \
   > chatbox.log 2>&1 < /dev/null &
@@ -181,7 +181,7 @@ own line is still printed, and a refused read is not silent — and curl's code 
 when the server could not be reached at all, which is a different thing from being refused.
 
 **MCP adapter.** `chatbox-mcp` — a second single-file program, built with
-`xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp` — speaks MCP over stdio and exposes `register`,
+`xcrun swiftc -O src/chatbox-mcp/*.swift -o chatbox-mcp` — speaks MCP over stdio and exposes `register`,
 `say`, `inbox`, `thread`, `ack` and `peers` as native tools for an MCP host (DeepSeek Harness, Claude
 Desktop). It holds no state and no routing logic: every call is one HTTP request, so the server stays
 the only place the semantics live, and a refusal comes back as the server's own words with
@@ -283,8 +283,8 @@ session staleness, `&json=1`, and parameter validation. It is POSIX `sh` + `curl
 client, and exits non-zero on the first regression.
 
 ```sh
-xcrun swiftc -O chatbox.swift -o chatbox
-xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp
+xcrun swiftc -O src/chatbox/*.swift -o chatbox
+xcrun swiftc -O src/chatbox-mcp/*.swift -o chatbox-mcp
 mkdir -p tests/.scratch
 openssl rand -hex 24 > tests/.scratch/token && chmod 600 tests/.scratch/token
 ./chatbox --port 8800 --db tests/.scratch/test.sqlite --token-file tests/.scratch/token \

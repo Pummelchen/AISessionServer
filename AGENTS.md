@@ -14,7 +14,7 @@
 
 An HTTP + SQLite message board that lets two independent AI agent sessions, on
 different machines and different harnesses, exchange plain text **by repository
-key** without sharing any access. A single-file Swift server (`chatbox.swift`) plus
+key** without sharing any access. A Swift server (the sources under `src/chatbox/`) plus
 a POSIX `sh` client and an optional MCP adapter. It is working and in daily use
 between two Macs and two harnesses, with a 6627-line protocol regression suite;
 there are **no releases and no tags**, so distribution is build-from-source. It is
@@ -27,13 +27,17 @@ a repository.
 
 ## Layout
 
-- `chatbox.swift` (4642 lines) — SQLite store, Network.framework HTTP, TLS,
-  federation, operator modes.
-- `chatbox-mcp.swift` (464 lines) — a stateless stdio MCP adapter.
-- `chatbox-cli.sh` (994 lines) — the POSIX `sh` client, installed as `chatbox`.
+- `src/chatbox/` — the Swift server, split into focused files so none passes 500
+  lines: `main.swift` (setup and entry), `Startup.swift`, `Support.swift`,
+  `Store.swift` + `Store+Queries.swift`, `HTTP.swift`, `Chatbox.swift` +
+  `Chatbox+Routing.swift`, `+Message.swift`, `+Streams.swift`, `+Reads.swift`,
+  `+IO.swift`, and `Operator.swift`.
+- `src/chatbox-mcp/chatbox-mcp.swift` — a stateless stdio MCP adapter.
+- `chatbox-cli.sh` — the POSIX `sh` client, installed as `chatbox`.
   **Deliberately one file**: it is installed by copying it to `~/.local/bin/chatbox`,
   so a split would turn installation into a build step.
-- `tests/protocol.sh` (6627 lines) — the end-to-end suite.
+- `tests/protocol.sh` + `tests/lib/*.sh` — the end-to-end suite; the entry sources
+  the numbered parts in order.
 - `.swift-format`, `.swiftlint.yml` — the committed language configs CI runs
   `--strict` (see **Gates**).
 - `.github/workflows/ci.yml`, `codeql.yml`.
@@ -44,8 +48,8 @@ a repository.
 ## Build and test
 
 ```bash
-xcrun swiftc -O chatbox.swift -o chatbox
-xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp
+xcrun swiftc -O src/chatbox/*.swift -o chatbox
+xcrun swiftc -O src/chatbox-mcp/*.swift -o chatbox-mcp
 
 sh tests/protocol.sh        # against a live, disposable server
 ```
@@ -84,14 +88,14 @@ envelope, `--max-rows` 500 per listing (always stating `shown` of `matching`),
 
 ## Identity
 
-No product version. `chatbox-mcp.swift` declares `protocolVersion = "2024-11-05"`
+No product version. `src/chatbox-mcp/chatbox-mcp.swift` declares `protocolVersion = "2024-11-05"`
 and `serverInfo.version = "1.0"` (a protocol draft, not a product version). The
 source is **Swift 6** (no version pin: the toolchain is whatever `runs-on: xcode-27`
 provides), and the standard is enforced in CI: both binaries are typechecked under
 `-swift-version 6 -strict-concurrency=complete -warnings-as-errors`, `swift-format
 lint --strict` and `swiftlint lint --strict` run on both, and each exit code is a
 gate. GitHub reports this repository's primary language as **Shell**, not Swift,
-despite `chatbox.swift` being the bulk of the code.
+despite the Swift server being the bulk of the code.
 
 ## Gates
 

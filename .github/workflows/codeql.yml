@@ -56,14 +56,14 @@ jobs:
 
       # The build must really happen: this is what the extractor observes. It is
       # the same commands CI and the README use, so the analysed binaries are the
-      # shipped binaries — both of them. Compiling only `chatbox.swift` left the MCP
+      # shipped binaries — both of them. Compiling only the server left the MCP
       # adapter (which parses untrusted JSON from a host's stdin and builds the URL that
       # carries a credential) out of the database entirely, so a finding there could never
       # be reported while "CodeQL green" was read as covering the product.
       - name: Build for extraction
         run: |
-          xcrun swiftc -O chatbox.swift -o chatbox
-          xcrun swiftc -O chatbox-mcp.swift -o chatbox-mcp
+          xcrun swiftc -O src/chatbox/*.swift -o chatbox
+          xcrun swiftc -O src/chatbox-mcp/*.swift -o chatbox-mcp
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0

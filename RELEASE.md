@@ -197,8 +197,8 @@ Leave previous releases' notes and performance tables alone.
   -warnings-as-errors`). A release runs the same commands locally before the clean
   build (§1.5). The repository carries no Python, so there is no Python gate.
 - **Two Swift binaries are compiled, but neither is committed.** `xcrun swiftc -O
-  chatbox.swift -o chatbox`, and the same for `chatbox-mcp.swift`; both outputs are
-  gitignored. A release would therefore carry either the built binaries (native
+  src/chatbox/*.swift -o chatbox`, and `xcrun swiftc -O src/chatbox-mcp/*.swift -o
+  chatbox-mcp`; both outputs are gitignored. A release would therefore carry either the built binaries (native
   `arm64` only, per §1.2.1–§1.2.4) or a tagged source archive with a documented entry
   point. There is no release script.
 - **The client is one file on purpose.** `chatbox-cli.sh` is installed by copying it
