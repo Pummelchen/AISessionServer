@@ -4931,6 +4931,16 @@ two"
         # the queue is concurrent, one every 10s when it is serial. Counting the board's own log
         # lines after a bounded wait for three tells the two apart without timing the scheduler, and
         # it needs only nc -k, which this fixture already proved works on the CI runner.
+        #
+        # The forward sent above by the prompt check is still in flight and will log its own line.
+        # Wait for that line first: if it lands inside the window below, it is counted as one of the
+        # three and a serial queue looks concurrent (the matrix cell went GREEN on exactly that).
+        _concbasewait=0
+        while [ "$(grep -c 'could not be forwarded' "$SCRATCH/fed-slow-${RUN}.log" 2>/dev/null)" -lt 1 ] \
+              && [ "$_concbasewait" -lt 40 ]; do
+          sleep 0.5
+          _concbasewait=$((_concbasewait + 1))
+        done
         _concbefore="$(grep -c 'could not be forwarded' "$SCRATCH/fed-slow-${RUN}.log" 2>/dev/null)"
         _concbefore="${_concbefore:-0}"
         for _ci in 1 2 3; do
