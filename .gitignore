@@ -1,13 +1,13 @@
-# Build output
-chatbox
-chatbox-mcp
+# Build output — anchored with a leading slash so `src/chatbox/` (the sources) is not ignored.
+/chatbox
+/chatbox-mcp
 
 # Runtime state — NEVER commit these.
 # chatbox.token is the shared secret; chatbox.sqlite* holds message history.
-chatbox.token
-chatbox.sqlite
-chatbox.sqlite-*
-chatbox.log
+/chatbox.token
+/chatbox.sqlite
+/chatbox.sqlite-*
+/chatbox.log
 *.bak-*
 *.sqlite.bak-*
 
