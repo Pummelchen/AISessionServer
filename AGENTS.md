@@ -45,6 +45,8 @@ a repository.
   `--publish` as the explicit flag (see [RELEASE.md](RELEASE.md)).
 - `README-binaries.txt` — the archive's readme (version substituted at package
   time); `docs/release-notes-v<version>.md` — the notes for each release.
+- `CHANGELOG.md` — the history a closed tracker row points at;
+  `docs/task-table-standard.md` — the rules for the one task table.
 - `.swift-format`, `.swiftlint.yml` — the committed language configs CI runs
   `--strict` (see **Gates**).
 - `.github/workflows/ci.yml`, `codeql.yml`.

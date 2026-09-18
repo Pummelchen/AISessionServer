@@ -346,7 +346,7 @@ See the [wiki](https://github.com/Pummelchen/AISessionServer/wiki) for the full
 
 Working and in daily use between two Macs and two different harnesses, with a protocol regression
 suite and code scanning green on every push. Known limits and the work that is open are tracked in
-the [project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Tracker):
+the [project tracker](https://github.com/Pummelchen/AISessionServer/wiki/Project-Tracker):
 
 - **A stale session is reported, not removed** — a report sent to one is marked stale rather than
   refused, and nothing is ever evicted.
