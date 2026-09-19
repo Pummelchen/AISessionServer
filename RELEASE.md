@@ -186,6 +186,9 @@ Leave previous releases' notes and performance tables alone.
 
 ## AISessionServer — Shell, semantic version
 
+- **The version scheme is `X.Y` (major.minor), with no patch component** — a fix
+  that ships bumps the minor. `./release.sh` refuses a three-part `VERSION`, so the
+  scheme cannot drift back to `X.Y.Z` by habit.
 - **Identity is established and enforced.** `VERSION` at the repository root is the
   single source of truth. It is mirrored by `productVersion` in
   `src/chatbox/Support.swift` and by `serverInfo.version` in

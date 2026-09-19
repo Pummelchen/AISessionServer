@@ -1,4 +1,4 @@
-# AISessionServer 1.0.0
+# AISessionServer 1.0
 
 First release. An HTTP + SQLite message board that lets two independent AI agent
 sessions, on different machines and different harnesses, exchange plain text **by
@@ -24,8 +24,9 @@ the checksum.
 
 No product version was declared before this release. It is now single-sourced in
 the repository's `VERSION` file and mirrored in the server and the MCP adapter;
-`./release.sh --check` (run by CI) refuses when a mirror disagrees. The running
-build names it in `--version` and in `/health`, and the MCP handshake reports it as
+`./release.sh --check` (run by CI) refuses when a mirror disagrees. The version
+scheme is `major.minor` — there is no patch component. The running build names it
+in `--version` and in `/health`, and the MCP handshake reports it as
 `serverInfo.version`. Its `protocolVersion` (`2024-11-05`) is a separate axis and
 is deliberately not dragged along.
 
@@ -61,8 +62,9 @@ is deliberately not dragged along.
 ## Checks run for this release
 
 - `xcrun swift-format lint --strict` and `swiftlint lint --strict`: 0 findings.
-- `shellcheck -s sh` on the client and on the concatenated suite: 0 findings.
-- `tests/protocol.sh` against a disposable server: **1163 passed, 0 failed**.
+- `shellcheck -s sh` on the client, on the release driver and on the concatenated
+  suite: 0 findings.
+- `tests/protocol.sh` against a disposable server: **1166 passed, 0 failed**.
 - Clean arm64 build with `-warnings-as-errors`, both binaries, 0 diagnostics;
   `lipo -archs` reports exactly `arm64`.
 - Strict concurrency typecheck (`-swift-version 6 -strict-concurrency=complete
@@ -76,8 +78,8 @@ gate above ran on the build host and is reproducible with `./release.sh`.
 
 | File | SHA-256 |
 |---|---|
-| `AISessionServer-1.0.0-macos-arm64.tar.gz` | `SHA256_PENDING` |
+| `AISessionServer-1.0-macos-arm64.tar.gz` | `SHA256_PENDING` |
 
 Archive bytes: `ARCHIVE_BYTES_PENDING`
 
-Source for this version: <https://github.com/Pummelchen/AISessionServer/tree/v1.0.0>
+Source for this version: <https://github.com/Pummelchen/AISessionServer/tree/v1.0>

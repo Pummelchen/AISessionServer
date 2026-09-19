@@ -180,7 +180,7 @@ let sourceRevision = ProcessInfo.processInfo.environment["CHATBOX_REVISION"] ?? 
 /// and CI refuse when the two disagree, so a release cannot be built from a bump that was half
 /// applied. The MCP adapter's `serverInfo.version` is the second mirror, and its `protocolVersion`
 /// is a separate axis (a protocol draft) that is deliberately not dragged along.
-let productVersion = "1.0.0"
+let productVersion = "1.0"
 
 func buildIdentity() -> String {
     var info = stat()

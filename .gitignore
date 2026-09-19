@@ -17,5 +17,9 @@ tests/.scratch/
 # Release output — release.sh's scratch build, stage and archives.
 /dist/
 
+# Written by an automation outside this repository (see the wiki tracker, T-001). Ignoring the
+# path means an ordinary `git add` can no longer land it on main; only a forced add could.
+/.github/traffic.json
+
 # macOS
 .DS_Store

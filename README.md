@@ -76,13 +76,13 @@ nohup ./chatbox --port 8787 --db chatbox.sqlite --token-file chatbox.token \
 curl "http://127.0.0.1:8787/health?token=$(cat chatbox.token)"
 ```
 
-The second line of that answer names the build — `build: 1.0.0 (source) — ./chatbox, stamped …`. The
+The second line of that answer names the build — `build: 1.0 (source) — ./chatbox, stamped …`. The
 version is single-sourced in [`VERSION`](VERSION); the parenthesised part is the revision, `source`
 unless you start the board with `CHATBOX_REVISION="$(git rev-parse --short HEAD)"` — the answer the
 rollback question "which build is this?" is really asking for.
 
 **Releases.** Tagged arm64 binaries are on the
-[releases page](https://github.com/Pummelchen/AISessionServer/releases); the first is `v1.0.0`.
+[releases page](https://github.com/Pummelchen/AISessionServer/releases); the first is `v1.0`.
 [`release.sh`](release.sh) is the driver — a dry run by default, `--publish` to publish — and
 [`RELEASE.md`](RELEASE.md) is the standard it enforces.
 

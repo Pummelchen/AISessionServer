@@ -426,7 +426,7 @@ while let line = readLine(strippingNewline: true) {
                     "capabilities": ["tools": [:]],
                     // The product version, mirrored from the repository's VERSION file; the protocol
                     // version above is a separate axis and is deliberately not dragged along.
-                    "serverInfo": ["name": "chatbox", "version": "1.0.0"]
+                    "serverInfo": ["name": "chatbox", "version": "1.0"]
                 ])
         }
     case "notifications/initialized", "initialized":

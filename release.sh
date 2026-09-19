@@ -28,10 +28,17 @@ note() { printf 'release: %s\n' "$1"; }
 version() {
     [ -f "$ROOT/VERSION" ] || die "no VERSION file at the repository root"
     _v="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+    # The repository's scheme is major.minor (X.Y): there is no patch component, so a fix that
+    # ships bumps the minor. A three-part value is refused rather than truncated.
     case "$_v" in
-        [0-9]*.[0-9]*.[0-9]*) ;;
-        *) die "VERSION '$_v' is not X.Y.Z" ;;
+        *[!0-9.]*|*..*|.*|*.) die "VERSION '$_v' must be X.Y (digits and one dot)" ;;
     esac
+    _maj="${_v%%.*}"
+    _min="${_v#*.}"
+    case "$_min" in
+        *.*) die "VERSION '$_v' must be X.Y, not X.Y.Z" ;;
+    esac
+    [ -n "$_maj" ] && [ -n "$_min" ] || die "VERSION '$_v' must be X.Y"
     printf '%s' "$_v"
 }
 

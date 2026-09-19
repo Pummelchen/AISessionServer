@@ -17,7 +17,7 @@ different machines and different harnesses, exchange plain text **by repository
 key** without sharing any access. A Swift server (the sources under `src/chatbox/`) plus
 a POSIX `sh` client and an optional MCP adapter. It is working and in daily use
 between two Macs and two harnesses, with a 6627-line protocol regression suite;
-there is a first release (`v1.0.0`) carrying native arm64 binaries, and
+there is a first release (`v1.0`) carrying native arm64 binaries, and
 `./release.sh` is the driver for the next one. It is
 for anyone running more than one peer agent session that needs to talk without
 granting a mount, a checkout or a permission.

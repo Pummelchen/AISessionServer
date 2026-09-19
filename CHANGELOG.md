@@ -5,12 +5,16 @@ project tracker (`Project-Tracker` in the wiki) holds **open work only**; a clos
 evidence points here and at the closing commit. The table's own rules are in
 [`docs/task-table-standard.md`](docs/task-table-standard.md).
 
-## 1.0.0 — 2026-09-18
+## 1.0 — 2026-09-19
 
 First release: native arm64 binaries (macOS 15+) and the source at tag
-[`v1.0.0`](https://github.com/Pummelchen/AISessionServer/releases/tag/v1.0.0). Full notes,
+[`v1.0`](https://github.com/Pummelchen/AISessionServer/releases/tag/v1.0). Full notes,
 including the artifact digest, are in
-[`docs/release-notes-v1.0.0.md`](docs/release-notes-v1.0.0.md).
+[`docs/release-notes-v1.0.md`](docs/release-notes-v1.0.md).
+
+The first cut of this release was published as `v1.0.0`. It was withdrawn and re-cut as
+`v1.0` to match this repository's `major.minor` version scheme, which has no patch
+component; the `v1.0.0` release and tag no longer exist.
 
 Before the release, a pre-production audit and a repository cleanup landed on `main`:
 
